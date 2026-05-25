@@ -1,0 +1,85 @@
+[build-system]
+requires = ["pdm-backend"]
+build-backend = "pdm.backend"
+
+[project]
+name = "cua-pywin"
+version = "0.1.0"
+
+description = "Windows UI automation MCP server for AI agents — screenshots, clicks, typing, UIA tree walking, vision (SOM), recording/replay, and learning"
+authors = [
+    { name = "zhangweiooy" }
+]
+readme = "README.md"
+license = { text = "GPL-3.0-or-later" }
+requires-python = ">=3.12,<3.14"
+dependencies = [
+    "fastapi>=0.111.0",
+    "uvicorn[standard]>=0.27.0",
+    "pydantic>=2.0.0",
+    "pynput>=1.8.1",
+    "pillow>=10.2.0",
+    "aiohttp>=3.9.1",
+    "pyperclip>=1.9.0",
+    "websockets>=12.0",
+    "pywinctl>=0.4.1",
+    "playwright>=1.40.0",
+    "fastmcp>=2.0,<4",
+    "starlette>=0.50.0,<1",
+    # Windows runtime deps
+    "pywin32>=310",
+    "python-certifi-win32",
+    "comtypes>=1.4.0",
+    "mss>=9.0",
+    "psutil>=5.9",
+    "uiautomation>=2.0",
+    "screeninfo>=0.8.1",
+    # SOM vision / OCR
+    "numpy>=1.26",
+    "torch>=2.2",
+    "torchvision>=0.17",
+    "easyocr>=1.7",
+    "opencv-python-headless>=4.11",
+    "ultralytics>=8.1",
+    "supervision>=0.25",
+    "huggingface-hub>=0.21",
+]
+
+[project.optional-dependencies]
+windows = [
+    "pywin32>=310",
+]
+cdp = [
+    "websockets>=12.0",
+]
+
+[project.urls]
+homepage = "https://github.com/zhangweiooy/cua-pywin"
+repository = "https://github.com/zhangweiooy/cua-pywin"
+
+[project.scripts]
+cua-pywin = "computer_server:run_cli"
+
+[tool.pdm]
+distribution = true
+
+[tool.pdm.build]
+includes = ["computer_server"]
+package-data = {"computer_server" = ["py.typed"]}
+
+[tool.pdm.dev-dependencies]
+test = [
+    "pytest>=7.0.0",
+    "pytest-asyncio>=0.23.0",
+]
+format = [
+    "black>=23.0.0",
+    "isort>=5.12.0",
+]
+dev = [
+    "ruff>=0.0.241",
+    "mypy>=0.971",
+]
+
+[tool.pdm.scripts]
+api = "python -m computer_server"

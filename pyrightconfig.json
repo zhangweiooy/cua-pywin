@@ -1,0 +1,17 @@
+{
+  "include": ["**/*.py"],
+  "exclude": [
+    "**/__pycache__/**",
+    "**/.venv/**",
+    "**/venv/**",
+    "**/dist/**",
+    "**/build/**",
+    ".pdm-build/**",
+    "**/.git/**",
+    "**/weights/**"
+  ],
+  "typeCheckingMode": "basic",
+  "useLibraryCodeForTypes": true,
+  "reportMissingImports": false,
+  "reportMissingModuleSource": false
+}

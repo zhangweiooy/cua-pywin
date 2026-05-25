@@ -1,0 +1,12 @@
+{
+  "mcpServers": {
+    "cua-computer-server": {
+      "command": "uv",
+      "args": ["run", "python", "-m", "computer_server.mcp_server"],
+      "cwd": ".",
+      "env": {
+        "PYTHONIOENCODING": "utf-8"
+      }
+    }
+  }
+}
