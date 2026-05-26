@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Any, Callable, Dict, Optional, Tuple
+from typing import Any, Dict, Optional, Tuple
 
 
 def get_resize_ratio(
@@ -68,9 +68,18 @@ def window_resized_to_screen(
     x: int,
     y: int,
     zoom_metadata: Optional[Dict[Tuple[int, int], Dict[str, Any]]] = None,
-    resize_ratio_getter: Optional[Callable[[Optional[int], Optional[int]], float]] = None,
 ) -> Tuple[int, int]:
-    """Convert resized window-screenshot coordinates to screen coordinates."""
+    """Convert resized window-screenshot coordinates to screen coordinates.
+
+    Priority:
+    1. ``zoom_metadata[(pid, window_id)]`` — the authoritative record produced
+       by the most recent ``get_window_state`` call.  Holds the visible crop
+       origin (which differs from real window origin on multi-monitor /
+       partially off-screen windows) and the compression ratio.
+    2. ``ElementCache.get_window_origin_optional`` — fallback when no metadata
+       is recorded.  In this branch resize cannot have happened (no metadata
+       means no prior get_window_state), so the ratio is 1.0 by definition.
+    """
     if pid is None or window_id is None:
         return x, y
 
@@ -87,5 +96,4 @@ def window_resized_to_screen(
     origin = get_element_cache().get_window_origin_optional(pid, window_id)
     if origin is None:
         return x, y
-    ratio = resize_ratio_getter(pid, window_id) if resize_ratio_getter else 1.0
-    return (origin[0] + int(x * ratio), origin[1] + int(y * ratio))
+    return (origin[0] + x, origin[1] + y)

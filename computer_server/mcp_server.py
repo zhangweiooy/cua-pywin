@@ -237,7 +237,6 @@ def _window_resized_to_screen(
         x,
         y,
         zoom_metadata=_zoom_metadata,
-        resize_ratio_getter=_get_resize_ratio,
     )
 
 
@@ -1827,6 +1826,8 @@ def create_mcp_server() -> FastMCP:
             max_image_dimension,
             force_som,
             _zoom_metadata,
+            walk_gate=context.uia_walk_gate,
+            seen_popovers=context.seen_popovers,
         )
 
     # ============================================================

@@ -17,7 +17,7 @@ Two sources feed the translation, in priority order:
    metadata is recorded for this window. The cache holds the real window
    origin (which can differ from the visible crop origin on multi-monitor
    negative-coordinate or partially off-screen windows). Without zoom
-   metadata there is no compression either, so ratio is 1.0:
+   metadata there is no compression either — ratio is 1.0 by definition:
 
        (window_origin_x + x, window_origin_y + y)
 
@@ -26,9 +26,8 @@ The bug originally being fixed: the previous formula was
 origin by the resize ratio.
 
 These tests do NOT exercise any real Windows GUI; they monkeypatch the
-``ElementCache`` singleton, the ``_get_resize_ratio`` lookup and the
-``_zoom_metadata`` dict to inject known values, then assert the arithmetic
-of the helper directly.
+``_zoom_metadata`` dict and the ``ElementCache`` singleton to inject known
+values, then assert the arithmetic of the helper directly.
 """
 
 from __future__ import annotations
@@ -42,23 +41,36 @@ from computer_server.mcp_server import _window_resized_to_screen
 
 @pytest.fixture
 def fake_window(monkeypatch):
-    """Return a setter that patches the cache origin and resize ratio.
+    """Return a setter that publishes window snapshot metadata.
+
+    Most production code paths read the resized->screen translation from
+    ``_zoom_metadata`` (the snapshot recorded by the most recent
+    ``get_window_state`` call).  These tests therefore inject the origin
+    + ratio through that dict.  The element cache is also patched so the
+    fallback branch tests still work.
 
     Usage:
         fake_window(origin=(200, 100), ratio=2.0)
-        x, y = _window_resized_to_screen(pid=42, window_id=1, x=10, y=5)
+        x, y = _window_resized_to_screen(pid=1, window_id=1, x=10, y=5)
     """
 
     def _setter(origin: Tuple[int, int], ratio: float) -> None:
-        # 1. Patch the resize ratio lookup directly on the mcp_server module.
+        # 1. Publish snapshot metadata as if get_window_state just ran.
+        #    crop_origin_screen_* is what the helper consults, so the
+        #    requested ``origin`` is reused as the crop origin here.
         monkeypatch.setattr(
-            "computer_server.mcp_server._get_resize_ratio",
-            lambda pid, window_id: ratio,
+            "computer_server.mcp_server._zoom_metadata",
+            {
+                (1, 1): {
+                    "compression_ratio": ratio,
+                    "crop_origin_screen_x": origin[0],
+                    "crop_origin_screen_y": origin[1],
+                }
+            },
         )
 
-        # 2. Patch the element cache singleton's get_window_origin.
-        #    The helper does ``from ... import get_element_cache`` *inside*
-        #    the function, so we need to patch the source module attribute.
+        # 2. Patch the element cache singleton too — used by the fallback
+        #    branch when _zoom_metadata has no entry.
         class _FakeCache:
             def get_window_origin(self, pid: int, window_id: int) -> Tuple[int, int]:
                 return origin
@@ -169,16 +181,34 @@ class TestWindowResizedToScreen:
         # (0 + int(10*2), 50 + int(5*2)) = (20, 60)
         assert _window_resized_to_screen(pid=42, window_id=1, x=10, y=5) == (20, 60)
 
-    def test_fallback_to_element_cache_when_no_zoom_metadata(self, fake_window):
+    def test_fallback_to_element_cache_when_no_zoom_metadata(self, monkeypatch):
         """When _zoom_metadata has no entry for this (pid, window_id),
-        the element cache fallback path is used as before."""
-        fake_window(origin=(200, 100), ratio=1.5)
-        assert _window_resized_to_screen(pid=1, window_id=1, x=10, y=5) == (215, 107)
+        the element cache fallback path is used and ratio is 1.0 by
+        definition (no metadata means no prior resize happened)."""
+        monkeypatch.setattr("computer_server.mcp_server._zoom_metadata", {})
 
-    def test_zero_zoom_metadata_ignored(self, monkeypatch):
-        """An empty _zoom_metadata dict means no crop origin — fallback to
-        element cache even though meta={} is truthy."""
-        # _zoom_metadata has no key for (9, 9); the helper falls through.
+        class _FakeCache:
+            def get_window_origin(self, pid, window_id):
+                return (200, 100)
+
+            def get_window_origin_optional(self, pid, window_id):
+                return self.get_window_origin(pid, window_id)
+        monkeypatch.setattr(
+            "computer_server.handlers.element_cache.get_element_cache",
+            lambda: _FakeCache(),
+        )
+        # No metadata → fallback path, ratio=1.0 → simple translate.
+        assert _window_resized_to_screen(pid=1, window_id=1, x=10, y=5) == (210, 105)
+
+    def test_empty_zoom_metadata_falls_back_to_element_cache(self, monkeypatch):
+        """A populated _zoom_metadata that has no entry for (pid, window_id)
+        still falls back through to the element cache."""
+        monkeypatch.setattr(
+            "computer_server.mcp_server._zoom_metadata",
+            {(99, 99): {"compression_ratio": 5.0, "crop_origin_screen_x": 0,
+                        "crop_origin_screen_y": 0}},
+        )
+
         class _FakeCache:
             def get_window_origin(self, pid, window_id):
                 return (300, 400)
@@ -189,10 +219,7 @@ class TestWindowResizedToScreen:
             "computer_server.handlers.element_cache.get_element_cache",
             lambda: _FakeCache(),
         )
-        monkeypatch.setattr(
-            "computer_server.mcp_server._get_resize_ratio",
-            lambda pid, window_id: 1.0,
-        )
+        # (9, 9) has no metadata entry — fallback to element cache with ratio=1.0.
         assert _window_resized_to_screen(pid=9, window_id=9, x=7, y=3) == (307, 403)
 
     def test_fractional_ratio_truncates_toward_zero(self, fake_window):

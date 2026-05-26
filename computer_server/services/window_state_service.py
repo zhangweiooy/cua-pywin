@@ -188,24 +188,15 @@ class UIAWalkGate:
             self._unhealthy_until[gate_key] = time.monotonic() + self._unhealthy_cooldown_s
 
 
-_uia_walk_gate = UIAWalkGate()
-_seen_popovers: Dict[int, set[int]] = {}
-
-
-def get_uia_walk_gate() -> UIAWalkGate:
-    return _uia_walk_gate
-
-
 async def collect_uia_nodes(
     pid: int,
     window_id: int,
     query: Optional[str],
     win_origin_x: int,
     win_origin_y: int,
-    gate: Optional[UIAWalkGate] = None,
+    gate: UIAWalkGate,
 ) -> Dict[str, Any]:
     """Walk the UIA tree and return window-relative node metadata."""
-    gate = gate or get_uia_walk_gate()
     gate_key, claimed_gate, skip_reason = gate.claim(pid, window_id)
     if skip_reason is not None:
         logger.info(skip_reason)
@@ -322,8 +313,16 @@ def build_cached_elements(nodes: List[Dict[str, Any]]) -> list:
     return cached_elements
 
 
-def detect_popover_candidates(pid: int, window_id: int) -> str:
-    """Return markdown for unseen same-pid popover windows."""
+def detect_popover_candidates(
+    pid: int,
+    window_id: int,
+    seen_popovers: Dict[int, set[int]],
+) -> str:
+    """Return markdown for unseen same-pid popover windows.
+
+    ``seen_popovers`` is mutated in place to dedup across calls; pass the
+    per-server-context dict so multiple FastMCP instances don't share state.
+    """
     try:
         import sys
 
@@ -332,7 +331,7 @@ def detect_popover_candidates(pid: int, window_id: int) -> str:
         import win32gui
         import win32process
 
-        seen = _seen_popovers.setdefault(pid, set())
+        seen = seen_popovers.setdefault(pid, set())
         candidates: List[Dict[str, Any]] = []
 
         def _enum_popover(hwnd: int, _lparam: Any) -> bool:
@@ -478,11 +477,23 @@ async def get_window_state_snapshot(
     max_image_dimension: int = 1280,
     force_som: bool = False,
     zoom_metadata: Optional[Dict[Tuple[int, int], Dict[str, Any]]] = None,
+    walk_gate: Optional[UIAWalkGate] = None,
+    seen_popovers: Optional[Dict[int, set[int]]] = None,
 ) -> Dict[str, Any]:
-    """Capture screenshot, UIA nodes, optional SOM nodes, and cache metadata."""
+    """Capture screenshot, UIA nodes, optional SOM nodes, and cache metadata.
+
+    ``walk_gate`` and ``seen_popovers`` should normally be supplied from the
+    owning ``ServerContext``.  When both are omitted (e.g. single-call tests
+    that don't care about cross-call dedup), fresh instances are created.
+    """
     from PIL import Image as PILImage
 
     from computer_server.handlers.element_cache import get_element_cache
+
+    if walk_gate is None:
+        walk_gate = UIAWalkGate()
+    if seen_popovers is None:
+        seen_popovers = {}
 
     try:
         import sys
@@ -534,6 +545,7 @@ async def get_window_state_snapshot(
             query,
             geometry.window_origin_x,
             geometry.window_origin_y,
+            gate=walk_gate,
         )
         nodes: List[Dict[str, Any]] = list(uia_data["nodes"])
         tree_markdown: str = uia_data["tree_markdown"]
@@ -547,7 +559,9 @@ async def get_window_state_snapshot(
         cache.update(pid, window_id, build_cached_elements(nodes))
         cache.set_quality(pid, window_id, tree_quality)
 
-        popover_candidates_text = detect_popover_candidates(pid, window_id)
+        popover_candidates_text = detect_popover_candidates(
+            pid, window_id, seen_popovers
+        )
 
         if force_som or tree_quality in ("poor", "empty"):
             vision_data = merge_som_vision(

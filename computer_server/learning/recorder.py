@@ -226,7 +226,7 @@ class LearningRecorder:
         app_detector.check_app_switch_with_info(name, exe, self)
 
         # Check password field (guarded by timeout to avoid hung UIA provider)
-        is_secure = self._run_uia_with_timeout(
+        is_secure = self._uia_gate.run_with_timeout(
             lambda: uia.is_password_field_focused(), timeout=0.5,
         ) if uia is not None else False
         if is_secure:
@@ -263,15 +263,15 @@ class LearningRecorder:
                 ec = None
                 url = None
                 if self._keystroke_buncher.is_empty():
-                    ctx = self._run_uia_with_timeout(
+                    ctx = self._uia_gate.run_with_timeout(
                         lambda: uia.focused_element_context(), timeout=0.5,
                     ) if uia is not None else None
                     ec = ElementContext(**ctx) if ctx else None
-                    url = self._run_uia_with_timeout(
+                    url = self._uia_gate.run_with_timeout(
                         lambda: self._get_current_url(exe), timeout=0.5,
                     )
                     # Snapshot UIA value at bunch start for diff extraction
-                    last_uia_value = self._run_uia_with_timeout(
+                    last_uia_value = self._uia_gate.run_with_timeout(
                         lambda: uia.read_focused_value(), timeout=0.5,
                     ) if uia is not None else None
                     with self._lock:
@@ -319,14 +319,14 @@ class LearningRecorder:
         # UIA enrich in real-time (~1ms)
         ec = None
         if uia is not None:
-            ctx = self._run_uia_with_timeout(
+            ctx = self._uia_gate.run_with_timeout(
                 lambda: uia.enrich_click(x, y), timeout=0.75,
             )
             if ctx:
                 ec = ElementContext(**ctx)
 
         # URL detection runs on daemon thread with timeout
-        url = self._run_uia_with_timeout(
+        url = self._uia_gate.run_with_timeout(
             lambda: self._get_current_url(exe), timeout=0.5,
         )
 
@@ -400,7 +400,7 @@ class LearningRecorder:
             prev = self._last_uia_value or ""
             self._last_uia_value = None
         if uia is not None:
-            current = self._run_uia_with_timeout(
+            current = self._uia_gate.run_with_timeout(
                 lambda: uia.read_focused_value(), timeout=0.5,
             )
             if current and current.strip():
@@ -492,15 +492,6 @@ class LearningRecorder:
             pass
         return None
 
-    def _run_uia_with_timeout(self, func, timeout: float = 0.5):
-        """Run a UIA call on a daemon thread, return result or None on timeout.
-
-        Gated by a semaphore so at most one UIA call is in flight at a time.
-        If a foreground app's UIA provider is hung (holding the semaphore),
-        subsequent calls are skipped immediately — no thread accumulation.
-        """
-        return self._uia_gate.run_with_timeout(func, timeout=timeout)
-
     def _is_sensitive_context(self, uia, element_context=None) -> bool:
         """Check if the current UI context is sensitive (password field, etc.).
 
@@ -514,7 +505,7 @@ class LearningRecorder:
         Returns True if OCR / screenshots should be skipped for this context.
         """
         if uia is not None:
-            is_secure = self._run_uia_with_timeout(
+            is_secure = self._uia_gate.run_with_timeout(
                 lambda: uia.is_password_field_focused(), timeout=0.5,
             )
             if is_secure:  # Explicit True only; None (timeout) → not sensitive

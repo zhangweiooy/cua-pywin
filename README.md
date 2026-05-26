@@ -26,30 +26,45 @@ Windows AI Agent 桌面操控 MCP 服务 — 54 个计算机控制工具。
 ```
 cua-pywin/
 ├─ computer_server/          ← 主程序
-│  ├─ mcp_server.py          ← 54 MCP 工具 + 录制/回放/学习入口
-│  ├─ main.py                ← 本机 HTTP MCP 服务器
-│  ├─ cli.py                 ← CLI 入口
-│  ├─ handlers/
-│  │  ├─ windows.py          ← Windows 实现：ImageGrab + win32gui + pynput
-│  │  ├─ windows_uia.py      ← UIA COM 树遍历 (DFS, 缓存属性)
-│  │  ├─ generic.py          ← 跨平台处理器 (文件/桌面/窗口)
+│  ├─ mcp_server.py          ← 54 MCP 工具入口（薄 wrapper，业务转交 services/）
+│  ├─ main.py                ← 本机 HTTP MCP 服务器（/status + /mcp）
+│  ├─ cli.py                 ← CLI（非 localhost 需 --i-know-this-exposes-my-computer）
+│  ├─ server.py              ← uvicorn 生命周期 + 优雅退出
+│  ├─ server_context.py      ← 每实例可变状态（录制会话/学习/UIA gate/popover dedup）
+│  ├─ handlers/              ← 平台原语（OS API 一对一封装）
 │  │  ├─ base.py             ← 抽象接口 (ABCs)
-│  │  ├─ element_cache.py    ← 线程安全元素缓存 (pid, window_id)
-│  │  ├─ som_bridge.py       ← SOM OmniParser 异步桥接
-│  │  ├─ zoom_registry.py    ← 坐标缩放注册表
-│  │  └─ browser_cdp.py      ← Chrome DevTools Protocol 客户端
-│  ├─ services/              ← 共享服务：坐标、截图、窗口状态、窗口身份、OCR/UIA、回放解析
-│  ├─ recording/             ← 录制/回放子系统
-│  │  ├─ session.py          ← 录制会话 + turn 文件夹写入
-│  │  └─ replay.py           ← 轨迹回放引擎
-│  ├─ learning/              ← 学习子系统
-│  │  ├─ recorder.py         ← 学习录制器 (pynput + UIA + OCR)
+│  │  ├─ factory.py          ← HandlerFactory + Handlers dataclass
+│  │  ├─ windows.py          ← Windows: ImageGrab + win32gui + pynput
+│  │  ├─ windows_uia.py      ← UIA COM 树遍历 (DFS, 缓存属性, 直接 STA 调用)
+│  │  ├─ windows_window.py   ← Windows 前台锁绕过专用 handler
+│  │  ├─ generic.py          ← 跨平台 + CUA_FILE_ROOTS 沙箱
+│  │  ├─ element_cache.py    ← (pid, window_id) 元素缓存 + TTL + HWND 有效性
+│  │  ├─ zoom_registry.py    ← (pid, window_id) 坐标缩放注册表
+│  │  ├─ som_bridge.py       ← SOM OmniParser 桥接 + 解析器状态机
+│  │  ├─ browser_cdp.py      ← CDP 客户端（target_id 跟踪 + 2s 缓存 + 失败重试）
+│  │  ├─ control_types.py    ← UIA ↔ AX 语义角色统一映射
+│  │  ├─ screen_geometry.py  ← VirtualScreenGeometry + DPI 感知
+│  │  └─ screenshot_service.py ← 截图 resize / encode 通用工具
+│  ├─ services/              ← 应用服务层（mcp_server 的业务从这里跑）
+│  │  ├─ coordinate_service.py     ← 坐标/zoom/元素中心解析（纯函数）
+│  │  ├─ window_state_service.py   ← WindowSnapshotGeometry + UIAWalkGate +
+│  │  │                              get_window_state_snapshot + create_zoom_image
+│  │  ├─ window_identity_service.py ← build/resolve_live_window（3 级 fallback）
+│  │  ├─ replay_resolver.py        ← 回放时坐标重算 + 过期 HWND 重写
+│  │  ├─ capture_service.py        ← virtual desktop 截图（录制 + 学习共享）
+│  │  ├─ ocr_service.py            ← lazy OCRProcessor 单例
+│  │  └─ uia_service.py            ← UIACallGate（semaphore + daemon + timeout）
+│  ├─ recording/             ← 录制/回放（agent 视角）
+│  │  ├─ session.py          ← 有界 writer queue + 专用 writer 线程
+│  │  └─ replay.py           ← 轨迹回放引擎（调用 replay_resolver）
+│  ├─ learning/              ← 学习（人类视角）
+│  │  ├─ recorder.py         ← pynput hooks + uia_service + ocr_service + 敏感字段闸
 │  │  ├─ coalescer.py        ← 按键批次合并 + 滚轮累积
 │  │  ├─ platform.py         ← AppDetector / UIAEnricher / Screenshotter / VisionEnricher
-│  │  └─ session.py          ← ObservedAction / ElementContext 数据模型
+│  │  └─ session.py          ← ObservedAction / ElementContext / SECURE_FIELD
 │  └─ overlay/               ← Agent 光标覆盖层
-│     ├─ cursor.py           ← 窗口渲染 + 箭头预渲染
-│     └─ motion.py           ← Dubins 路径规划 + 弹簧动力学
+│     ├─ cursor.py           ← 单线程持有 HWND + GDI + 消息泵 + 动画循环
+│     └─ motion.py           ← Dubins 路径规划 + 弹簧动力学（Phase enum + Pose）
 ├─ som/                      ← SOM 视觉 (vendored)
 │  ├─ detect.py              ← OmniParser YOLOv8 检测
 │  ├─ ocr.py                 ← EasyOCR 中文识别
@@ -59,6 +74,8 @@ cua-pywin/
 ├─ pyproject.toml
 └─ README.md
 ```
+
+**层依赖方向**：`mcp_server → services → handlers → OS API`。`handlers` 不依赖 `services`；`recording / learning / overlay` 通过 `services` 复用截图、OCR、UIA timeout 能力，不重复实现。
 
 ### 安装
 
@@ -81,8 +98,26 @@ uv sync --index-url https://pypi.tuna.tsinghua.edu.cn/simple
 # MCP stdio 模式（Claude Code / Claude Desktop）
 python -m computer_server.mcp_server
 
-# HTTP MCP 模式（默认只监听 127.0.0.1，不再提供 legacy /ws API）
+# HTTP MCP 模式（默认只监听 127.0.0.1）
 python -m computer_server --port 8000
+
+# 若要绑定到非 localhost，必须显式确认（否则启动会被拒绝）
+python -m computer_server --host 0.0.0.0 --port 8000 \
+    --i-know-this-exposes-my-computer
+```
+
+HTTP 服务只暴露 `/status` 与 `/mcp`，legacy `/ws` 与 `/commands` 已删除；所有高权限工具仅通过 MCP 入口暴露。CORS 仅放行 `localhost / 127.0.0.1 / [::1]` origin。
+
+### 文件工具安全沙箱
+
+通过环境变量限制文件工具的可访问路径：
+
+```bash
+# 限制 computer_file_* / computer_*_directory 只能操作指定根目录（分号分隔）
+set CUA_FILE_ROOTS=D:\Documents\projects;C:\Users\me\Desktop
+
+# 禁用所有具破坏性的写/删工具（仍保留读 / list）
+set CUA_DISABLE_DANGEROUS_FILE_TOOLS=1
 ```
 
 ### Claude Code 集成
@@ -136,15 +171,21 @@ python -m computer_server --port 8000
 
 ### 关键设计
 
-**Per-window 截图（crop，非直接捕获）** — Windows `PrintWindow` 对硬件加速窗口失效。`ImageGrab.grab()` + `GetWindowRect` + PIL `crop()` 是唯一可靠路径。
+**Per-window 截图（crop，非直接捕获）** — Windows `PrintWindow` 对硬件加速窗口失效。`ImageGrab.grab()` + `GetWindowRect` + PIL `crop()` 是唯一可靠路径。多显示器负坐标 + 部分屏外通过 `WindowSnapshotGeometry` 显式区分「真实窗口原点」与「可见裁剪原点」。
 
-**UIA 集成** — `get_window_state` 调用 `walk_uia_tree(hwnd)`。UIA COM 要求 STA，在线程执行器中运行。
+**UIA 集成 + UIAWalkGate** — 直接在 STA 线程内调用 COM（不再 per-property 提交到全局线程池——那会在 UIA provider 挂死时永久泄漏线程）。`UIAWalkGate`（挂在 `ServerContext`）提供唯一超时边界：30s `wait_for + shield + done_callback`，超时时 gate 保持占用并标记 30s 不健康冷却，后续请求直接走 SOM，不再叠加 doomed walks。
 
-**树质量 + SOM 回退** — `tree_quality: rich(>50) / ok(15-50)` 跳过 SOM，`poor(<15) / empty(0)` 启用 SOM 视觉检测。
+**树质量 + SOM 回退** — `tree_quality: rich(>50) / ok(15-50)` 跳过 SOM，`poor(<15) / empty(0)` 启用 SOM 视觉检测。`uia_quality` 与 `vision_quality` 单独报告，不互相覆盖。
 
-**录制 vs 学习** — 录制是 agent 视角（MCP 工具调用回放），学习是人类视角（pynput + UIA 标注 + OCR 增强）。
+**录制 vs 学习** — 录制是 agent 视角（MCP 工具调用回放），学习是人类视角（pynput + UIA 标注 + OCR 增强）。两者通过 `capture_service / ocr_service / uia_service / window_identity_service` 共享底层能力。
 
-**学习 OCR 管道** — 录制中 UIA 读值，失败则截活动窗口。停止时 OCR 识别，全文数据存 `ocr_text`，不自动替换，留给模型分析。
+**录制写盘** — 录制 turn 文件夹通过专用 daemon writer 线程 + 有界队列写入，不与 anyio 默认 executor 竞争；队列满时丢弃并计数（`state.dropped_turns`）。
+
+**学习 OCR 管道** — 录制中 UIA 读值，失败则截活动窗口；OCR 截图前用 `_is_sensitive_context` 二级判断（UIA `IsPassword` + 元素 title/identifier 模式匹配），密码或敏感字段跳过截图落盘。停止时 OCR 识别，全文数据存 `ocr_text`，不自动替换，留给模型分析。
+
+**CDP target 跟踪** — `computer_page` 按稳定 `target_id`（CDP tab id）而非 `tab_index` 跟踪页面。`get_page_info` 返回 resolved `target_id`，调用方可用它把后续调用钉到同一 tab；失败重试时按 `target_id` 重解析，不会因 tab 顺序变化漂移到错误页面。
+
+**回放窗口解析** — `_build_window_ref` 保存 `window_id / origin / process_name / window_title / 尺寸`。回放时按以下顺序解析活窗口：(1) 原 HWND 仍有效 → 直接用；(2) 按 `process_name` 找首个可见窗口；(3) 按 `window_title` 子串匹配。click/drag/scroll 也会按 new_origin 重算坐标，不只有 `activate_window`。
 
 ### 已知限制
 
@@ -187,30 +228,46 @@ python -m py_compile computer_server/learning/*.py
 ```
 cua-pywin/
 ├─ computer_server/          ← Main package
-│  ├─ mcp_server.py          ← 54 MCP tools + recording/replay/learning entry points
-│  ├─ main.py                ← Local HTTP MCP server
-│  ├─ cli.py                 ← CLI entry point
-│  ├─ handlers/
+│  ├─ mcp_server.py          ← 54 MCP tools (thin wrappers; logic in services/)
+│  ├─ main.py                ← Local HTTP MCP server (/status + /mcp only)
+│  ├─ cli.py                 ← CLI (non-localhost requires --i-know-this-exposes-my-computer)
+│  ├─ server.py              ← uvicorn lifecycle + graceful shutdown
+│  ├─ server_context.py      ← Per-instance state (recording / learning /
+│  │                          UIA walk gate / popover dedup)
+│  ├─ handlers/              ← Platform primitives (1:1 OS API wrappers)
+│  │  ├─ base.py             ← Abstract interfaces (ABCs)
+│  │  ├─ factory.py          ← HandlerFactory + Handlers dataclass
 │  │  ├─ windows.py          ← Windows: ImageGrab + win32gui + pynput
-│  │  ├─ windows_uia.py      ← UIA COM tree walker (DFS, cached properties)
-│  │  ├─ generic.py          ← Cross-platform handlers (file, desktop, window)
-│  │  ├─ base.py             ← Abstract interfaces
-│  │  ├─ element_cache.py    ← Thread-safe element cache
-│  │  ├─ som_bridge.py       ← SOM OmniParser async bridge
-│  │  ├─ zoom_registry.py    ← Coordinate zoom registry
-│  │  └─ browser_cdp.py      ← Chrome DevTools Protocol client
-│  ├─ services/              ← Shared services: coordinates, capture, window state, window identity, OCR/UIA, replay resolution
-│  ├─ recording/             ← Recording/replay subsystem
-│  │  ├─ session.py          ← Recording session + turn folder writer
+│  │  ├─ windows_uia.py      ← UIA COM tree walker (DFS, direct STA calls)
+│  │  ├─ windows_window.py   ← Windows foreground-lock bypass
+│  │  ├─ generic.py          ← Cross-platform + CUA_FILE_ROOTS sandbox
+│  │  ├─ element_cache.py    ← (pid, window_id) cache + TTL + HWND validity
+│  │  ├─ zoom_registry.py    ← Per-(pid, window_id) zoom translation
+│  │  ├─ som_bridge.py       ← SOM OmniParser bridge + parser state machine
+│  │  ├─ browser_cdp.py      ← CDP client (target_id tracking + 2s cache)
+│  │  ├─ control_types.py    ← Unified UIA ↔ AX role mapping
+│  │  ├─ screen_geometry.py  ← VirtualScreenGeometry + DPI awareness
+│  │  └─ screenshot_service.py ← Resize / encode helpers
+│  ├─ services/              ← Application service layer
+│  │  ├─ coordinate_service.py     ← coords / zoom / element center (pure)
+│  │  ├─ window_state_service.py   ← WindowSnapshotGeometry + UIAWalkGate
+│  │  │                              + get_window_state_snapshot + create_zoom_image
+│  │  ├─ window_identity_service.py ← build/resolve_live_window (3-level)
+│  │  ├─ replay_resolver.py        ← coord rewrite + stale HWND rewrite
+│  │  ├─ capture_service.py        ← virtual-desktop mss capture
+│  │  ├─ ocr_service.py            ← lazy OCRProcessor singleton
+│  │  └─ uia_service.py            ← UIACallGate (semaphore + daemon + timeout)
+│  ├─ recording/             ← Agent-perspective recording / replay
+│  │  ├─ session.py          ← Bounded writer queue + dedicated writer thread
 │  │  └─ replay.py           ← Trajectory replay engine
-│  ├─ learning/              ← Learning subsystem
-│  │  ├─ recorder.py         ← Learning recorder (pynput + UIA + OCR)
+│  ├─ learning/              ← Human-perspective recording
+│  │  ├─ recorder.py         ← pynput hooks + uia_service + ocr_service
 │  │  ├─ coalescer.py        ← Keystroke buncher + scroll accumulator
 │  │  ├─ platform.py         ← AppDetector / UIAEnricher / Screenshotter / VisionEnricher
-│  │  └─ session.py          ← ObservedAction / ElementContext data models
+│  │  └─ session.py          ← ObservedAction / ElementContext / SECURE_FIELD
 │  └─ overlay/               ← Agent cursor overlay
-│     ├─ cursor.py           ← Window + arrow pre-renderer
-│     └─ motion.py           ← Dubins path planner + spring dynamics
+│     ├─ cursor.py           ← Single thread owns HWND + GDI + msg pump
+│     └─ motion.py           ← Dubins planner + spring (Phase enum + Pose)
 ├─ som/                      ← SOM vision (vendored)
 │  ├─ detect.py              ← OmniParser YOLOv8 detection
 │  ├─ ocr.py                 ← EasyOCR Chinese/English
@@ -220,6 +277,8 @@ cua-pywin/
 ├─ pyproject.toml
 └─ README.md
 ```
+
+**Layer direction**: `mcp_server → services → handlers → OS APIs`. `handlers` never imports `services`. `recording`, `learning`, and `overlay` share capture / OCR / UIA-timeout behaviour through `services` rather than duplicating it.
 
 ### Installation
 
@@ -242,8 +301,27 @@ First import loads EasyOCR models (~30s). Subsequent starts are instant.
 # MCP stdio mode (Claude Code / Claude Desktop)
 python -m computer_server.mcp_server
 
-# HTTP MCP mode (binds to 127.0.0.1 by default; legacy /ws API removed)
+# HTTP MCP mode (binds 127.0.0.1 by default)
 python -m computer_server --port 8000
+
+# Binding to a non-localhost host requires explicit consent — without it
+# the server refuses to start.
+python -m computer_server --host 0.0.0.0 --port 8000 \
+    --i-know-this-exposes-my-computer
+```
+
+The HTTP server exposes only `/status` and `/mcp`; the legacy `/ws` and `/commands` WebSocket APIs have been removed. All high-privilege control flows through the MCP tool registry. CORS only allows `localhost / 127.0.0.1 / [::1]` origins.
+
+### File-tool sandbox
+
+Restrict the file-system tools through environment variables:
+
+```bash
+# Limit computer_file_* / computer_*_directory to specific roots (pathsep-separated)
+set CUA_FILE_ROOTS=D:\Documents\projects;C:\Users\me\Desktop
+
+# Disable destructive write / delete tools (read / list still allowed)
+set CUA_DISABLE_DANGEROUS_FILE_TOOLS=1
 ```
 
 ### Claude Code Integration
@@ -297,15 +375,21 @@ Click coordinate pipeline: `element_index → cached element center → +window 
 
 ### Key Design Decisions
 
-**Per-window screenshot via crop** — `PrintWindow` fails on hardware-accelerated windows. `ImageGrab.grab()` + `GetWindowRect` + PIL `crop()` is the only reliable path.
+**Per-window screenshot via crop** — `PrintWindow` fails on hardware-accelerated windows. `ImageGrab.grab()` + `GetWindowRect` + PIL `crop()` is the only reliable path. Multi-monitor negative coordinates and partially-offscreen windows are handled by `WindowSnapshotGeometry`, which explicitly separates the real window origin from the visible crop origin.
 
-**UIA integration** — `get_window_state` calls `walk_uia_tree(hwnd)`. UIA COM requires STA, runs in thread executor.
+**UIA integration + UIAWalkGate** — COM is called directly inside its STA thread (the previous design submitted each property call to a shared executor and leaked threads when the UIA provider hung). `UIAWalkGate` (owned by `ServerContext`) is the sole timeout boundary: 30s `wait_for + shield + done_callback`. On timeout the gate stays held and the key is marked unhealthy for 30s, so fresh requests fall straight through to SOM instead of stacking more doomed walks.
 
-**Tree quality + SOM fallback** — `rich(>50) / ok(15-50)` skip SOM; `poor(<15) / empty(0)` enable SOM vision.
+**Tree quality + SOM fallback** — `rich(>50) / ok(15-50)` skip SOM; `poor(<15) / empty(0)` enable SOM vision. `uia_quality` and `vision_quality` are reported separately and do not overwrite each other.
 
-**Recording vs Learning** — Recording is agent-perspective (MCP tool replay); Learning is human-perspective (pynput + UIA + OCR enrichment).
+**Recording vs Learning** — Recording is agent-perspective (MCP tool replay); Learning is human-perspective (pynput + UIA + OCR enrichment). The two share capture / OCR / UIA-timeout / window-identity through `services/` rather than duplicating logic.
 
-**Learning OCR pipeline** — UIA value probe at record time; active-window screenshot capture on failure. At stop, OCR produces full `ocr_text` with bbox+confidence. Model decides, no auto-replacement.
+**Recording disk writes** — Turn-folder writes go through a dedicated daemon writer thread + bounded queue so they don't compete with the anyio default executor; full queue drops with a counter in `state.dropped_turns`.
+
+**Learning OCR pipeline** — UIA value probe at record time; active-window screenshot on failure. Before any OCR screenshot lands on disk, `_is_sensitive_context` gates it (UIA `IsPassword` + element title/identifier pattern match) so password / sensitive fields are skipped. At stop, OCR produces full `ocr_text` with bbox+confidence. Model decides, no auto-replacement.
+
+**CDP target tracking** — `computer_page` tracks pages by stable `target_id` (CDP tab id) rather than `tab_index`. `get_page_info` returns the resolved `target_id` so callers can pin subsequent calls to the same tab; retries re-resolve by `target_id`, never drifting to the wrong page when tab order changes.
+
+**Replay window resolution** — `_build_window_ref` stores `window_id / origin / process_name / window_title / size`. At replay time the live window is resolved in this order: (1) original HWND if still valid, (2) first visible window matching `process_name`, (3) substring match on `window_title`. click / drag / scroll also rewrite coordinates against the new origin — not just `activate_window`.
 
 ### Known Limitations
 
