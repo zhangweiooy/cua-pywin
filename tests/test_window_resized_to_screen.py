@@ -3,21 +3,32 @@
 The helper converts ``(x, y)`` from the **resized window screenshot** that
 ``computer_get_window_state`` returns back into absolute screen coordinates.
 
-The bug being fixed: the previous formula was
+Two sources feed the translation, in priority order:
 
-    int((origin_x + x) * ratio)
+1. ``_zoom_metadata[(pid, window_id)]`` — authoritative. ``get_window_state``
+   stores ``crop_origin_screen_{x,y}`` (the visible crop's top-left in
+   screen space) and ``compression_ratio`` (the resize factor applied after
+   cropping). When present, the screen point is
 
-which incorrectly multiplied the window origin by the resize ratio. The
-correct formula is
+       (crop_origin_screen_x + int(x * ratio),
+        crop_origin_screen_y + int(y * ratio))
 
-    origin_x + int(x * ratio)
+2. ``ElementCache.get_window_origin_optional`` — fallback when no zoom
+   metadata is recorded for this window. The cache holds the real window
+   origin (which can differ from the visible crop origin on multi-monitor
+   negative-coordinate or partially off-screen windows). Without zoom
+   metadata there is no compression either, so ratio is 1.0:
 
-because the screenshot is cropped to the window first (origin already in
-screen space) and only the cropped region is then resized.
+       (window_origin_x + x, window_origin_y + y)
+
+The bug originally being fixed: the previous formula was
+``int((origin_x + x) * ratio)`` which incorrectly multiplied the window
+origin by the resize ratio.
 
 These tests do NOT exercise any real Windows GUI; they monkeypatch the
-``ElementCache`` singleton and the ``_get_resize_ratio`` lookup to inject
-known values, then assert the arithmetic of the helper directly.
+``ElementCache`` singleton, the ``_get_resize_ratio`` lookup and the
+``_zoom_metadata`` dict to inject known values, then assert the arithmetic
+of the helper directly.
 """
 
 from __future__ import annotations

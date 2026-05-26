@@ -315,6 +315,9 @@ def _window_resized_to_screen(
 
     # Fallback: ElementCache stores the real window origin (may differ from
     # visible crop origin for off-screen / negative-coordinate windows).
+    # _get_resize_ratio is called separately so test fixtures and any future
+    # caller that supplies a ratio without populating _zoom_metadata still
+    # work; today it always returns 1.0 on this branch.
     from computer_server.handlers.element_cache import get_element_cache
 
     origin = get_element_cache().get_window_origin_optional(pid, window_id)

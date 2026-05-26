@@ -74,6 +74,8 @@
 
 - [ ] `computer_server/recording/session.py:21`、`computer_server/learning/recorder.py:611` — Recording 与 Learning 不应合并，但底层能力重复 | 现状：两套系统分别做截图、OCR、UIA、窗口上下文 | 风险：多显示器、IME、隐私修复需要改两遍 | 修复方案：保留两个 recorder；共享 `capture_service`、`uia_service`、`ocr_service`、`window_identity_service`。
 
+- [ ] `computer_server/handlers/browser_cdp.py:119`、`computer_server/handlers/browser_cdp.py:160`、`computer_server/mcp_server.py:2338` — CDP 按 `tab_index` 而不是 `target_id` 跟踪 tab | 现状：`evaluate / query_dom / get_page_text / get_page_info` 全部接收 `tab_index`；首次 discover 后用 `targets[tab_index]` 拿 ws_url，命令失败时 `force_refresh` 重新 discover 再按同一 `tab_index` 取 target | 风险：旧 tab 关闭或顺序变化时，`tab_index` 漂移到不同 tab，retry 可能在错误的页面执行 JS 或读 DOM；多窗口/多 profile 浏览器尤其敏感 | 修复方案：在 caller 调用前用 `target_id`（CDP 的 `id` 字段）锁定 tab，CDP client 内部缓存 `target_id → ws_url`；retry 时按 `target_id` 重新解析而不是按 index；保留 `tab_index` 仅作为初次查找的便捷参数。
+
 - [√] `computer_server/mcp_server.py:610`、`computer_server/handlers/windows.py:661` — screenshot 大小控制分散 | 现状：automation handler 产 base64，MCP 再 decode/resize/re-encode；window_state 再存文件 | 风险：CPU/内存额外消耗，截图路径难测 | 修复方案：集中 screenshot service，支持直接返回 PIL/image bytes/file path，并携带 geometry metadata。
 
 - [√] `computer_server/mcp_server.py:2445`、`computer_server/mcp_server.py:2578` — recording/learning 单例生命周期挂在函数属性或模块全局 | 现状：recording session 是 module global，learning recorder 存在 `computer_learn_start._recorder` | 风险：多 FastMCP 实例、HTTP+stdio 并存或测试并发时状态污染 | 修复方案：引入 `ServerContext`，所有 session/registry/cache 挂在 context 上。

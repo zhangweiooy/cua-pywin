@@ -248,7 +248,6 @@ async def detect(
     Returns None if SOM is not available or if detection fails; never raises
     to the caller.
     """
-    global _parser_state
     warnings.warn(
         "som_bridge.detect() is deprecated for MCP handlers; use detect_sync() "
         "after warm_up() has started.",
@@ -266,7 +265,7 @@ async def detect(
             if _parser_state == "failed":
                 return VisionResult(elements=[], metadata={"status": "failed", "failure": _parser_failure})
             if _parser_state == "idle":
-                _parser_state = "loading"
+                _set_parser_state("loading")
         parser = _get_parser()
     except Exception as exc:
         _set_parser_state("failed", str(exc))
@@ -331,7 +330,6 @@ def detect_sync(
     runs on the calling thread.  Use this from async handlers to keep
     heavy ML imports off the event-loop thread.
     """
-    global _parser_state
     if not is_available():
         logger.warning("SOM detect_sync: not available")
         return None
@@ -344,7 +342,7 @@ def detect_sync(
             if _parser_state == "failed":
                 return VisionResult(elements=[], metadata={"status": "failed", "failure": _parser_failure})
             if _parser_state == "idle":
-                _parser_state = "loading"
+                _set_parser_state("loading")
         parser = _get_parser()
     except Exception as exc:
         _set_parser_state("failed", str(exc))
