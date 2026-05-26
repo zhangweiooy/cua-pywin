@@ -38,6 +38,7 @@ cua-pywin/
 │  │  ├─ som_bridge.py       ← SOM OmniParser 异步桥接
 │  │  ├─ zoom_registry.py    ← 坐标缩放注册表
 │  │  └─ browser_cdp.py      ← Chrome DevTools Protocol 客户端
+│  ├─ services/              ← 共享服务：坐标、截图、窗口状态、窗口身份、OCR/UIA、回放解析
 │  ├─ recording/             ← 录制/回放子系统
 │  │  ├─ session.py          ← 录制会话 + turn 文件夹写入
 │  │  └─ replay.py           ← 轨迹回放引擎
@@ -198,6 +199,7 @@ cua-pywin/
 │  │  ├─ som_bridge.py       ← SOM OmniParser async bridge
 │  │  ├─ zoom_registry.py    ← Coordinate zoom registry
 │  │  └─ browser_cdp.py      ← Chrome DevTools Protocol client
+│  ├─ services/              ← Shared services: coordinates, capture, window state, window identity, OCR/UIA, replay resolution
 │  ├─ recording/             ← Recording/replay subsystem
 │  │  ├─ session.py          ← Recording session + turn folder writer
 │  │  └─ replay.py           ← Trajectory replay engine

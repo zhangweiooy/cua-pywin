@@ -116,20 +116,46 @@ class CDPClient:
         except Exception as e:
             return {"error": f"CDP WebSocket error: {str(e)}"}
 
+    async def _resolve_target(
+        self,
+        port: int,
+        tab_index: int = 0,
+        host: str = "localhost",
+        target_id: Optional[str] = None,
+        force_refresh: bool = False,
+    ) -> Optional[Dict[str, Any]]:
+        """Resolve a page target by stable target id or initial tab index."""
+        targets = await self.discover(port, host, force_refresh=force_refresh)
+        if not targets:
+            return None
+        if target_id:
+            for target in targets:
+                if target.get("id") == target_id:
+                    return target
+            return None
+        if tab_index >= len(targets):
+            return None
+        return targets[tab_index]
+
     async def _get_ws_url(
         self,
         port: int,
         tab_index: int = 0,
         host: str = "localhost",
+        target_id: Optional[str] = None,
         force_refresh: bool = False,
-    ) -> Optional[str]:
-        """Get WebSocket URL for a specific tab."""
-        targets = await self.discover(port, host, force_refresh=force_refresh)
-        if not targets:
-            return None
-        if tab_index >= len(targets):
-            return None
-        return targets[tab_index].get("webSocketDebuggerUrl")
+    ) -> tuple[Optional[str], Optional[Dict[str, Any]]]:
+        """Get WebSocket URL and metadata for a specific page target."""
+        target = await self._resolve_target(
+            port,
+            tab_index=tab_index,
+            host=host,
+            target_id=target_id,
+            force_refresh=force_refresh,
+        )
+        if not target:
+            return None, None
+        return target.get("webSocketDebuggerUrl"), target
 
     async def evaluate(
         self,
@@ -137,18 +163,26 @@ class CDPClient:
         expression: str,
         tab_index: int = 0,
         host: str = "localhost",
+        target_id: Optional[str] = None,
     ) -> Dict[str, Any]:
         """Execute JavaScript in the specified tab.
 
         Returns:
             {result: <JS return value>, error: Optional[str]}
         """
-        ws_url = await self._get_ws_url(port, tab_index, host)
+        ws_url, target = await self._get_ws_url(
+            port,
+            tab_index=tab_index,
+            host=host,
+            target_id=target_id,
+        )
         if not ws_url:
+            selector = f"target_id {target_id!r}" if target_id else f"tab index {tab_index}"
             return {
                 "result": None,
-                "error": f"No page target found at port {port} (tab index {tab_index})",
+                "error": f"No page target found at port {port} ({selector})",
             }
+        locked_target_id = target.get("id") if target else target_id
 
         params = {
             "expression": expression,
@@ -157,19 +191,33 @@ class CDPClient:
         }
         response = await self._send_command(ws_url, "Runtime.evaluate", params)
         if isinstance(response.get("error"), str):
-            retry_ws_url = await self._get_ws_url(
-                port, tab_index, host, force_refresh=True
+            retry_ws_url, retry_target = await self._get_ws_url(
+                port,
+                tab_index=tab_index,
+                host=host,
+                target_id=locked_target_id,
+                force_refresh=True,
             )
             if retry_ws_url and retry_ws_url != ws_url:
+                if retry_target is not None:
+                    locked_target_id = retry_target.get("id", locked_target_id)
                 response = await self._send_command(
                     retry_ws_url, "Runtime.evaluate", params
                 )
 
         if "error" in response and isinstance(response["error"], str):
-            return {"result": None, "error": response["error"]}
+            return {
+                "result": None,
+                "error": response["error"],
+                "target_id": locked_target_id,
+            }
         if "error" in response and isinstance(response["error"], dict):
             err_dict = response["error"]
-            return {"result": None, "error": err_dict.get("message", str(err_dict))}
+            return {
+                "result": None,
+                "error": err_dict.get("message", str(err_dict)),
+                "target_id": locked_target_id,
+            }
 
         result_obj = response.get("result", {})
         if "exceptionDetails" in result_obj:
@@ -177,16 +225,36 @@ class CDPClient:
             text = exc.get("text", "") or exc.get("exception", {}).get(
                 "description", "Unknown error"
             )
-            return {"result": None, "error": f"JavaScript error: {text}"}
+            return {
+                "result": None,
+                "error": f"JavaScript error: {text}",
+                "target_id": locked_target_id,
+            }
 
         value = result_obj.get("result", {}).get("value")
-        return {"result": value, "error": None}
+        return {
+            "result": value,
+            "error": None,
+            "target_id": locked_target_id,
+            "target_url": target.get("url") if target else None,
+            "target_title": target.get("title") if target else None,
+        }
 
     async def get_page_text(
-        self, port: int, tab_index: int = 0, host: str = "localhost"
+        self,
+        port: int,
+        tab_index: int = 0,
+        host: str = "localhost",
+        target_id: Optional[str] = None,
     ) -> str:
         """Get the text content of the page (document.body.innerText)."""
-        result = await self.evaluate(port, "document.body.innerText", tab_index, host)
+        result = await self.evaluate(
+            port,
+            "document.body.innerText",
+            tab_index=tab_index,
+            host=host,
+            target_id=target_id,
+        )
         if result.get("error"):
             return f"Error: {result['error']}"
         return result.get("result", "") or ""
@@ -199,18 +267,20 @@ class CDPClient:
         tab_index: int = 0,
         host: str = "localhost",
         allow_html: bool = False,
-    ) -> List[Dict[str, Any]]:
+        target_id: Optional[str] = None,
+    ) -> Dict[str, Any]:
         """Query DOM elements by CSS selector and extract attributes.
 
         Args:
             port: Chrome debugging port.
             selector: CSS selector.
             attributes: Attributes to extract (default: ["textContent", "href", "id", "class"]).
-            tab_index: Tab index.
+            tab_index: Initial tab index when target_id is not provided.
             host: Host address.
+            target_id: Stable CDP target id. Prefer this after get_page_info.
 
         Returns:
-            List of element dicts with requested attributes.
+            Dict with elements, error, and target_id.
         """
         if attributes is None:
             attributes = ["textContent", "href", "id", "class"]
@@ -241,13 +311,31 @@ class CDPClient:
             "})()"
         )
 
-        result = await self.evaluate(port, js, tab_index, host)
+        result = await self.evaluate(
+            port,
+            js,
+            tab_index=tab_index,
+            host=host,
+            target_id=target_id,
+        )
         if result.get("error"):
-            return []
-        return result.get("result", []) or []
+            return {
+                "elements": [],
+                "error": result["error"],
+                "target_id": result.get("target_id"),
+            }
+        return {
+            "elements": result.get("result", []) or [],
+            "error": None,
+            "target_id": result.get("target_id"),
+        }
 
     async def get_page_info(
-        self, port: int, tab_index: int = 0, host: str = "localhost"
+        self,
+        port: int,
+        tab_index: int = 0,
+        host: str = "localhost",
+        target_id: Optional[str] = None,
     ) -> Dict[str, Any]:
         """Get basic page information (title, URL, domain)."""
         js = (
@@ -259,10 +347,24 @@ class CDPClient:
             "  };"
             "})()"
         )
-        result = await self.evaluate(port, js, tab_index, host)
+        result = await self.evaluate(
+            port,
+            js,
+            tab_index=tab_index,
+            host=host,
+            target_id=target_id,
+        )
         if result.get("error"):
-            return {"title": "", "url": "", "domain": "", "error": result["error"]}
-        return result.get("result", {}) or {}
+            return {
+                "title": "",
+                "url": "",
+                "domain": "",
+                "target_id": result.get("target_id"),
+                "error": result["error"],
+            }
+        info = result.get("result", {}) or {}
+        info["target_id"] = result.get("target_id")
+        return info
 
 
 # Module-level singleton

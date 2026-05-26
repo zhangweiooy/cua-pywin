@@ -46,7 +46,7 @@
 
 ## P2 - 建议改进
 
-- [ ] `computer_server/mcp_server.py:491`、`computer_server/mcp_server.py:1835`、`computer_server/mcp_server.py:2461` — `mcp_server.py` 过度承担 application service 职责 | 现状：工具注册、坐标转换、window state、SOM、replay、learning 入口都集中在单文件 | 风险：修改任何能力都容易影响其他工具，测试粒度过大 | 修复方案：拆出 `window_state_service.py`、`coordinate_service.py`、`replay_resolver.py`；`mcp_server.py` 只做 schema/参数校验/调用服务。
+- [√] `computer_server/mcp_server.py:491`、`computer_server/mcp_server.py:1835`、`computer_server/mcp_server.py:2461` — `mcp_server.py` 过度承担 application service 职责 | 现状：已拆出 `coordinate_service.py`、`window_state_service.py`、`replay_resolver.py`、`window_identity_service.py`、`capture_service.py`、`ocr_service.py`、`uia_service.py`；`computer_get_window_state`、`computer_zoom` 的 UIA gate、SOM 合并、截图输出、zoom 裁剪与窗口几何已迁入服务层 | 风险：工具注册层与 application service 职责已明显分离；后续新增工具仍需保持薄 wrapper 约束 | 修复方案：`mcp_server.py` 保留 schema/参数校验/调用服务，复杂业务继续进入 `services/`。
 
 - [√] `computer_server/handlers/factory.py:23`、`computer_server/mcp_server.py:126`、`computer_server/mcp_server.py:1321` — `_get_handlers()` 返回 5 元组，调用点靠位置解构 | 现状：大量 `_, automation_handler, _, _, _` 和 index-style 解构 | 风险：新增 handler 或调整顺序会产生隐蔽错误 | 修复方案：改为 `@dataclass Handlers(accessibility, automation, file, desktop, window)`。
 
@@ -72,9 +72,9 @@
 
 - [√] `computer_server/handlers/windows_uia.py:208`、`computer_server/learning/platform.py:554` — UIA ControlType 映射维护两套 | 现状：`windows_uia` 映射为 Button/Edit 等，learning 映射为 AXButton/AXTextField 等 | 风险：同一控件在 MCP 与 learning 输出语义不一致 | 修复方案：建立统一 control type normalization 模块，同时输出 `uia_control_type` 与 `semantic_role`。
 
-- [ ] `computer_server/recording/session.py:21`、`computer_server/learning/recorder.py:611` — Recording 与 Learning 不应合并，但底层能力重复 | 现状：两套系统分别做截图、OCR、UIA、窗口上下文 | 风险：多显示器、IME、隐私修复需要改两遍 | 修复方案：保留两个 recorder；共享 `capture_service`、`uia_service`、`ocr_service`、`window_identity_service`。
+- [√] `computer_server/recording/session.py:21`、`computer_server/learning/recorder.py:611` — Recording 与 Learning 不应合并，但底层能力重复 | 现状：Recording 截图 hook 与 Learning `Screenshotter` 共用 `capture_service`；replay/window_ref 共用 `window_identity_service`；Learning OCR 初始化/PNG OCR 走 `ocr_service`；Learning UIA timeout gate 走 `uia_service` | 风险：两套 recorder 保持职责分离，底层截图、OCR、UIA timeout、窗口身份基础能力已服务化 | 修复方案：后续隐私策略或 OCR 引擎替换应在 service 层改动，再由 recorder 调用。
 
-- [ ] `computer_server/handlers/browser_cdp.py:119`、`computer_server/handlers/browser_cdp.py:160`、`computer_server/mcp_server.py:2338` — CDP 按 `tab_index` 而不是 `target_id` 跟踪 tab | 现状：`evaluate / query_dom / get_page_text / get_page_info` 全部接收 `tab_index`；首次 discover 后用 `targets[tab_index]` 拿 ws_url，命令失败时 `force_refresh` 重新 discover 再按同一 `tab_index` 取 target | 风险：旧 tab 关闭或顺序变化时，`tab_index` 漂移到不同 tab，retry 可能在错误的页面执行 JS 或读 DOM；多窗口/多 profile 浏览器尤其敏感 | 修复方案：在 caller 调用前用 `target_id`（CDP 的 `id` 字段）锁定 tab，CDP client 内部缓存 `target_id → ws_url`；retry 时按 `target_id` 重新解析而不是按 index；保留 `tab_index` 仅作为初次查找的便捷参数。
+- [√] `computer_server/handlers/browser_cdp.py:119`、`computer_server/handlers/browser_cdp.py:160`、`computer_server/mcp_server.py:2338` — CDP 按 `tab_index` 而不是 `target_id` 跟踪 tab | 现状：`computer_page` 新增可选 `target_id`，`get_page_info` 返回 resolved `target_id`；`CDPClient.evaluate/query_dom/get_page_info` 支持按 stable target id 解析，首次仅用 `tab_index` 选择 tab，retry 时锁定首次解析出的同一 `target_id` | 风险：tab 顺序变化导致 retry 漂移到错误页面的问题已处理；如果 target 已关闭，则返回明确错误而不是回退到同 index 新 tab | 修复方案：保留 `tab_index` 作为首次选择的兼容入口，后续调用优先传 `target_id`。
 
 - [√] `computer_server/mcp_server.py:610`、`computer_server/handlers/windows.py:661` — screenshot 大小控制分散 | 现状：automation handler 产 base64，MCP 再 decode/resize/re-encode；window_state 再存文件 | 风险：CPU/内存额外消耗，截图路径难测 | 修复方案：集中 screenshot service，支持直接返回 PIL/image bytes/file path，并携带 geometry metadata。
 
@@ -90,19 +90,19 @@
 
 - 代码质量：7/10
 
-项目的核心方向正确：Windows + 中文 UI 优先、UIA 优先/SOM 回退、MCP recording 与 human learning 分离、对 FastMCP outputSchema bug 和 C-extension import deadlock 有明确工程经验沉淀。实现已经能覆盖大量真实 Windows 自动化场景；默认 HTTP 暴露和坐标几何风险已处理，当前主要短板是 `mcp_server.py` 仍承担过多 application service 职责，以及 Recording/Learning 底层能力还有重复。
+项目的核心方向正确：Windows + 中文 UI 优先、UIA 优先/SOM 回退、MCP recording 与 human learning 分离、对 FastMCP outputSchema bug 和 C-extension import deadlock 有明确工程经验沉淀。实现已经能覆盖大量真实 Windows 自动化场景；默认 HTTP 暴露、坐标几何、CDP tab identity、window-state 服务化与 Recording/Learning 底层复用风险均已处理。后续重点转为真实 Windows 场景回归、性能观测和服务边界持续保持。
 
-### Top 3 致命风险
+### 剩余高风险关注
 
-1. 非 localhost 绑定 `/mcp` 仍是高权限桌面控制入口，必须保持显式确认和清晰文档。
-2. `mcp_server.py` 聚合工具注册、window state、坐标转换、replay、learning，后续修改仍容易产生跨能力回归。
-3. Recording/Learning 共用的截图、OCR、UIA、窗口识别能力未完全服务化，多显示器和隐私修复仍可能需要重复维护。
+1. 非 localhost 绑定 `/mcp` 仍是高权限桌面控制入口；当前已通过默认 localhost 与 CLI 显式确认降低误暴露风险，但该边界必须持续保持。
+2. OCR/SOM 模型加载和 UIA provider 挂死仍是主要运行时稳定性风险；已有 warm-up、timeout/gate 和服务化隔离，但仍需要真实 Windows 长跑观察。
+3. Recording/Learning 的截图、OCR、UIA timeout、窗口身份能力已服务化；真实 IME、隐私窗口、多显示器场景仍需要端到端回归覆盖。
 
-### Top 3 性能瓶颈
+### 剩余性能瓶颈
 
-1. `get_window_state` 串行执行截图、UIA tree walk、SOM detect、JPEG 写盘，tail latency 高。
-2. Recording 每个动作后截图 + PNG/click image 写盘，会显著拖慢连续操作。
-3. CDP 每次 discover + 新建 WebSocket，且 screenshot 反复 base64 encode/decode/re-encode，频繁调用时开销大。
+1. `get_window_state` 仍串行执行截图、UIA tree walk、必要时 SOM detect、JPEG 写盘；服务化后更易测试，但 tail latency 仍取决于目标窗口和模型耗时。
+2. Recording 磁盘写入已改为独立 bounded writer queue，但启用逐动作截图时，动作后的截图采集本身仍会增加延迟。
+3. CDP 已缓存 target discover 并支持 `target_id` 锁定；但每条命令仍新建 WebSocket， 高频页面读取仍有连接开销。
 
 ### 建议优先测的 3 个模块
 

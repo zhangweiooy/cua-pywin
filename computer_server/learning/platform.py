@@ -741,25 +741,9 @@ class Screenshotter:
 
     def capture_full_with_origin(self) -> tuple[bytes | None, int | None, int | None]:
         """Capture the full virtual desktop and include its screen origin."""
-        if not IS_WINDOWS:
-            return (None, None, None)
-        try:
-            import mss
-            with mss.mss() as sct:
-                monitor = sct.monitors[0]
-                screenshot = sct.grab(monitor)
-                import mss.tools
-                return (
-                    mss.tools.to_png(screenshot.rgb, screenshot.size),
-                    int(monitor["left"]),
-                    int(monitor["top"]),
-                )
-        except ImportError:
-            logger.warning("mss not installed — screenshots unavailable")
-            return (None, None, None)
-        except Exception:
-            logger.debug("Screenshot capture failed", exc_info=True)
-            return (None, None, None)
+        from computer_server.services.capture_service import capture_full_with_origin
+
+        return capture_full_with_origin()
 
     def capture_full(self) -> bytes | None:
         """Capture the entire virtual desktop (all monitors) as PNG bytes."""
@@ -771,24 +755,9 @@ class Screenshotter:
 
         Returns (png_bytes, origin_x, origin_y) or (None, None, None) on failure.
         """
-        if not IS_WINDOWS:
-            return (None, None, None)
-        try:
-            import win32gui
-            hwnd = win32gui.GetForegroundWindow()
-            if not hwnd:
-                return (None, None, None)
-            rect = win32gui.GetWindowRect(hwnd)
-            if not rect:
-                return (None, None, None)
-            left, top, right, bottom = rect
-            if right <= left or bottom <= top:
-                return (None, None, None)
-            png = self.capture_region(left, top, right - left, bottom - top)
-            return (png, left, top)
-        except Exception:
-            logger.debug("Active window capture failed", exc_info=True)
-            return (None, None, None)
+        from computer_server.services.capture_service import capture_active_window
+
+        return capture_active_window()
 
     def capture_region(self, x: int, y: int, width: int, height: int) -> bytes | None:
         png, _x, _y = self.capture_region_with_origin(x, y, width, height)
@@ -803,41 +772,9 @@ class Screenshotter:
         Regions that lie entirely outside the virtual desktop (or have
         non-positive clamped dimensions) return None.
         """
-        if not IS_WINDOWS:
-            return (None, None, None)
-        try:
-            import mss
-            with mss.mss() as sct:
-                vd = sct.monitors[0]
-                vd_left = vd["left"]
-                vd_top = vd["top"]
-                vd_right = vd_left + vd["width"]
-                vd_bottom = vd_top + vd["height"]
+        from computer_server.services.capture_service import capture_region_with_origin
 
-                clamped_left = max(x, vd_left)
-                clamped_top = max(y, vd_top)
-                clamped_right = min(x + width, vd_right)
-                clamped_bottom = min(y + height, vd_bottom)
-                clamped_width = clamped_right - clamped_left
-                clamped_height = clamped_bottom - clamped_top
-
-                if clamped_width <= 0 or clamped_height <= 0:
-                    return (None, None, None)
-
-                region = {"left": clamped_left, "top": clamped_top,
-                          "width": clamped_width, "height": clamped_height}
-                screenshot = sct.grab(region)
-                import mss.tools
-                return (
-                    mss.tools.to_png(screenshot.rgb, screenshot.size),
-                    clamped_left,
-                    clamped_top,
-                )
-        except ImportError:
-            return (None, None, None)
-        except Exception:
-            logger.debug("Region capture failed", exc_info=True)
-            return (None, None, None)
+        return capture_region_with_origin(x, y, width, height)
 
 
 # ============================================================
@@ -860,35 +797,20 @@ class VisionEnricher:
     """
 
     def __init__(self):
-        self._ocr = None  # Lazy-loaded OCRProcessor
+        from computer_server.services.ocr_service import get_ocr_service
+
+        self._ocr_service = get_ocr_service()
 
     def _ensure_ocr(self):
-        if self._ocr is None:
-            try:
-                from som.ocr import OCRProcessor
-                self._ocr = OCRProcessor(languages=["ch_sim", "en"])
-            except ImportError:
-                logger.warning("som OCR not available — vision enrichment disabled")
-                return False
-            except Exception:
-                logger.warning("Failed to initialize OCR — vision enrichment disabled")
-                return False
-        return True
+        return self._ocr_service.ensure_ready()
 
     def _ocr_image(self, png_bytes: bytes, timeout_seconds: float = 3) -> list[dict] | None:
         """OCR a single PNG image. Returns [{text, bbox, confidence}] or None."""
-        try:
-            from PIL import Image
-            from io import BytesIO
-            img = Image.open(BytesIO(png_bytes))
-        except Exception:
-            return None
-        try:
-            return self._ocr.detect_text(
-                img, confidence_threshold=0.4, timeout_seconds=timeout_seconds,
-            )
-        except Exception:
-            return None
+        return self._ocr_service.detect_png(
+            png_bytes,
+            confidence_threshold=0.4,
+            timeout_seconds=timeout_seconds,
+        )
 
     def enrich_clicks(self, actions: list) -> None:
         """Enrich click actions with OCR vision labels.

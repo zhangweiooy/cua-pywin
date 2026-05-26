@@ -87,61 +87,11 @@ _actual_height: Optional[int] = None
 # Used by computer_zoom to map resized-image coordinates to full-resolution
 _zoom_metadata: Dict[Tuple[int, int], Dict[str, Any]] = {}
 
-# Popover dedup: per-pid set of seen popover hwnds
-_seen_popovers: Dict[int, set] = {}
-
-# UIA walk gate state — prevents concurrent walks of the same window from
-# stacking up executor threads when a target window is hung.  Two structures:
-#
-# _uia_inflight: keys (pid, window_id) currently being walked.  A second call
-#   on the same key is rejected immediately and falls through to SOM fallback.
-#   The key is released ONLY when the underlying executor future actually
-#   completes — never on wait_for timeout, because the COM call is still
-#   running in a thread we cannot safely kill.  Releasing eagerly would let
-#   the next request spawn another doomed walk and leak more executor threads.
-# _uia_unhealthy_until: monotonic-time deadline before which the (pid, window_id)
-#   key is treated as "known hung".  Set after a wait_for timeout as a
-#   secondary defence (the in-flight set is the primary one); cleared
-#   automatically when the deadline passes.
-#
-# Both are guarded by _uia_gate_lock (small, fast critical sections only —
-# never held across await points or COM calls).
-import threading as _threading
-import time as _time
-_uia_gate_lock = _threading.Lock()
-_uia_inflight: set = set()
-_uia_unhealthy_until: Dict[Tuple[int, int], float] = {}
-_UIA_UNHEALTHY_COOLDOWN_S = 30.0
-
-
-def _release_uia_inflight(gate_key: Tuple[int, int]) -> None:
-    """Drop ``gate_key`` from the in-flight set under the gate lock.
-
-    Used as an executor-future done callback so the slot is released only
-    after the underlying COM walk thread actually returns — even if the
-    awaiting coroutine timed out and gave up on the result.
-    """
-    with _uia_gate_lock:
-        _uia_inflight.discard(gate_key)
-
-
-def _classify_tree_quality(count: int) -> str:
-    """Classify element count as tree quality: empty/poor/ok/rich."""
-    if count == 0:
-        return "empty"
-    if count > 50:
-        return "rich"
-    if count > 15:
-        return "ok"
-    return "poor"
-
-
 def _get_resize_ratio(pid: Optional[int], window_id: Optional[int]) -> float:
     """Return the stored compression ratio for this (pid, window_id), or 1.0 if not found."""
-    if pid is not None and window_id is not None:
-        meta = _zoom_metadata.get((pid, window_id), {})
-        return float(meta.get("compression_ratio", 1.0))
-    return 1.0
+    from computer_server.services.coordinate_service import get_resize_ratio
+
+    return get_resize_ratio(_zoom_metadata, pid, window_id)
 
 
 def _get_handlers():
@@ -238,15 +188,9 @@ def _resolve_from_zoom(
     x: int, y: int, from_zoom: bool = False, pid: Optional[int] = None, window_id: Optional[int] = None,
 ) -> Tuple[int, int]:
     """If from_zoom is True, translate zoomed-image coordinates back to screen space."""
-    if not from_zoom:
-        return x, y
-    if pid is None:
-        raise ValueError("pid is required when from_zoom=True")
-    if window_id is None:
-        raise ValueError("window_id is required when from_zoom=True")
-    from computer_server.handlers.zoom_registry import get_zoom_registry
+    from computer_server.services.coordinate_service import resolve_from_zoom
 
-    return get_zoom_registry().unscale(pid, window_id, x, y)
+    return resolve_from_zoom(x, y, from_zoom=from_zoom, pid=pid, window_id=window_id)
 
 
 def _resolve_element_center(
@@ -260,23 +204,9 @@ def _resolve_element_center(
     window's screen-space origin so the returned (x, y) can be used directly
     with _scale_to_actual for clicking.
     """
-    from computer_server.handlers.element_cache import get_element_cache
+    from computer_server.services.coordinate_service import resolve_element_center
 
-    cache = get_element_cache()
-    center = cache.get_center(pid, window_id, element_index)
-    if center is None:
-        raise ValueError(
-            f"No cached element at index {element_index} for pid={pid}, "
-            f"window_id={window_id}. Call computer_get_window_state first."
-        )
-    origin = cache.get_window_origin_optional(pid, window_id)
-    if origin is None:
-        raise ValueError(
-            f"Element at index {element_index} found for pid={pid}, "
-            f"window_id={window_id}, but window origin is missing from "
-            f"the cache. Call computer_get_window_state to refresh."
-        )
-    return (origin[0] + center[0], origin[1] + center[1])
+    return resolve_element_center(pid, window_id, element_index)
 
 
 def _window_resized_to_screen(
@@ -299,33 +229,16 @@ def _window_resized_to_screen(
 
     If pid or window_id is None, returns (x, y) unchanged.
     """
-    if pid is None or window_id is None:
-        return x, y
+    from computer_server.services.coordinate_service import window_resized_to_screen
 
-    # Prefer the per-(pid,window_id) crop origin from the zoom metadata
-    # populated by the most recent get_window_state call.  This is the
-    # authoritative source: it records the exact screen point where the
-    # visible cropped image starts.
-    meta = _zoom_metadata.get((pid, window_id), {})
-    if meta:
-        origin_x = meta.get("crop_origin_screen_x", 0)
-        origin_y = meta.get("crop_origin_screen_y", 0)
-        ratio = float(meta.get("compression_ratio", 1.0))
-        return (origin_x + int(x * ratio), origin_y + int(y * ratio))
-
-    # Fallback: ElementCache stores the real window origin (may differ from
-    # visible crop origin for off-screen / negative-coordinate windows).
-    # _get_resize_ratio is called separately so test fixtures and any future
-    # caller that supplies a ratio without populating _zoom_metadata still
-    # work; today it always returns 1.0 on this branch.
-    from computer_server.handlers.element_cache import get_element_cache
-
-    origin = get_element_cache().get_window_origin_optional(pid, window_id)
-    if origin is None:
-        return x, y
-    origin_x, origin_y = origin
-    ratio = _get_resize_ratio(pid, window_id)
-    return (origin_x + int(x * ratio), origin_y + int(y * ratio))
+    return window_resized_to_screen(
+        pid,
+        window_id,
+        x,
+        y,
+        zoom_metadata=_zoom_metadata,
+        resize_ratio_getter=_get_resize_ratio,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -406,95 +319,17 @@ def _window_detect_changes(
 
 def _build_window_ref(pid: Optional[int], window_id: Optional[int],
                       x: int, y: int) -> Optional[Dict[str, Any]]:
-    """Return {window_id, origin_x, origin_y, process_name, window_title, width, height}
-    for the window at (x, y). Extra fields are best-effort — never raise on failure.
+    """Return a replay-friendly window reference for an action point."""
+    from computer_server.services.window_identity_service import build_window_ref
 
-    Resolution order:
-      1. Element cache (by pid + window_id) — the window we INTENDED to click.
-      2. GetWindowRect(window_id) — if the HWND is still valid.
-      3. WindowFromPoint(x, y) → GetAncestor(GA_ROOT) — last resort.
-    """
-    base: Optional[Dict[str, Any]] = None
-
-    if pid is not None and window_id is not None:
-        try:
-            from computer_server.handlers.element_cache import get_element_cache
-            origin = get_element_cache().get_window_origin_optional(pid, window_id)
-            if origin is not None:
-                base = {"window_id": window_id, "origin_x": origin[0], "origin_y": origin[1]}
-        except Exception:
-            pass
-        if base is None:
-            try:
-                import win32gui
-                rect = win32gui.GetWindowRect(int(window_id))
-                if rect:
-                    base = {"window_id": window_id, "origin_x": rect[0], "origin_y": rect[1]}
-            except Exception:
-                pass
-
-    if base is None:
-        base = _get_window_ref(x, y)
-
-    # Enrich with process_name, window_title, width, height (best-effort)
-    if base is not None:
-        wid = base.get("window_id")
-        if wid is not None:
-            try:
-                import win32process
-                import psutil
-                _, pid_val = win32process.GetWindowThreadProcessId(int(wid))
-                if pid_val:
-                    base["process_name"] = psutil.Process(pid_val).name() or ""
-            except Exception:
-                pass
-            try:
-                import win32gui
-                title = win32gui.GetWindowText(int(wid))
-                if title:
-                    base["window_title"] = title
-            except Exception:
-                pass
-            try:
-                import win32gui
-                rect = win32gui.GetWindowRect(int(wid))
-                if rect:
-                    base["width"] = int(rect[2] - rect[0])
-                    base["height"] = int(rect[3] - rect[1])
-            except Exception:
-                pass
-
-    return base
+    return build_window_ref(pid, window_id, x, y)
 
 
 def _get_window_ref(x: int, y: int, window_id: Optional[int] = None) -> Optional[Dict[str, Any]]:
-    """Resolve the window at screen point (x, y) and return its ref.
+    """Resolve the top-level window at a screen point."""
+    from computer_server.services.window_identity_service import get_window_ref_from_point
 
-    Returns {window_id, origin_x, origin_y} or None on failure.
-    Uses GetAncestor(GA_ROOT) to get the top-level owner window.
-    """
-    try:
-        import ctypes
-        import win32gui
-
-        hwnd = win32gui.WindowFromPoint((x, y))
-        if not hwnd:
-            return None
-        # Walk up to the root owner (top-level window, not a child control)
-        GA_ROOT = 2
-        root = ctypes.windll.user32.GetAncestor(hwnd, GA_ROOT)
-        if root:
-            hwnd = root
-        rect = win32gui.GetWindowRect(hwnd)
-        if not rect:
-            return None
-        return {
-            "window_id": hwnd,
-            "origin_x": rect[0],
-            "origin_y": rect[1],
-        }
-    except Exception:
-        return None
+    return get_window_ref_from_point(x, y)
 
 
 def _invoke_via_uia_point(screen_x: int, screen_y: int) -> None:
@@ -608,10 +443,10 @@ def create_mcp_server() -> FastMCP:
             screenshot_bytes = None
             if session.should_capture_screenshot():
                 try:
+                    from computer_server.services.capture_service import capture_png_from_automation
+
                     automation_handler = _get_handlers().automation
-                    scr_result = await automation_handler.screenshot(format="png")
-                    if scr_result.get("success") and scr_result.get("image_data"):
-                        screenshot_bytes = base64.b64decode(scr_result["image_data"])
+                    screenshot_bytes = await capture_png_from_automation(automation_handler)
                 except Exception:
                     session.note_screenshot_error()
 
@@ -1980,403 +1815,19 @@ def create_mcp_server() -> FastMCP:
             - tree_quality: 'rich', 'ok', 'poor', or 'empty'
             - total_elements: total elements visited
         """
-        import asyncio
-        import sys
-        from io import BytesIO
-
-        from PIL import Image as PILImage
-
-        from computer_server.handlers.element_cache import CachedElement, get_element_cache
+        from computer_server.services.window_state_service import get_window_state_snapshot
 
         automation_handler = _get_handlers().automation
-
-        # 0. Bring the target window to the foreground so the screenshot
-        #    captures its actual content, not overlapping windows.
-        if sys.platform == "win32":
-            try:
-                import win32gui as _wg
-                _wg.SetForegroundWindow(int(window_id))
-                await asyncio.sleep(0.05)
-            except Exception:
-                pass
-
-        # 1. Take a full-screen screenshot
-        result = await automation_handler.screenshot(format="jpeg", quality=85)
-        if not result.get("success"):
-            return {"success": False, "error": "Screenshot failed: " + result.get("error", "unknown")}
-        img_bytes = base64.b64decode(result["image_data"])
-        img = PILImage.open(BytesIO(img_bytes))
-        full_w, full_h = img.size
-        screenshot_origin = result.get("origin") or {}
-        screenshot_origin_x = int(screenshot_origin.get("x", 0) or 0)
-        screenshot_origin_y = int(screenshot_origin.get("y", 0) or 0)
-
-        # 2. Get window bounds and crop screenshot to window
-        bounds = await automation_handler.get_window_bounds(pid, window_id)
-        win_origin_x = 0
-        win_origin_y = 0
-        crop_origin_screen_x = 0
-        crop_origin_screen_y = 0
-        if bounds is not None and bounds["width"] > 0 and bounds["height"] > 0:
-            wx = bounds["x"]
-            wy = bounds["y"]
-            ww = bounds["width"]
-            wh = bounds["height"]
-            # Clamp crop to image bounds (PIL requires non-negative coords)
-            # Preserve real window origin — multi-monitor Windows can have negative coords.
-            # ImageGrab(all_screens=True) returns a virtual-desktop image whose
-            # pixel (0,0) maps to screenshot_origin, not necessarily screen (0,0).
-            crop_x1 = max(0, wx - screenshot_origin_x)
-            crop_y1 = max(0, wy - screenshot_origin_y)
-            crop_x2 = min(full_w, wx + ww - screenshot_origin_x)
-            crop_y2 = min(full_h, wy + wh - screenshot_origin_y)
-            if crop_x2 > crop_x1 and crop_y2 > crop_y1:
-                img = img.crop((crop_x1, crop_y1, crop_x2, crop_y2))
-                win_origin_x = wx
-                win_origin_y = wy
-                crop_origin_screen_x = crop_x1 + screenshot_origin_x
-                crop_origin_screen_y = crop_y1 + screenshot_origin_y
-
-        # Offset from real window origin to visible crop origin.
-        # Zero when the window is fully on-screen; non-zero when the window
-        # has negative coordinates or extends beyond a screen edge.
-        crop_origin_window_x = crop_origin_screen_x - win_origin_x
-        crop_origin_window_y = crop_origin_screen_y - win_origin_y
-
-        original_width, original_height = img.size
-
-        # 3. Resize if needed, track compression ratio for zoom
-        if original_width > max_image_dimension or original_height > max_image_dimension:
-            if original_width > original_height:
-                new_w = max_image_dimension
-                new_h = int(original_height * max_image_dimension / original_width)
-            else:
-                new_h = max_image_dimension
-                new_w = int(original_width * max_image_dimension / original_height)
-            compression_ratio = original_width / new_w
-            img = img.resize((new_w, new_h), PILImage.Resampling.LANCZOS)
-            screen_width, screen_height = new_w, new_h
-        else:
-            compression_ratio = 1.0
-            screen_width, screen_height = original_width, original_height
-
-        # Store zoom metadata for computer_zoom coordinate translation
-        _zoom_metadata[(pid, window_id)] = {
-            "compression_ratio": compression_ratio,
-            "original_width": original_width,
-            "original_height": original_height,
-            "window_origin_x": win_origin_x,
-            "window_origin_y": win_origin_y,
-            "crop_origin_screen_x": crop_origin_screen_x,
-            "crop_origin_screen_y": crop_origin_screen_y,
-            "crop_origin_window_x": crop_origin_window_x,
-            "crop_origin_window_y": crop_origin_window_y,
-            "screenshot_origin_x": screenshot_origin_x,
-            "screenshot_origin_y": screenshot_origin_y,
-        }
-
-        # Store window origin in element cache for click back-translation
-        cache = get_element_cache()
-        cache.set_window_origin(pid, window_id, win_origin_x, win_origin_y)
-
-        # 4. Walk UI tree to build nodes
-        nodes: List[Dict[str, Any]] = []
-        tree_markdown: str = ""
-        uia_quality: str = "empty"
-        vision_quality: str = "empty"
-        tree_quality: str = "empty"
-        total_elements: int = 0
-        uia_node_count: int = 0
-        vision_node_count: int = 0
-
-        # Per-window UIA gate: skip the walk if another call is already in
-        # flight for the same (pid, window_id), or if a recent walk timed
-        # out (unhealthy cooldown).  This prevents executor threads from
-        # piling up on a hung window — every fresh request would otherwise
-        # spawn another walk that blocks for the full 30s timeout.
-        gate_key = (int(pid), int(window_id))
-        skip_uia_reason: Optional[str] = None
-        claimed_gate = False
-        now = _time.monotonic()
-        with _uia_gate_lock:
-            unhealthy_until = _uia_unhealthy_until.get(gate_key, 0.0)
-            if unhealthy_until > now:
-                skip_uia_reason = (
-                    "UIA walk skipped — window is in unhealthy cooldown "
-                    "(%.1fs remaining); falling back to vision."
-                    % (unhealthy_until - now)
-                )
-            elif gate_key in _uia_inflight:
-                skip_uia_reason = (
-                    "UIA walk skipped — another walk is already in flight "
-                    "for this window; falling back to vision."
-                )
-            else:
-                _uia_inflight.add(gate_key)
-                claimed_gate = True
-                # Opportunistic cleanup of stale unhealthy entries
-                if unhealthy_until and unhealthy_until <= now:
-                    _uia_unhealthy_until.pop(gate_key, None)
-
-        if skip_uia_reason is not None:
-            logger.info(skip_uia_reason)
-            tree_quality = "empty"
-        else:
-            uia_future = None
-            try:
-                from computer_server.handlers.windows_uia import walk_uia_tree
-
-                loop = asyncio.get_running_loop()
-                # Keep an explicit reference to the executor future so we can
-                # attach a done callback that releases the in-flight gate
-                # only when the underlying thread actually returns.  If we
-                # released eagerly in `finally`, a wait_for TimeoutError
-                # would re-open the slot while the COM call is still running
-                # in the leaked thread, allowing the next request to stack
-                # another doomed walk on top.
-                uia_future = loop.run_in_executor(
-                    None, walk_uia_tree, int(window_id), query
-                )
-                if claimed_gate:
-                    try:
-                        uia_future.add_done_callback(
-                            lambda _f, _k=gate_key: _release_uia_inflight(_k)
-                        )
-                        # Callback owns the release; don't double-release in finally.
-                        claimed_gate = False
-                    except Exception:
-                        # add_done_callback essentially never raises, but if
-                        # it does the future is already scheduled and we have
-                        # no way to be notified when it ends.  Pin the gate
-                        # closed for this key (claimed_gate=False stops the
-                        # `finally` from releasing it) and set the unhealthy
-                        # cooldown so callers eventually fall through to SOM
-                        # if they keep retrying.
-                        claimed_gate = False
-                        with _uia_gate_lock:
-                            _uia_unhealthy_until[gate_key] = (
-                                _time.monotonic() + _UIA_UNHEALTHY_COOLDOWN_S
-                            )
-                        raise
-                uia_result = await asyncio.wait_for(
-                    asyncio.shield(uia_future),
-                    timeout=30.0,
-                )
-                for n in uia_result.indexed_nodes:
-                    # Convert screen-space coords to window-relative
-                    cx = max(0, n.center_x - win_origin_x)
-                    cy = max(0, n.center_y - win_origin_y)
-                    bbox = n.bbox
-                    w_bbox = (
-                        max(0, bbox[0] - win_origin_x),
-                        max(0, bbox[1] - win_origin_y),
-                        max(0, bbox[2] - win_origin_x),
-                        max(0, bbox[3] - win_origin_y),
-                    )
-                    nodes.append({
-                        "element_index": n.element_index,
-                        "source": "uia",
-                        "control_type": n.control_type,
-                        "name": n.name,
-                        "value": n.value,
-                        "center_x": cx,
-                        "center_y": cy,
-                        "bbox": list(w_bbox),
-                        "actions": n.actions,
-                        "enabled": n.is_enabled,
-                        "depth": n.depth,
-                    })
-                total_elements = uia_result.total_elements
-                uia_node_count = len(uia_result.indexed_nodes)
-                tree_markdown = uia_result.tree_markdown
-                uia_quality = uia_result.tree_quality
-                tree_quality = uia_quality
-            except asyncio.TimeoutError:
-                # The walk thread is still running and we cannot kill it
-                # safely.  Do NOT release the in-flight gate here — the
-                # done-callback attached to ``uia_future`` will release it
-                # only when the underlying COM call eventually returns (or
-                # when the window is closed and the call unblocks).  Until
-                # then, every fresh request for the same key must keep
-                # skipping UIA so we don't stack more doomed walks on top
-                # of the leaked thread.
-                #
-                # Also set an unhealthy cooldown as a secondary defence
-                # (e.g. the in-flight set is the primary one but a future
-                # done callback could fail to fire if the executor is being
-                # shut down).
-                with _uia_gate_lock:
-                    _uia_unhealthy_until[gate_key] = (
-                        _time.monotonic() + _UIA_UNHEALTHY_COOLDOWN_S
-                    )
-                logger.warning(
-                    "Windows UIA tree walk timed out after 30s — window may be "
-                    "hung; keeping (pid=%s, window_id=%s) in-flight until the "
-                    "leaked walk thread returns; marking unhealthy for %.0fs as "
-                    "a secondary guard",
-                    pid, window_id, _UIA_UNHEALTHY_COOLDOWN_S,
-                )
-                tree_quality = "empty"
-            except Exception as e:
-                logger.warning("Windows UIA tree walk failed: %s", e)
-            finally:
-                # Normally the future's done-callback releases the gate.
-                # ``claimed_gate`` is only still True if we never managed
-                # to schedule the executor task at all (e.g. the import
-                # raised before run_in_executor returned), in which case
-                # nothing else will ever release it for us.
-                if claimed_gate:
-                    with _uia_gate_lock:
-                        _uia_inflight.discard(gate_key)
-        # 5. Populate element cache (window-relative coords already stored)
-        cached_elements: List[CachedElement] = []
-        for i, node in enumerate(nodes):
-            bbox = node.get("bbox") or (0, 0, 0, 0)
-            cached = CachedElement(
-                element_index=node.get("element_index", i),
-                source="uia",
-                center_x=node.get("center_x", (bbox[0] + bbox[2]) // 2),
-                center_y=node.get("center_y", (bbox[1] + bbox[3]) // 2),
-                bbox=bbox if len(bbox) == 4 else (0, 0, 0, 0),
-                control_type=node.get("control_type") or node.get("role"),
-                name=node.get("name") or node.get("title"),
-                value=node.get("value"),
-                actions=node.get("actions", []),
-                platform_ref=None,
-                enabled=node.get("enabled", True),
-            )
-            cached_elements.append(cached)
-        cache.update(pid, window_id, cached_elements)
-        cache.set_quality(pid, window_id, tree_quality)
-
-        # 6. Popover detection — find other visible windows belonging to the same pid
-        popover_candidates_text: str = ""
-        if sys.platform == "win32":
-            import win32gui, win32process
-            seen = _seen_popovers.setdefault(pid, set())
-            candidates: List[Dict[str, Any]] = []
-            def _enum_popover(hwnd: int, _lparam: Any) -> bool:
-                if hwnd == window_id or not win32gui.IsWindowVisible(hwnd):
-                    return True
-                _, found_pid = win32process.GetWindowThreadProcessId(hwnd)
-                if found_pid != pid:
-                    return True
-                r = win32gui.GetWindowRect(hwnd)
-                w, h = r[2] - r[0], r[3] - r[1]
-                if w <= 1 or h <= 1:
-                    return True
-                if hwnd in seen:
-                    return True
-                seen.add(hwnd)
-                candidates.append({
-                    "window_id": hwnd,
-                    "title": win32gui.GetWindowText(hwnd),
-                    "x": r[0],
-                    "y": r[1],
-                    "width": w,
-                    "height": h,
-                })
-                return True
-            win32gui.EnumWindows(_enum_popover, None)
-            if candidates:
-                popover_candidates_text = "## Popover / Overlay Windows\n\nThe following windows belong to the same pid and are on the current screen but are not the requested window. They may be search popovers, context menus, or dialogs — call `get_window_state(pid={}, window_id=<id>)` to inspect:\n\n".format(pid)
-                for c in candidates:
-                    popover_candidates_text += '- window_id={} "{}" at ({},{}) {}×{}\n'.format(
-                        c["window_id"],
-                        c["title"] or "(no title)",
-                        c["x"], c["y"],
-                        c["width"], c["height"],
-                    )
-
-        # 7. SOM vision detection — only when UIA/accessibility tree is sparse.
-        #    Rich UIA trees (>15 elements) already have all the interactivity
-        #    info needed; running SOM would add latency (~20s import + model load)
-        #    without benefit.
-        if force_som or tree_quality in ("poor", "empty"):
-            try:
-                from computer_server.handlers.som_bridge import detect_sync
-
-                vis_buf = BytesIO()
-                img.save(vis_buf, format="PNG")
-                vis_bytes = vis_buf.getvalue()
-                # Synchronous only — anyio task group blocks background
-                # threads from starting Python code.  warm_up() pre-loads
-                # models at startup, so subsequent calls complete in < 3 s.
-                vision_result = detect_sync(
-                    vis_bytes, screen_width, screen_height,
-                    0.3, True, 10000,
-                )
-                if vision_result is not None and vision_result.elements:
-                    # Scale vision coords from resized space to original resolution
-                    # so they match AX/UIA element coordinates in the cache
-                    z = compression_ratio
-                    for el in vision_result.elements:
-                        el.center_x = int(el.center_x * z) + crop_origin_window_x
-                        el.center_y = int(el.center_y * z) + crop_origin_window_y
-                        el.bbox = (
-                            int(el.bbox[0] * z) + crop_origin_window_x,
-                            int(el.bbox[1] * z) + crop_origin_window_y,
-                            int(el.bbox[2] * z) + crop_origin_window_x,
-                            int(el.bbox[3] * z) + crop_origin_window_y,
-                        )
-                    cache.append_vision_elements(pid, window_id, vision_result.elements)
-                    vision_node_count = len(vision_result.elements)
-                    for el in vision_result.elements:
-                        nodes.append({
-                            "element_index": el.element_index,
-                            "source": "vision",
-                            "center_x": el.center_x,
-                            "center_y": el.center_y,
-                            "bbox": list(el.bbox),
-                            "control_type": el.control_type,
-                            "name": el.name,
-                            "actions": el.actions,
-                        })
-                    total_elements += len(vision_result.elements)
-                    vision_quality = _classify_tree_quality(vision_node_count)
-                    cache.set_quality(pid, window_id, uia_quality)
-            except Exception as e:
-                logger.warning("SOM vision detection skipped: %s", e, exc_info=True)
-
-        # 8. Handle screenshot output — always file to avoid huge inline base64
-        import tempfile
-
-        if not screenshot_out_file:
-            screenshots_dir = os.path.join(tempfile.gettempdir(), "cua-screenshots")
-            os.makedirs(screenshots_dir, exist_ok=True)
-            import time as _time
-            ts = _time.strftime("%H%M%S")
-            screenshot_out_file = os.path.join(
-                screenshots_dir,
-                f"{pid}_{window_id}_{ts}.jpg",
-            )
-        if img.mode in ("RGBA", "P"):
-            img = img.convert("RGB")
-        img.save(screenshot_out_file, format="JPEG", quality=70, optimize=True)
-        screenshot_field: Any = screenshot_out_file
-
-        response_dict: Dict[str, Any] = {
-            "success": True,
-            "screenshot": screenshot_field,
-            "nodes": nodes,
-            "node_count": len(nodes),
-            "tree_markdown": tree_markdown,
-            "tree_quality": tree_quality,
-            "uia_quality": uia_quality,
-            "vision_quality": vision_quality,
-            "merged_node_count": len(nodes),
-            "uia_node_count": uia_node_count,
-            "vision_node_count": vision_node_count,
-            "total_elements": total_elements,
-            "pid": pid,
-            "window_id": window_id,
-            "screen_width": screen_width,
-            "screen_height": screen_height,
-            "screenshot_origin": {"x": screenshot_origin_x, "y": screenshot_origin_y},
-        }
-        if popover_candidates_text:
-            response_dict["popover_candidates_text"] = popover_candidates_text
-        return response_dict
+        return await get_window_state_snapshot(
+            automation_handler,
+            pid,
+            window_id,
+            query,
+            screenshot_out_file,
+            max_image_dimension,
+            force_som,
+            _zoom_metadata,
+        )
 
     # ============================================================
     # ZOOM
@@ -2413,116 +1864,19 @@ def create_mcp_server() -> FastMCP:
         Returns:
             Dictionary with zoomed image (base64 PNG), dimensions, and crop_rect.
         """
-        from io import BytesIO
+        from computer_server.services.window_state_service import create_zoom_image
 
-        from PIL import Image as PILImage
-
-        from computer_server.handlers.zoom_registry import ZoomContext, get_zoom_registry
-
-        # Look up the compression ratio from the last get_window_state for this (pid, window_id)
-        meta = _zoom_metadata.get((pid, window_id))
-        if meta is None:
-            return {
-                "success": False,
-                "error": f"No screenshot metadata for pid {pid} window_id {window_id}. Call computer_get_window_state(pid={pid}, window_id={window_id}) first.",
-            }
-
-        z = meta["compression_ratio"]
-        orig_w = meta["original_width"]
-        orig_h = meta["original_height"]
-        wx = meta.get("window_origin_x", 0)
-        wy = meta.get("window_origin_y", 0)
-
-        # Scale coordinates from resized-image space to full-resolution window-relative space
-        rx1 = int(x1 * z)
-        ry1 = int(y1 * z)
-        rx2 = int(x2 * z)
-        ry2 = int(y2 * z)
-
-        # Clamp to full-resolution window bounds
-        rx1 = max(0, min(rx1, orig_w - 1))
-        ry1 = max(0, min(ry1, orig_h - 1))
-        rx2 = max(rx1 + 1, min(rx2, orig_w))
-        ry2 = max(ry1 + 1, min(ry2, orig_h))
-
-        # Add 20% padding in full-resolution space
-        crop_w = rx2 - rx1
-        crop_h = ry2 - ry1
-        pad_x = int(crop_w * 0.2)
-        pad_y = int(crop_h * 0.2)
-
-        padded_x1 = max(0, rx1 - pad_x)
-        padded_y1 = max(0, ry1 - pad_y)
-        padded_x2 = min(orig_w, rx2 + pad_x)
-        padded_y2 = min(orig_h, ry2 + pad_y)
-
-        # Translate to screen coordinates for cropping the full-screen screenshot.
-        # Use the visible crop origin (where the resized screenshot starts on
-        # screen) instead of the real window origin.  The two are equal when the
-        # window is fully on-screen, but differ when the window has negative
-        # coordinates or extends beyond a screen edge.
-        csx = meta.get("crop_origin_screen_x", wx)
-        csy = meta.get("crop_origin_screen_y", wy)
-        screen_x1 = csx + padded_x1
-        screen_y1 = csy + padded_y1
-        screen_x2 = csx + padded_x2
-        screen_y2 = csy + padded_y2
-
-        # Take a fresh full-resolution screenshot
         automation_handler = _get_handlers().automation
-        result = await automation_handler.screenshot(format="png", quality=95)
-        img_bytes = base64.b64decode(result["image_data"])
-        img = PILImage.open(BytesIO(img_bytes))
-        screenshot_origin = result.get("origin") or {}
-        screenshot_origin_x = int(screenshot_origin.get("x", 0) or 0)
-        screenshot_origin_y = int(screenshot_origin.get("y", 0) or 0)
-
-        # Clamp screen coordinates to actual screenshot dimensions
-        image_x1 = screen_x1 - screenshot_origin_x
-        image_y1 = screen_y1 - screenshot_origin_y
-        image_x2 = screen_x2 - screenshot_origin_x
-        image_y2 = screen_y2 - screenshot_origin_y
-        image_x1 = max(0, min(image_x1, img.width - 1))
-        image_y1 = max(0, min(image_y1, img.height - 1))
-        image_x2 = max(image_x1 + 1, min(image_x2, img.width))
-        image_y2 = max(image_y1 + 1, min(image_y2, img.height))
-        screen_x1 = image_x1 + screenshot_origin_x
-        screen_y1 = image_y1 + screenshot_origin_y
-        screen_x2 = image_x2 + screenshot_origin_x
-        screen_y2 = image_y2 + screenshot_origin_y
-
-        # Crop at native resolution
-        cropped = img.crop((image_x1, image_y1, image_x2, image_y2))
-        padded_w = screen_x2 - screen_x1
-        padded_h = screen_y2 - screen_y1
-
-        # Store zoom context keyed by (pid, window_id) for from_zoom translation
-        registry = get_zoom_registry()
-        zoom_ctx = ZoomContext(
-            window_id=window_id,
-            crop_rect=(screen_x1, screen_y1, screen_x2, screen_y2),
-            scale_x=cropped.width / padded_w if padded_w > 0 else 1.0,
-            scale_y=cropped.height / padded_h if padded_h > 0 else 1.0,
-            output_width=cropped.width,
-            output_height=cropped.height,
-            padding=max(pad_x, pad_y),
+        return await create_zoom_image(
+            automation_handler,
+            pid,
+            window_id,
+            x1,
+            y1,
+            x2,
+            y2,
+            _zoom_metadata,
         )
-        registry.set(pid, window_id, zoom_ctx)
-
-        buffered = BytesIO()
-        cropped.save(buffered, format="PNG", optimize=True)
-        buffered.seek(0)
-
-        return {
-            "success": True,
-            "image_data": base64.b64encode(buffered.getvalue()).decode(),
-            "format": "png",
-            "width": cropped.width,
-            "height": cropped.height,
-            "crop_rect": [screen_x1, screen_y1, screen_x2, screen_y2],
-            "pid": pid,
-            "window_id": window_id,
-        }
 
     # ============================================================
     # BROWSER PAGE INTERACTION (CDP)
@@ -2539,6 +1893,7 @@ def create_mcp_server() -> FastMCP:
         allow_html: bool = False,
         port: Optional[int] = None,
         tab_index: int = 0,
+        target_id: Optional[str] = None,
     ) -> Any:
         """
         Lightweight browser read/execute via Chrome DevTools Protocol.
@@ -2567,7 +1922,9 @@ def create_mcp_server() -> FastMCP:
             allow_html: Allow query_dom to return innerHTML. Defaults to False.
             port: Chrome remote debugging port. If None, auto-discovered from pid
                 command line.
-            tab_index: Tab index (default 0).
+            tab_index: Initial tab index (default 0) when target_id is not provided.
+            target_id: Stable CDP target id. Prefer this after get_page_info to
+                keep subsequent calls pinned to the same tab.
 
         Returns:
             Dictionary with action-specific results.
@@ -2641,34 +1998,76 @@ def create_mcp_server() -> FastMCP:
         result: Dict[str, Any]
 
         if action == "get_text":
-            text = await cdp.get_page_text(port=resolved_port, tab_index=tab_index)
-            result = {"success": True, "text": text}
+            text_result = await cdp.evaluate(
+                port=resolved_port,
+                expression="document.body.innerText",
+                tab_index=tab_index,
+                target_id=target_id,
+            )
+            if text_result.get("error"):
+                return {"success": False, "error": text_result["error"], "target_id": text_result.get("target_id")}
+            result = {
+                "success": True,
+                "text": text_result.get("result") or "",
+                "target_id": text_result.get("target_id"),
+            }
         elif action == "query_dom":
             if not css_selector:
                 return {"success": False, "error": "css_selector is required for query_dom"}
-            elements = await cdp.query_dom(
+            dom_result = await cdp.query_dom(
                 port=resolved_port, selector=css_selector,
                 attributes=attributes, tab_index=tab_index,
-                allow_html=allow_html,
+                allow_html=allow_html, target_id=target_id,
             )
-            result = {"success": True, "elements": elements}
+            if dom_result.get("error"):
+                return {"success": False, "error": dom_result["error"], "target_id": dom_result.get("target_id")}
+            result = {
+                "success": True,
+                "elements": dom_result.get("elements", []),
+                "target_id": dom_result.get("target_id"),
+            }
         elif action == "get_page_info":
-            info = await cdp.get_page_info(port=resolved_port, tab_index=tab_index)
+            info = await cdp.get_page_info(
+                port=resolved_port,
+                tab_index=tab_index,
+                target_id=target_id,
+            )
+            if info.get("error"):
+                return {"success": False, **info}
             result = {"success": True, **info}
         elif action == "execute_javascript":
             if not javascript:
                 return {"success": False, "error": "javascript is required for execute_javascript"}
-            js_result = await cdp.evaluate(port=resolved_port, expression=javascript, tab_index=tab_index)
+            js_result = await cdp.evaluate(
+                port=resolved_port,
+                expression=javascript,
+                tab_index=tab_index,
+                target_id=target_id,
+            )
             if js_result.get("error"):
-                return {"success": False, "error": js_result["error"]}
-            result = {"success": True, "result": js_result.get("result")}
+                return {"success": False, "error": js_result["error"], "target_id": js_result.get("target_id")}
+            result = {
+                "success": True,
+                "result": js_result.get("result"),
+                "target_id": js_result.get("target_id"),
+            }
         else:
             return {"success": False, "error": f"Unknown action: {action}. Use 'execute_javascript', 'get_text', 'query_dom', or 'get_page_info'."}
 
-        await _recording_hook("computer_page", {
+        record_args = {
             "pid": pid, "window_id": window_id, "action": action,
             "port": resolved_port, "tab_index": tab_index,
-        }, result)
+            "target_id": result.get("target_id") or target_id,
+        }
+        if javascript is not None:
+            record_args["javascript"] = javascript
+        if css_selector is not None:
+            record_args["css_selector"] = css_selector
+        if attributes is not None:
+            record_args["attributes"] = attributes
+        if allow_html:
+            record_args["allow_html"] = allow_html
+        await _recording_hook("computer_page", record_args, result)
         return result
 
     # ============================================================
@@ -2754,139 +2153,18 @@ def create_mcp_server() -> FastMCP:
         import os
 
         from computer_server.recording.replay import replay_trajectory as _replay
+        from computer_server.services.replay_resolver import resolve_replay_args
 
         recording_dir = os.path.expanduser(recording_dir)
 
         tool_map = await _get_tool_map(mcp)
-
-        # Metadata keys used for replay resolution, not tool parameters
-        _REPLAY_META_KEYS = frozenset({"window_title", "process_name"})
-        _REPLAY_COORD_TOOLS = frozenset({"computer_click", "computer_drag", "computer_scroll"})
-        _REPLAY_WINDOW_TOOLS = frozenset({"computer_activate_window"})
 
         async def tool_executor(tool_name: str, args: Dict[str, Any],
                                 window_ref: Optional[Dict[str, Any]] = None) -> Any:
             if tool_name not in tool_map:
                 return {"success": False, "error": f"Unknown tool: {tool_name}"}
 
-            # --- Replay-layer coordinate / window resolution ---
-            # Mutate a copy so the original recording stays untouched.
-            resolved = dict(args)
-
-            # --- Helper: resolve current HWND from a source dict ---
-            def _resolve_window_hwnd(source: Dict[str, Any]) -> Optional[Tuple[int, tuple]]:
-                """Resolve a live HWND and its rect from a window_ref or args dict.
-
-                Priority: 1) original window_id if still valid,
-                          2) process_name search,
-                          3) window_title search.
-                Returns (hwnd, (left, top, right, bottom)) or None.
-                """
-                ref_wid = source.get("window_id")
-                # Priority 1: original HWND still valid
-                if ref_wid is not None:
-                    try:
-                        import win32gui
-                        if win32gui.IsWindow(int(ref_wid)):
-                            rect = win32gui.GetWindowRect(int(ref_wid))
-                            if rect:
-                                return (int(ref_wid), rect)
-                    except Exception:
-                        pass
-                # Priority 2: search by process_name
-                proc_name = source.get("process_name", "")
-                if proc_name:
-                    try:
-                        import win32gui, win32process, psutil
-                        candidates: list = []
-                        def _by_proc(hwnd, ctx):
-                            try:
-                                _, pid = win32process.GetWindowThreadProcessId(hwnd)
-                                if pid and psutil.Process(pid).name().lower() == proc_name.lower() and win32gui.IsWindowVisible(hwnd):
-                                    ctx.append(hwnd)
-                            except Exception:
-                                pass
-                        win32gui.EnumWindows(_by_proc, candidates)
-                        if candidates:
-                            hwnd = candidates[0]
-                            rect = win32gui.GetWindowRect(hwnd)
-                            if rect:
-                                return (hwnd, rect)
-                    except Exception:
-                        pass
-                # Priority 3: search by window_title
-                title = source.get("window_title", "")
-                if title:
-                    try:
-                        import win32gui
-                        candidates = []
-                        def _by_title(hwnd, ctx):
-                            try:
-                                wt = win32gui.GetWindowText(hwnd) or ""
-                                if title.lower() in wt.lower() and win32gui.IsWindowVisible(hwnd):
-                                    ctx.append(hwnd)
-                            except Exception:
-                                pass
-                        win32gui.EnumWindows(_by_title, candidates)
-                        if candidates:
-                            hwnd = candidates[0]
-                            rect = win32gui.GetWindowRect(hwnd)
-                            if rect:
-                                return (hwnd, rect)
-                    except Exception:
-                        pass
-                return None
-
-            # --- Coordinate tools: resolve window, adjust coordinates ---
-            if window_ref and tool_name in _REPLAY_COORD_TOOLS:
-                resolved_hwnd = _resolve_window_hwnd(window_ref)
-                if resolved_hwnd is not None:
-                    hwnd, rect = resolved_hwnd
-                    ref_ox = window_ref.get("origin_x", 0)
-                    ref_oy = window_ref.get("origin_y", 0)
-                    if "x" in resolved:
-                        resolved["x"] = int(rect[0] + (resolved["x"] - ref_ox))
-                        resolved["y"] = int(rect[1] + (resolved["y"] - ref_oy))
-                    if "start_x" in resolved:
-                        resolved["start_x"] = int(rect[0] + (resolved["start_x"] - ref_ox))
-                        resolved["start_y"] = int(rect[1] + (resolved["start_y"] - ref_oy))
-                        resolved["end_x"] = int(rect[0] + (resolved["end_x"] - ref_ox))
-                        resolved["end_y"] = int(rect[1] + (resolved["end_y"] - ref_oy))
-                    # Sync window_id if HWND changed
-                    ref_wid = window_ref.get("window_id")
-                    if ref_wid is not None and hwnd != int(ref_wid):
-                        resolved["window_id"] = str(hwnd)
-                        logger.info(
-                            "Replay resolved stale window_id %s → %s for %s",
-                            ref_wid, hwnd, tool_name,
-                        )
-                else:
-                    logger.warning(
-                        "Replay: could not resolve window for %s (window_ref=%s)",
-                        tool_name, window_ref,
-                    )
-
-            # --- Window tools: resolve stale window_id ---
-            wid = resolved.get("window_id")
-            if wid is not None and tool_name in _REPLAY_WINDOW_TOOLS:
-                resolved_hwnd = _resolve_window_hwnd(resolved)
-                if resolved_hwnd is not None:
-                    hwnd, _rect = resolved_hwnd
-                    if hwnd != int(wid):
-                        resolved["window_id"] = str(hwnd)
-                        logger.info(
-                            "Replay resolved stale window_id %s → %s", wid, hwnd,
-                        )
-                else:
-                    logger.warning(
-                        "Replay: could not resolve window for %s (args=%s)",
-                        tool_name,
-                        {k: resolved.get(k) for k in ("window_id", "process_name", "window_title")},
-                    )
-
-            # Strip replay-only metadata keys before calling the tool
-            for k in _REPLAY_META_KEYS:
-                resolved.pop(k, None)
+            resolved = resolve_replay_args(tool_name, args, window_ref=window_ref)
 
             try:
                 return await tool_map[tool_name](**resolved)

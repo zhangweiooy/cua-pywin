@@ -67,11 +67,9 @@ class LearningRecorder:
         # Prevent concurrent stop() from timer + user call
         self._stopping = False
 
-        # Gate UIA calls to at most one in-flight daemon thread.
-        # When a foreground app's UIA provider is hung, the first call
-        # holds the semaphore until it completes or is abandoned; subsequent
-        # calls are skipped immediately instead of accumulating threads.
-        self._uia_semaphore = threading.Semaphore(1)
+        from computer_server.services.uia_service import UIACallGate
+
+        self._uia_gate = UIACallGate()
 
     # ---- lazy platform init ----
 
@@ -501,29 +499,7 @@ class LearningRecorder:
         If a foreground app's UIA provider is hung (holding the semaphore),
         subsequent calls are skipped immediately — no thread accumulation.
         """
-        if not self._uia_semaphore.acquire(blocking=False):
-            logger.debug("UIA call skipped — previous call still in flight")
-            return None
-
-        result = None
-        done = threading.Event()
-
-        def _target():
-            nonlocal result
-            try:
-                result = func()
-            except Exception:
-                pass
-            finally:
-                done.set()
-                self._uia_semaphore.release()
-
-        t = threading.Thread(target=_target, daemon=True)
-        t.start()
-        if not done.wait(timeout):
-            logger.debug("UIA operation timed out after %.1fs", timeout)
-            return None
-        return result
+        return self._uia_gate.run_with_timeout(func, timeout=timeout)
 
     def _is_sensitive_context(self, uia, element_context=None) -> bool:
         """Check if the current UI context is sensitive (password field, etc.).
