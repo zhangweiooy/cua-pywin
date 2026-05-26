@@ -11,7 +11,7 @@ import functools
 import logging
 import os
 import subprocess
-from io import BytesIO
+import threading
 from typing import Any, Callable, Dict, List, Optional, Tuple, TypeVar, Union
 
 F = TypeVar("F", bound=Callable[..., Any])
@@ -47,6 +47,7 @@ from pynput.mouse import Controller as MouseController
 
 # Configure logger
 logger = logging.getLogger(__name__)
+_CLIPBOARD_TYPE_LOCK = threading.Lock()
 
 # pyautogui removed in favor of pynput
 
@@ -70,6 +71,7 @@ from .base import (
     normalize_screenshot_format,
 )
 from .screen_geometry import ensure_dpi_awareness, get_virtual_screen_geometry
+from .screenshot_service import encode_image
 
 ensure_dpi_awareness()
 
@@ -364,7 +366,6 @@ class WindowsAutomationHandler(BaseAutomationHandler):
             Dict[str, Any]: A dictionary with success status and optional error message.
         """
         try:
-            import time
             btn = self._map_button(button)
             self.mouse.press(btn)
             start_x, start_y = self.mouse.position
@@ -374,7 +375,7 @@ class WindowsAutomationHandler(BaseAutomationHandler):
                 ix = int(start_x + (x - start_x) * t)
                 iy = int(start_y + (y - start_y) * t)
                 self.mouse.position = (ix, iy)
-                time.sleep(duration / steps)
+                await asyncio.sleep(duration / steps)
             self.mouse.position = (x, y)
             self.mouse.release(btn)
             return {"success": True}
@@ -399,7 +400,6 @@ class WindowsAutomationHandler(BaseAutomationHandler):
             if not path:
                 return {"success": False, "error": "Path is empty"}
 
-            import time
             btn = self._map_button(button)
             total_points = len(path) - 1
             self.mouse.position = path[0]
@@ -416,7 +416,7 @@ class WindowsAutomationHandler(BaseAutomationHandler):
                         int(start_x + (x - start_x) * t),
                         int(start_y + (y - start_y) * t),
                     )
-                    time.sleep(step_duration / steps)
+                    await asyncio.sleep(step_duration / steps)
                 self.mouse.position = (x, y)
 
             self.mouse.release(btn)
@@ -494,30 +494,19 @@ class WindowsAutomationHandler(BaseAutomationHandler):
         import asyncio
 
         import pyperclip
-        try:
-            original = pyperclip.paste()
-        except Exception:
-            original = None
 
-        # Paste all at once if chunk_size is 0 or text is short
-        if chunk_size <= 0 or len(text) <= chunk_size:
+        acquired = await asyncio.to_thread(_CLIPBOARD_TYPE_LOCK.acquire)
+        original = None
+        try:
             try:
-                pyperclip.copy(text)
-            except Exception as e:
-                return {"success": False, "error": f"Clipboard copy failed: {e}"}
-            try:
-                self.keyboard.press(KBKey.ctrl)
-                self.keyboard.press("v")
-                self.keyboard.release("v")
-                self.keyboard.release(KBKey.ctrl)
-            except Exception as e:
-                return {"success": False, "error": f"Clipboard paste failed: {e}"}
-        else:
-            # Paste in chunks for streaming effect
-            for i in range(0, len(text), chunk_size):
-                chunk = text[i:i + chunk_size]
+                original = pyperclip.paste()
+            except Exception:
+                original = None
+
+            # Paste all at once if chunk_size is 0 or text is short
+            if chunk_size <= 0 or len(text) <= chunk_size:
                 try:
-                    pyperclip.copy(chunk)
+                    pyperclip.copy(text)
                 except Exception as e:
                     return {"success": False, "error": f"Clipboard copy failed: {e}"}
                 try:
@@ -527,16 +516,31 @@ class WindowsAutomationHandler(BaseAutomationHandler):
                     self.keyboard.release(KBKey.ctrl)
                 except Exception as e:
                     return {"success": False, "error": f"Clipboard paste failed: {e}"}
-                # Small delay between chunks for streaming effect
-                await asyncio.sleep(0.08)
-
-        # Always restore original clipboard
-        if original is not None:
-            try:
-                await asyncio.sleep(0.05)
-                pyperclip.copy(original)
-            except Exception:
-                pass
+            else:
+                # Paste in chunks for streaming effect
+                for i in range(0, len(text), chunk_size):
+                    chunk = text[i:i + chunk_size]
+                    try:
+                        pyperclip.copy(chunk)
+                    except Exception as e:
+                        return {"success": False, "error": f"Clipboard copy failed: {e}"}
+                    try:
+                        self.keyboard.press(KBKey.ctrl)
+                        self.keyboard.press("v")
+                        self.keyboard.release("v")
+                        self.keyboard.release(KBKey.ctrl)
+                    except Exception as e:
+                        return {"success": False, "error": f"Clipboard paste failed: {e}"}
+                    await asyncio.sleep(0.08)
+        finally:
+            if original is not None:
+                try:
+                    await asyncio.sleep(0.05)
+                    pyperclip.copy(original)
+                except Exception:
+                    pass
+            if acquired:
+                _CLIPBOARD_TYPE_LOCK.release()
 
         return {"success": True, "method": "clipboard"}
 
@@ -661,15 +665,9 @@ class WindowsAutomationHandler(BaseAutomationHandler):
             if not isinstance(screenshot, Image.Image):
                 return {"success": False, "error": "Failed to capture screenshot"}
 
-            buffered = BytesIO()
-            if fmt == "jpeg":
-                screenshot.convert("RGB").save(
-                    buffered, format="JPEG", quality=quality, optimize=True
-                )
-            else:
-                screenshot.save(buffered, format="PNG", optimize=True)
-            buffered.seek(0)
-            image_data = base64.b64encode(buffered.getvalue()).decode()
+            image_data = base64.b64encode(
+                encode_image(screenshot, fmt, quality)
+            ).decode()
             geometry = get_virtual_screen_geometry()
             return {
                 "success": True,

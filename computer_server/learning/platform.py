@@ -19,6 +19,8 @@ import threading
 import time
 from typing import Callable, Optional
 
+from computer_server.handlers.control_types import semantic_role
+
 logger = logging.getLogger(__name__)
 
 IS_WINDOWS = sys.platform == "win32"
@@ -553,48 +555,7 @@ class UIAEnricher:
 
     def _map_control_type(self, ct) -> str | None:
         """Map UIA ControlType to AX role naming scheme."""
-        if ct is None:
-            return None
-        try:
-            name = str(ct)
-        except Exception:
-            return None
-
-        return {
-            "ButtonControlType": "AXButton",
-            "EditControlType": "AXTextField",
-            "TextControlType": "AXStaticText",
-            "ComboBoxControlType": "AXComboBox",
-            "CheckBoxControlType": "AXCheckBox",
-            "RadioButtonControlType": "AXRadioButton",
-            "HyperlinkControlType": "AXLink",
-            "ListControlType": "AXList",
-            "ListItemControlType": "AXStaticText",
-            "TabControlType": "AXTab",
-            "TabItemControlType": "AXRadioButton",
-            "TreeControlType": "AXOutline",
-            "TreeItemControlType": "AXRow",
-            "MenuControlType": "AXMenu",
-            "MenuItemControlType": "AXMenuItem",
-            "ToolBarControlType": "AXToolbar",
-            "WindowControlType": "AXWindow",
-            "PaneControlType": "AXGroup",
-            "GroupControlType": "AXGroup",
-            "ScrollBarControlType": "AXScrollBar",
-            "SliderControlType": "AXSlider",
-            "SpinnerControlType": "AXTextField",
-            "ProgressBarControlType": "AXProgressIndicator",
-            "SplitButtonControlType": "AXPopUpButton",
-            "ImageControlType": "AXImage",
-            "DocumentControlType": "AXGroup",
-            "DataGridControlType": "AXTable",
-            "HeaderControlType": "AXStaticText",
-            "HeaderItemControlType": "AXStaticText",
-            "ThumbControlType": "AXValueIndicator",
-            "CalendarControlType": "AXGroup",
-            "SemanticZoomControlType": "AXGroup",
-            "AppBarControlType": "AXToolbar",
-        }.get(name)
+        return semantic_role(ct)
 
 
 # ============================================================

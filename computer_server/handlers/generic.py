@@ -75,6 +75,60 @@ def resolve_path(path: str) -> Path:
     return Path(path).expanduser().resolve()
 
 
+def _configured_file_roots() -> list[Path]:
+    roots = os.environ.get("CUA_FILE_ROOTS", "")
+    result: list[Path] = []
+    for raw in roots.split(os.pathsep):
+        raw = raw.strip()
+        if raw:
+            result.append(resolve_path(raw))
+    return result
+
+
+def _dangerous_file_tools_disabled() -> bool:
+    return os.environ.get("CUA_DISABLE_DANGEROUS_FILE_TOOLS", "").lower() in {
+        "1",
+        "true",
+        "yes",
+        "on",
+    }
+
+
+def _path_in_root(path: Path, root: Path) -> bool:
+    try:
+        path.relative_to(root)
+        return True
+    except ValueError:
+        return False
+
+
+def resolve_allowed_path(path: str, operation: str, dangerous: bool = False) -> Path:
+    """Resolve and validate file-tool paths against optional allowlist roots."""
+    if dangerous and _dangerous_file_tools_disabled():
+        raise PermissionError(
+            f"{operation} is disabled by CUA_DISABLE_DANGEROUS_FILE_TOOLS"
+        )
+
+    resolved = resolve_path(path)
+    roots = _configured_file_roots()
+    if roots and not any(_path_in_root(resolved, root) for root in roots):
+        allowed = ", ".join(str(root) for root in roots)
+        raise PermissionError(
+            f"Path is outside configured CUA_FILE_ROOTS for {operation}: "
+            f"{resolved}. Allowed roots: {allowed}"
+        )
+    return resolved
+
+
+def _audit_path(path: Path, operation: str) -> Dict[str, Any]:
+    roots = _configured_file_roots()
+    return {
+        "path": str(path),
+        "operation": operation,
+        "root_restricted": bool(roots),
+    }
+
+
 # ===== Cross-platform Desktop command handlers =====
 
 
@@ -814,23 +868,7 @@ class GenericWindowHandler(BaseWindowHandler):
             if not w:
                 return {"success": False, "error": "Window not found"}
 
-            hwnd = int(window_id)
-            if platform.system() == "Windows":
-                import ctypes
-                user32 = ctypes.windll.user32
-                # Restore from minimized if needed — activate alone won't do it
-                if user32.IsIconic(hwnd):
-                    user32.ShowWindow(hwnd, 9)  # SW_RESTORE
-                # Bypass the foreground lock: simulate an Alt key tap so the
-                # system thinks this process received input, then call
-                # SetForegroundWindow.
-                user32.keybd_event(0x12, 0, 0, 0)   # VK_MENU (Alt) down
-                user32.keybd_event(0x12, 0, 2, 0)   # Alt up
-                user32.SetForegroundWindow(hwnd)
-                import time
-                time.sleep(0.05)
-            else:
-                w.activate()
+            w.activate()
             return {"success": True}
         except Exception as e:
             return {"success": False, "error": str(e)}
@@ -878,7 +916,8 @@ class GenericFileHandler(BaseFileHandler):
             Dict containing 'success' boolean and either 'exists' boolean or 'error' string
         """
         try:
-            return {"success": True, "exists": resolve_path(path).is_file()}
+            p = resolve_allowed_path(path, "file_exists")
+            return {"success": True, "exists": p.is_file(), **_audit_path(p, "file_exists")}
         except Exception as e:
             return {"success": False, "error": str(e)}
 
@@ -893,7 +932,8 @@ class GenericFileHandler(BaseFileHandler):
             Dict containing 'success' boolean and either 'exists' boolean or 'error' string
         """
         try:
-            return {"success": True, "exists": resolve_path(path).is_dir()}
+            p = resolve_allowed_path(path, "directory_exists")
+            return {"success": True, "exists": p.is_dir(), **_audit_path(p, "directory_exists")}
         except Exception as e:
             return {"success": False, "error": str(e)}
 
@@ -908,21 +948,23 @@ class GenericFileHandler(BaseFileHandler):
             Dict containing 'success' boolean and either 'files' list of names or 'error' string
         """
         try:
+            p = resolve_allowed_path(path, "list_dir")
             return {
                 "success": True,
                 "files": [
-                    p.name for p in resolve_path(path).iterdir() if p.is_file() or p.is_dir()
+                    child.name for child in p.iterdir() if child.is_file() or child.is_dir()
                 ],
+                **_audit_path(p, "list_dir"),
             }
         except Exception as e:
             return {"success": False, "error": str(e)}
 
     async def read_text(self, path: str) -> Dict[str, Any]:
         try:
-            p = resolve_path(path)
+            p = resolve_allowed_path(path, "read_text")
             for enc in ("utf-8", "utf-16", "gbk", "latin-1"):
                 try:
-                    return {"success": True, "content": p.read_text(encoding=enc)}
+                    return {"success": True, "content": p.read_text(encoding=enc), **_audit_path(p, "read_text")}
                 except (UnicodeDecodeError, UnicodeError):
                     continue
             return {"success": False, "error": f"Could not decode file: {path}"}
@@ -941,8 +983,9 @@ class GenericFileHandler(BaseFileHandler):
             Dict containing 'success' boolean and optionally 'error' string
         """
         try:
-            resolve_path(path).write_text(content)
-            return {"success": True}
+            p = resolve_allowed_path(path, "write_text", dangerous=True)
+            p.write_text(content)
+            return {"success": True, **_audit_path(p, "write_text")}
         except Exception as e:
             return {"success": False, "error": str(e)}
 
@@ -961,10 +1004,11 @@ class GenericFileHandler(BaseFileHandler):
             Dict containing 'success' boolean and optionally 'error' string
         """
         try:
+            p = resolve_allowed_path(path, "write_bytes", dangerous=True)
             mode = "ab" if append else "wb"
-            with open(resolve_path(path), mode) as f:
+            with open(p, mode) as f:
                 f.write(base64.b64decode(content_b64))
-            return {"success": True}
+            return {"success": True, **_audit_path(p, "write_bytes")}
         except Exception as e:
             return {"success": False, "error": str(e)}
 
@@ -983,7 +1027,7 @@ class GenericFileHandler(BaseFileHandler):
             Dict containing 'success' boolean and either 'content_b64' string or 'error' string
         """
         try:
-            file_path = resolve_path(path)
+            file_path = resolve_allowed_path(path, "read_bytes")
             with open(file_path, "rb") as f:
                 if offset > 0:
                     f.seek(offset)
@@ -993,7 +1037,7 @@ class GenericFileHandler(BaseFileHandler):
                 else:
                     content = f.read()
 
-            return {"success": True, "content_b64": base64.b64encode(content).decode("utf-8")}
+            return {"success": True, "content_b64": base64.b64encode(content).decode("utf-8"), **_audit_path(file_path, "read_bytes")}
         except Exception as e:
             return {"success": False, "error": str(e)}
 
@@ -1008,9 +1052,9 @@ class GenericFileHandler(BaseFileHandler):
             Dict containing 'success' boolean and either 'size' integer or 'error' string
         """
         try:
-            file_path = resolve_path(path)
+            file_path = resolve_allowed_path(path, "get_file_size")
             size = file_path.stat().st_size
-            return {"success": True, "size": size}
+            return {"success": True, "size": size, **_audit_path(file_path, "get_file_size")}
         except Exception as e:
             return {"success": False, "error": str(e)}
 
@@ -1025,8 +1069,9 @@ class GenericFileHandler(BaseFileHandler):
             Dict containing 'success' boolean and optionally 'error' string
         """
         try:
-            resolve_path(path).unlink()
-            return {"success": True}
+            p = resolve_allowed_path(path, "delete_file", dangerous=True)
+            p.unlink()
+            return {"success": True, **_audit_path(p, "delete_file")}
         except Exception as e:
             return {"success": False, "error": str(e)}
 
@@ -1044,8 +1089,9 @@ class GenericFileHandler(BaseFileHandler):
             Dict containing 'success' boolean and optionally 'error' string
         """
         try:
-            resolve_path(path).mkdir(parents=True, exist_ok=True)
-            return {"success": True}
+            p = resolve_allowed_path(path, "create_dir", dangerous=True)
+            p.mkdir(parents=True, exist_ok=True)
+            return {"success": True, **_audit_path(p, "create_dir")}
         except Exception as e:
             return {"success": False, "error": str(e)}
 
@@ -1060,7 +1106,8 @@ class GenericFileHandler(BaseFileHandler):
             Dict containing 'success' boolean and optionally 'error' string
         """
         try:
-            resolve_path(path).rmdir()
-            return {"success": True}
+            p = resolve_allowed_path(path, "delete_dir", dangerous=True)
+            p.rmdir()
+            return {"success": True, **_audit_path(p, "delete_dir")}
         except Exception as e:
             return {"success": False, "error": str(e)}

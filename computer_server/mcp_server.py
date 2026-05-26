@@ -157,7 +157,7 @@ def _get_handlers():
 async def _detect_actual_resolution_async() -> Tuple[int, int]:
     """Detect the actual screen resolution using the automation handler."""
     try:
-        _, automation_handler, _, _, _ = _get_handlers()
+        automation_handler = _get_handlers().automation
         result = await automation_handler.get_screen_size()
         size = result.get("size", {})
         return size.get("width", 1920), size.get("height", 1080)
@@ -397,57 +397,6 @@ def _window_detect_changes(
 
 
 # ---------------------------------------------------------------------------
-# Recording hook
-# ---------------------------------------------------------------------------
-
-
-async def _recording_hook(
-    tool_name: str,
-    args: Dict[str, Any],
-    result: Dict[str, Any],
-    click_point: Optional[Tuple[int, int]] = None,
-    window_ref: Optional[Dict[str, Any]] = None,
-) -> None:
-    """Record a tool invocation if recording is active. Never raises."""
-    try:
-        from computer_server.recording.session import (
-            RECORDABLE_TOOLS,
-            get_recording_session,
-        )
-
-        if tool_name not in RECORDABLE_TOOLS:
-            return
-        session = get_recording_session()
-        if session is None or not session.active:
-            return
-
-        # Capture screenshot after action only when the recording policy asks
-        # for one.  Disk I/O is handled by the dedicated recording writer
-        # thread; this gate avoids paying screenshot latency on every action
-        # when callers choose sampling or metadata-only recording.
-        screenshot_bytes = None
-        if session.should_capture_screenshot():
-            try:
-                _, automation_handler, _, _, _ = _get_handlers()
-                scr_result = await automation_handler.screenshot(format="png")
-                if scr_result.get("success") and scr_result.get("image_data"):
-                    screenshot_bytes = base64.b64decode(scr_result["image_data"])
-            except Exception:
-                session.note_screenshot_error()
-
-        await session.record_turn(
-            tool_name=tool_name,
-            args=args,
-            result=result,
-            screenshot_bytes=screenshot_bytes,
-            click_point=click_point,
-            window_ref=window_ref,
-        )
-    except Exception:
-        pass
-
-
-# ---------------------------------------------------------------------------
 # Platform-specific helpers
 # ---------------------------------------------------------------------------
 
@@ -559,8 +508,8 @@ def _set_value_via_uia_point(screen_x: int, screen_y: int, value: str) -> None:
     set_value_at_point(screen_x, screen_y, value)
 
 
-def _send_input_click(x: int, y: int, button: str, count: int = 1) -> None:
-    """Perform a click via SendInput/mouse_event at (x, y).
+def _mouse_event_click(x: int, y: int, button: str, count: int = 1) -> None:
+    """Perform a click via win32api.mouse_event at (x, y).
 
     Uses win32api.mouse_event instead of pynput so the click is synthesized
     as a real HID input event. Required for WebView2 / UWP targets that
@@ -632,6 +581,47 @@ def create_mcp_server() -> FastMCP:
         Always take a screenshot first to see the current state before performing actions.
         After performing actions, take another screenshot to verify the result.""",
     )
+    from computer_server.server_context import ServerContext
+
+    context = ServerContext()
+
+    async def _recording_hook(
+        tool_name: str,
+        args: Dict[str, Any],
+        result: Dict[str, Any],
+        click_point: Optional[Tuple[int, int]] = None,
+        window_ref: Optional[Dict[str, Any]] = None,
+    ) -> None:
+        """Record a tool invocation for this MCP server instance."""
+        try:
+            from computer_server.recording.session import RECORDABLE_TOOLS
+
+            if tool_name not in RECORDABLE_TOOLS:
+                return
+            session = context.recording_session
+            if session is None or not session.active:
+                return
+
+            screenshot_bytes = None
+            if session.should_capture_screenshot():
+                try:
+                    automation_handler = _get_handlers().automation
+                    scr_result = await automation_handler.screenshot(format="png")
+                    if scr_result.get("success") and scr_result.get("image_data"):
+                        screenshot_bytes = base64.b64decode(scr_result["image_data"])
+                except Exception:
+                    session.note_screenshot_error()
+
+            await session.record_turn(
+                tool_name=tool_name,
+                args=args,
+                result=result,
+                screenshot_bytes=screenshot_bytes,
+                click_point=click_point,
+                window_ref=window_ref,
+            )
+        except Exception:
+            logger.debug("recording hook failed", exc_info=True)
 
     # ============================================================
     # Helper: capture_after pipeline (screenshot + SOM on a window)
@@ -684,23 +674,25 @@ def create_mcp_server() -> FastMCP:
             format: 'jpeg' (smaller, default) or 'png' (lossless).
             quality: JPEG quality 1-95, ignored for PNG. Default 85.
         """
-        from io import BytesIO
-
         from PIL import Image as PILImage
 
         from computer_server.handlers.base import normalize_screenshot_format
+        from computer_server.handlers.screenshot_service import (
+            encode_for_mcp_image,
+            resize_to_max_dimension,
+        )
 
         try:
             fmt, quality = normalize_screenshot_format(format, quality)
         except ValueError as e:
             fmt, quality = "jpeg", 85
 
-        _, automation_handler, _, _, _ = _get_handlers()
+        automation_handler = _get_handlers().automation
         result = await automation_handler.screenshot(format=fmt, quality=quality)
         if not result.get("success"):
             return {"success": False, "error": "Screenshot failed: " + result.get("error", "unknown")}
         image_data = base64.b64decode(result["image_data"])
-
+        from io import BytesIO
         img = PILImage.open(BytesIO(image_data))
 
         # If target resolution is set, resize to that
@@ -709,37 +701,11 @@ def create_mcp_server() -> FastMCP:
         else:
             # Resize large images to keep under 1MB limit
             max_dimension = 1280
-            width, height = img.size
-            if width > max_dimension or height > max_dimension:
-                if width > height:
-                    new_width = max_dimension
-                    new_height = int(height * max_dimension / width)
-                else:
-                    new_height = max_dimension
-                    new_width = int(width * max_dimension / height)
-                img = img.resize((new_width, new_height), PILImage.Resampling.LANCZOS)
+            img, resized = resize_to_max_dimension(img, max_dimension)
+            if resized and not _target_width:
+                _configure_scaling(target_width=img.width, target_height=img.height)
 
-                if not _target_width:
-                    _configure_scaling(target_width=new_width, target_height=new_height)
-
-        # Convert to RGB if necessary
-        if img.mode in ("RGBA", "P"):
-            img = img.convert("RGB")
-
-        buffered = BytesIO()
-        if fmt == "jpeg":
-            img.save(buffered, format="JPEG", quality=quality, optimize=True)
-        else:
-            img.save(buffered, format="PNG", optimize=True)
-        buffered.seek(0)
-        image_data = buffered.getvalue()
-
-        # If still too large, reduce quality further
-        if fmt == "jpeg" and len(image_data) > 900000:
-            buffered = BytesIO()
-            img.save(buffered, format="JPEG", quality=70, optimize=True)
-            buffered.seek(0)
-            image_data = buffered.getvalue()
+        image_data = encode_for_mcp_image(img, fmt, quality)
 
         return Image(data=image_data, format=fmt)
 
@@ -753,7 +719,7 @@ def create_mcp_server() -> FastMCP:
         """
         if _target_width is not None and _target_height is not None:
             return {"width": int(_target_width), "height": int(_target_height)}
-        _, automation_handler, _, _, _ = _get_handlers()
+        automation_handler = _get_handlers().automation
         raw = await automation_handler.get_screen_size()
         size = raw.get("size", raw)
         response = {"width": size.get("width", 0), "height": size.get("height", 0)}
@@ -772,7 +738,7 @@ def create_mcp_server() -> FastMCP:
         Returns:
             Dictionary with 'x' and 'y' coordinates.
         """
-        _, automation_handler, _, _, _ = _get_handlers()
+        automation_handler = _get_handlers().automation
         result = await automation_handler.get_cursor_position()
         pos = result.get("position", {})
         if "x" in pos and "y" in pos:
@@ -838,7 +804,7 @@ def create_mcp_server() -> FastMCP:
             # Dispatch action
             if action == "raise":
                 try:
-                    _, automation_handler, _, _, _ = _get_handlers()
+                    automation_handler = _get_handlers().automation
                     await automation_handler.activate_window(str(window_id))
                     result: Dict[str, Any] = {"success": True, "action": "raise",
                                                "element_index": element_index,
@@ -966,7 +932,7 @@ def create_mcp_server() -> FastMCP:
         # Agent cursor overlay: fly to target before the action
         await _animate_cursor_to(actual_x, actual_y)
 
-        _, automation_handler, _, _, _ = _get_handlers()
+        automation_handler = _get_handlers().automation
 
         # Write debug crosshair image if requested
         if debug_image_out:
@@ -1001,8 +967,8 @@ def create_mcp_server() -> FastMCP:
                 if not fg_ok:
                     logger.debug("SetForegroundWindow returned 0 for window_id=%d — click may land on wrong window", window_id)
                 await asyncio.sleep(0.05)  # 50ms settle
-                _send_input_click(actual_x, actual_y, button, count)
-                result = {"success": True, "method": "send_input",
+                _mouse_event_click(actual_x, actual_y, button, count)
+                result = {"success": True, "method": "mouse_event",
                            "x": actual_x, "y": actual_y, "button": button,
                            "count": count, "force_frontmost": True}
                 wr = _build_window_ref(pid, window_id, actual_x, actual_y)
@@ -1075,7 +1041,7 @@ def create_mcp_server() -> FastMCP:
         """
         actual_x, actual_y = _scale_to_actual(x, y)
         await _animate_cursor_to(actual_x, actual_y)
-        _, automation_handler, _, _, _ = _get_handlers()
+        automation_handler = _get_handlers().automation
         return await automation_handler.move_cursor(actual_x, actual_y)
 
     @mcp.tool(annotations={"readOnlyHint": False, "destructiveHint": True, "idempotentHint": False, "openWorldHint": True})
@@ -1138,14 +1104,12 @@ def create_mcp_server() -> FastMCP:
         actual_start_x, actual_start_y = _scale_to_actual(start_x, start_y)
         actual_end_x, actual_end_y = _scale_to_actual(end_x, end_y)
         await _animate_cursor_to(actual_start_x, actual_start_y)
-        _, automation_handler, _, _, _ = _get_handlers()
+        automation_handler = _get_handlers().automation
         await automation_handler.move_cursor(actual_start_x, actual_start_y)
 
         # Step the drag manually so the overlay arrow tracks the path.
         # automation_handler.drag_to() does its own internal stepping, but
         # the overlay would stay at the start point the whole time.
-        import time as _time
-
         from computer_server.overlay import _agent_cursor
 
         btn = automation_handler._map_button(button)
@@ -1159,7 +1123,7 @@ def create_mcp_server() -> FastMCP:
             # Track overlay along the drag path and keep it visible
             if _agent_cursor is not None:
                 _agent_cursor.set_position_visible(ix, iy)
-            _time.sleep(duration / steps)
+            await asyncio.sleep(duration / steps)
         automation_handler.mouse.position = (actual_end_x, actual_end_y)
         await automation_handler.mouse_up(actual_end_x, actual_end_y, button=button)
         result = {"success": True}
@@ -1233,7 +1197,7 @@ def create_mcp_server() -> FastMCP:
         ):
             x, y = _window_resized_to_screen(pid, window_id, x, y)
 
-        _, automation_handler, _, _, _ = _get_handlers()
+        automation_handler = _get_handlers().automation
 
         scroll_ax: Optional[int] = None
         scroll_ay: Optional[int] = None
@@ -1244,20 +1208,18 @@ def create_mcp_server() -> FastMCP:
 
         if smooth and scroll_y != 0:
             # Emit many small individual wheel ticks for smooth human-like scrolling
-            import time as _stime
             direction = 1 if scroll_y > 0 else -1
             ticks = abs(scroll_y)
             for _ in range(ticks):
                 automation_handler.mouse.scroll(0, direction)
-                _stime.sleep(0.015)
+                await asyncio.sleep(0.015)
             result = {"success": True}
         elif smooth and scroll_x != 0:
-            import time as _stime
             direction = 1 if scroll_x > 0 else -1
             ticks = abs(scroll_x)
             for _ in range(ticks):
                 automation_handler.mouse.scroll(direction, 0)
-                _stime.sleep(0.015)
+                await asyncio.sleep(0.015)
             result = {"success": True}
         else:
             result = await automation_handler.scroll(scroll_x, scroll_y)
@@ -1293,7 +1255,7 @@ def create_mcp_server() -> FastMCP:
         if x is not None and y is not None:
             actual_x, actual_y = _scale_to_actual(x, y)
             await _animate_cursor_to(actual_x, actual_y)
-        _, automation_handler, _, _, _ = _get_handlers()
+        automation_handler = _get_handlers().automation
         return await automation_handler.mouse_down(actual_x, actual_y, button=button)
 
     @mcp.tool(annotations={"readOnlyHint": False, "destructiveHint": True, "idempotentHint": False, "openWorldHint": True})
@@ -1312,7 +1274,7 @@ def create_mcp_server() -> FastMCP:
         if x is not None and y is not None:
             actual_x, actual_y = _scale_to_actual(x, y)
             await _animate_cursor_to(actual_x, actual_y)
-        _, automation_handler, _, _, _ = _get_handlers()
+        automation_handler = _get_handlers().automation
         return await automation_handler.mouse_up(actual_x, actual_y, button=button)
 
     # ============================================================
@@ -1339,7 +1301,7 @@ def create_mcp_server() -> FastMCP:
             pid: Process ID for capture_after look-up.
             window_id: Window ID for capture_after look-up.
         """
-        _, automation_handler, _, _, _ = _get_handlers()
+        automation_handler = _get_handlers().automation
         result = await automation_handler.type_text(text)
         await _recording_hook("computer_type", {"text": text}, result)
 
@@ -1357,7 +1319,7 @@ def create_mcp_server() -> FastMCP:
         Args:
             key: The key to press (e.g., 'enter', 'tab', 'escape', 'a', 'b', etc.)
         """
-        _, automation_handler, _, _, _ = _get_handlers()
+        automation_handler = _get_handlers().automation
         result = await automation_handler.press_key(key)
         await _recording_hook("computer_press_key", {"key": key}, result)
         return result
@@ -1371,7 +1333,7 @@ def create_mcp_server() -> FastMCP:
             keys: List of keys to press together (e.g., ['ctrl', 'c'] for copy,
                   ['ctrl', 'c'] for copy, ['ctrl', 'v'] for paste, ['alt', 'tab'] for window switch)
         """
-        _, automation_handler, _, _, _ = _get_handlers()
+        automation_handler = _get_handlers().automation
         result = await automation_handler.hotkey(keys)
         await _recording_hook("computer_hotkey", {"keys": keys}, result)
         return result
@@ -1384,7 +1346,7 @@ def create_mcp_server() -> FastMCP:
         Args:
             key: The key to hold down
         """
-        _, automation_handler, _, _, _ = _get_handlers()
+        automation_handler = _get_handlers().automation
         result = await automation_handler.key_down(key)
         await _recording_hook("computer_key_down", {"key": key}, result)
         return result
@@ -1397,7 +1359,7 @@ def create_mcp_server() -> FastMCP:
         Args:
             key: The key to release
         """
-        _, automation_handler, _, _, _ = _get_handlers()
+        automation_handler = _get_handlers().automation
         result = await automation_handler.key_up(key)
         await _recording_hook("computer_key_up", {"key": key}, result)
         return result
@@ -1466,7 +1428,7 @@ def create_mcp_server() -> FastMCP:
 
         # Activate the target window first — otherwise clicks and keystrokes
         # land on whatever window happens to be foreground.
-        _, _, _, _, window_handler = _get_handlers()
+        window_handler = _get_handlers().window
         await window_handler.activate_window(window_id)
         await _animate_cursor_to(screen_cx, screen_cy)
 
@@ -1495,7 +1457,7 @@ def create_mcp_server() -> FastMCP:
 
         # For checkable elements, click to toggle
         if is_checkable:
-            _, automation_handler, _, _, _ = _get_handlers()
+            automation_handler = _get_handlers().automation
             actual_cx, actual_cy = _scale_to_actual(screen_cx, screen_cy)
             await automation_handler.move_cursor(actual_cx, actual_cy)
             click_result = await automation_handler.left_click(actual_cx, actual_cy)
@@ -1509,7 +1471,7 @@ def create_mcp_server() -> FastMCP:
 
         # For text-like elements: click to focus, select all, type value
         if is_text_like or "click" in (el.actions or []):
-            _, automation_handler, _, _, _ = _get_handlers()
+            automation_handler = _get_handlers().automation
             actual_cx, actual_cy = _scale_to_actual(screen_cx, screen_cy)
 
             # Click to focus the element
@@ -1549,7 +1511,7 @@ def create_mcp_server() -> FastMCP:
         Returns:
             Dictionary with clipboard content.
         """
-        _, automation_handler, _, _, _ = _get_handlers()
+        automation_handler = _get_handlers().automation
         return await automation_handler.copy_to_clipboard()
 
     @mcp.tool(annotations={"readOnlyHint": False, "destructiveHint": True, "idempotentHint": False, "openWorldHint": True})
@@ -1560,7 +1522,7 @@ def create_mcp_server() -> FastMCP:
         Args:
             text: Text to copy to clipboard
         """
-        _, automation_handler, _, _, _ = _get_handlers()
+        automation_handler = _get_handlers().automation
         return await automation_handler.set_clipboard(text)
 
     # ============================================================
@@ -1579,7 +1541,7 @@ def create_mcp_server() -> FastMCP:
         Returns:
             Dictionary with 'stdout', 'stderr', and 'return_code' keys.
         """
-        _, automation_handler, _, _, _ = _get_handlers()
+        automation_handler = _get_handlers().automation
         return await automation_handler.run_command(command, shell=shell)
 
     # ============================================================
@@ -1589,55 +1551,55 @@ def create_mcp_server() -> FastMCP:
     @mcp.tool(annotations={"readOnlyHint": True, "destructiveHint": False, "idempotentHint": True, "openWorldHint": True})
     async def computer_file_read(path: str) -> Any:
         """Read the text content of a file."""
-        _, _, file_handler, _, _ = _get_handlers()
+        file_handler = _get_handlers().file
         return await file_handler.read_text(path)
 
     @mcp.tool(annotations={"readOnlyHint": False, "destructiveHint": True, "idempotentHint": False, "openWorldHint": True})
     async def computer_file_write(path: str, content: str) -> Any:
         """Write text content to a file."""
-        _, _, file_handler, _, _ = _get_handlers()
+        file_handler = _get_handlers().file
         return await file_handler.write_text(path, content)
 
     @mcp.tool(annotations={"readOnlyHint": True, "destructiveHint": False, "idempotentHint": True, "openWorldHint": True})
     async def computer_file_exists(path: str) -> Any:
         """Check if a file exists."""
-        _, _, file_handler, _, _ = _get_handlers()
+        file_handler = _get_handlers().file
         return await file_handler.file_exists(path)
 
     @mcp.tool(annotations={"readOnlyHint": True, "destructiveHint": False, "idempotentHint": True, "openWorldHint": True})
     async def computer_directory_exists(path: str) -> Any:
         """Check if a directory exists."""
-        _, _, file_handler, _, _ = _get_handlers()
+        file_handler = _get_handlers().file
         return await file_handler.directory_exists(path)
 
     @mcp.tool(annotations={"readOnlyHint": True, "destructiveHint": False, "idempotentHint": True, "openWorldHint": True})
     async def computer_list_directory(path: str) -> Any:
         """List the contents of a directory."""
-        _, _, file_handler, _, _ = _get_handlers()
+        file_handler = _get_handlers().file
         return await file_handler.list_dir(path)
 
     @mcp.tool(annotations={"readOnlyHint": False, "destructiveHint": True, "idempotentHint": False, "openWorldHint": True})
     async def computer_create_directory(path: str) -> Any:
         """Create a directory."""
-        _, _, file_handler, _, _ = _get_handlers()
+        file_handler = _get_handlers().file
         return await file_handler.create_dir(path)
 
     @mcp.tool(annotations={"readOnlyHint": False, "destructiveHint": True, "idempotentHint": False, "openWorldHint": True})
     async def computer_delete_file(path: str) -> Any:
         """Delete a file."""
-        _, _, file_handler, _, _ = _get_handlers()
+        file_handler = _get_handlers().file
         return await file_handler.delete_file(path)
 
     @mcp.tool(annotations={"readOnlyHint": False, "destructiveHint": True, "idempotentHint": False, "openWorldHint": True})
     async def computer_delete_directory(path: str) -> Any:
         """Delete a directory."""
-        _, _, file_handler, _, _ = _get_handlers()
+        file_handler = _get_handlers().file
         return await file_handler.delete_dir(path)
 
     @mcp.tool(annotations={"readOnlyHint": True, "destructiveHint": False, "idempotentHint": True, "openWorldHint": True})
     async def computer_get_file_size(path: str) -> Any:
         """Get the size of a file in bytes."""
-        _, _, file_handler, _, _ = _get_handlers()
+        file_handler = _get_handlers().file
         return await file_handler.get_file_size(path)
 
     # ============================================================
@@ -1657,7 +1619,7 @@ def create_mcp_server() -> FastMCP:
             browser: Preferred browser for URLs — "chrome", "edge",
                 "firefox", etc. Ignored for files.
         """
-        _, _, _, _, window_handler = _get_handlers()
+        window_handler = _get_handlers().window
         result = await window_handler.open(target, browser=browser)
         await _recording_hook("computer_open", {"target": target, "browser": browser}, result)
         return result
@@ -1673,7 +1635,7 @@ def create_mcp_server() -> FastMCP:
 
         Examples: "notepad", "chrome", "Calculator", "C:\\app\\myapp.exe"
         """
-        _, _, _, _, window_handler = _get_handlers()
+        window_handler = _get_handlers().window
         result = await window_handler.launch(app, args)
         await _recording_hook("computer_launch_app", {"app": app, "args": args}, result)
         return result
@@ -1681,37 +1643,37 @@ def create_mcp_server() -> FastMCP:
     @mcp.tool(annotations={"readOnlyHint": True, "destructiveHint": False, "idempotentHint": True, "openWorldHint": True})
     async def computer_get_active_window() -> Any:
         """Get the currently active window ID."""
-        _, _, _, _, window_handler = _get_handlers()
+        window_handler = _get_handlers().window
         return await window_handler.get_current_window_id()
 
     @mcp.tool(annotations={"readOnlyHint": True, "destructiveHint": False, "idempotentHint": True, "openWorldHint": True})
     async def computer_get_window_name(window_id: str) -> Any:
         """Get the title/name of a window."""
-        _, _, _, _, window_handler = _get_handlers()
+        window_handler = _get_handlers().window
         return await window_handler.get_window_name(window_id)
 
     @mcp.tool(annotations={"readOnlyHint": True, "destructiveHint": False, "idempotentHint": True, "openWorldHint": True})
     async def computer_get_window_size(window_id: str) -> Any:
         """Get the size of a window."""
-        _, _, _, _, window_handler = _get_handlers()
+        window_handler = _get_handlers().window
         return await window_handler.get_window_size(window_id)
 
     @mcp.tool(annotations={"readOnlyHint": True, "destructiveHint": False, "idempotentHint": True, "openWorldHint": True})
     async def computer_get_window_position(window_id: str) -> Any:
         """Get the position of a window."""
-        _, _, _, _, window_handler = _get_handlers()
+        window_handler = _get_handlers().window
         return await window_handler.get_window_position(window_id)
 
     @mcp.tool(annotations={"readOnlyHint": False, "destructiveHint": True, "idempotentHint": False, "openWorldHint": True})
     async def computer_set_window_size(window_id: str, width: int, height: int) -> Any:
         """Set the size of a window."""
-        _, _, _, _, window_handler = _get_handlers()
+        window_handler = _get_handlers().window
         return await window_handler.set_window_size(window_id, width, height)
 
     @mcp.tool(annotations={"readOnlyHint": False, "destructiveHint": True, "idempotentHint": False, "openWorldHint": True})
     async def computer_set_window_position(window_id: str, x: int, y: int) -> Any:
         """Set the position of a window."""
-        _, _, _, _, window_handler = _get_handlers()
+        window_handler = _get_handlers().window
         return await window_handler.set_window_position(window_id, x, y)
 
     @mcp.tool(annotations={"readOnlyHint": False, "destructiveHint": True, "idempotentHint": False, "openWorldHint": True})
@@ -1722,7 +1684,7 @@ def create_mcp_server() -> FastMCP:
         (SW_RESTORE), then focused.  Use this instead of maximize_window
         to bring back a minimized window at its original size.
         """
-        _, _, _, _, window_handler = _get_handlers()
+        window_handler = _get_handlers().window
         result = await window_handler.activate_window(window_id)
         # Record window title + process name for stale-HWND resolution during replay
         window_title = ""
@@ -1743,19 +1705,19 @@ def create_mcp_server() -> FastMCP:
     @mcp.tool(annotations={"readOnlyHint": False, "destructiveHint": True, "idempotentHint": False, "openWorldHint": True})
     async def computer_minimize_window(window_id: str) -> Any:
         """Minimize a window."""
-        _, _, _, _, window_handler = _get_handlers()
+        window_handler = _get_handlers().window
         return await window_handler.minimize_window(window_id)
 
     @mcp.tool(annotations={"readOnlyHint": False, "destructiveHint": True, "idempotentHint": False, "openWorldHint": True})
     async def computer_maximize_window(window_id: str) -> Any:
         """Maximize a window."""
-        _, _, _, _, window_handler = _get_handlers()
+        window_handler = _get_handlers().window
         return await window_handler.maximize_window(window_id)
 
     @mcp.tool(annotations={"readOnlyHint": False, "destructiveHint": True, "idempotentHint": False, "openWorldHint": True})
     async def computer_close_window(window_id: str) -> Any:
         """Close a window."""
-        _, _, _, _, window_handler = _get_handlers()
+        window_handler = _get_handlers().window
         return await window_handler.close_window(window_id)
 
     @mcp.tool(annotations={"readOnlyHint": True, "destructiveHint": False, "idempotentHint": True, "openWorldHint": True})
@@ -1774,7 +1736,7 @@ def create_mcp_server() -> FastMCP:
         Returns a list of windows with 'id' and 'title' fields so you
         can identify the main window without extra calls.
         """
-        _, _, _, _, window_handler = _get_handlers()
+        window_handler = _get_handlers().window
         return await window_handler.get_application_windows(app)
 
     # ============================================================
@@ -1945,13 +1907,13 @@ def create_mcp_server() -> FastMCP:
     @mcp.tool(annotations={"readOnlyHint": True, "destructiveHint": False, "idempotentHint": True, "openWorldHint": True})
     async def computer_get_desktop_environment() -> Any:
         """Get information about the current desktop environment."""
-        _, _, _, desktop_handler, _ = _get_handlers()
+        desktop_handler = _get_handlers().desktop
         return await desktop_handler.get_desktop_environment()
 
     @mcp.tool(annotations={"readOnlyHint": False, "destructiveHint": True, "idempotentHint": False, "openWorldHint": True})
     async def computer_set_wallpaper(path: str) -> Any:
         """Set the desktop wallpaper."""
-        _, _, _, desktop_handler, _ = _get_handlers()
+        desktop_handler = _get_handlers().desktop
         return await desktop_handler.set_wallpaper(path)
 
     # ============================================================
@@ -1974,7 +1936,7 @@ def create_mcp_server() -> FastMCP:
         Returns:
             Dictionary with 'tree_markdown', 'node_count', 'tree_quality'.
         """
-        accessibility_handler, _, _, _, _ = _get_handlers()
+        accessibility_handler = _get_handlers().accessibility
         target = window_id if window_id else None
         return await accessibility_handler.get_accessibility_tree(target)
 
@@ -2023,7 +1985,7 @@ def create_mcp_server() -> FastMCP:
 
         from computer_server.handlers.element_cache import CachedElement, get_element_cache
 
-        _, automation_handler, _, _, _ = _get_handlers()
+        automation_handler = _get_handlers().automation
 
         # 0. Bring the target window to the foreground so the screenshot
         #    captures its actual content, not overlapping windows.
@@ -2504,7 +2466,7 @@ def create_mcp_server() -> FastMCP:
         screen_y2 = csy + padded_y2
 
         # Take a fresh full-resolution screenshot
-        _, automation_handler, _, _, _ = _get_handlers()
+        automation_handler = _get_handlers().automation
         result = await automation_handler.screenshot(format="png", quality=95)
         img_bytes = base64.b64decode(result["image_data"])
         img = PILImage.open(BytesIO(img_bytes))
@@ -2733,11 +2695,7 @@ def create_mcp_server() -> FastMCP:
         Returns:
             Dictionary with recording state summary.
         """
-        from computer_server.recording.session import (
-            RecordingSession,
-            get_recording_session,
-            set_recording_session,
-        )
+        from computer_server.recording.session import RecordingSession
 
         if enabled:
             if not output_dir:
@@ -2750,13 +2708,13 @@ def create_mcp_server() -> FastMCP:
                 screenshot_every_n=screenshot_every_n,
             )
             session.start()
-            set_recording_session(session)
+            context.recording_session = session
             return {"success": True, **session.state}
         else:
-            session = get_recording_session()
+            session = context.recording_session
             if session is not None:
                 summary = session.stop()
-                set_recording_session(None)
+                context.recording_session = None
                 return {"success": True, **summary}
             return {"success": True, "message": "Recording was not active"}
 
@@ -2768,9 +2726,7 @@ def create_mcp_server() -> FastMCP:
         Returns:
             Dictionary with active flag, turn count, output directory, and duration.
         """
-        from computer_server.recording.session import get_recording_session
-
-        session = get_recording_session()
+        session = context.recording_session
         if session is None:
             return {"active": False, "turn_count": 0}
         return session.state
@@ -2977,11 +2933,10 @@ def create_mcp_server() -> FastMCP:
                 "suggestion": "Install Windows dependencies: pip install pynput uiautomation pywin32 psutil",
             }
 
-        # Singleton recorder stored on the MCP server function
-        recorder = getattr(computer_learn_start, "_recorder", None)
+        recorder = context.learning_recorder
         if recorder is None:
             recorder = LearningRecorder()
-            computer_learn_start._recorder = recorder  # type: ignore[attr-defined]
+            context.learning_recorder = recorder
 
         import os, time as _time
         if not output_dir:
@@ -3025,7 +2980,7 @@ def create_mcp_server() -> FastMCP:
             Dictionary with task_description, duration_seconds, action_count,
             apps, urls, and the full actions list.
         """
-        recorder = getattr(computer_learn_start, "_recorder", None)
+        recorder = context.learning_recorder
         if recorder is None:
             return {
                 "success": False,
@@ -3069,7 +3024,7 @@ def create_mcp_server() -> FastMCP:
         Returns recording status, action count, duration, current
         foreground app, and listener health.
         """
-        recorder = getattr(computer_learn_start, "_recorder", None)
+        recorder = context.learning_recorder
         if recorder is None:
             return {
                 "success": True,

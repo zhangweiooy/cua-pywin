@@ -8,6 +8,7 @@ profile, and damped-spring overshoot/settle.
 
 import math
 from dataclasses import dataclass, field
+from enum import Enum
 from typing import Optional
 
 # ---------------------------------------------------------------------------
@@ -30,11 +31,26 @@ DWELL_SECONDS = 0.4        # seconds to hold at rest before hiding
 
 
 @dataclass
+class Pose:
+    x: float
+    y: float
+    heading: float
+
+
+class Phase(str, Enum):
+    IDLE = "idle"
+    FLYING = "flying"
+    SPRING = "spring"
+    DWELL = "dwell"
+    DONE = "done"
+
+
+@dataclass
 class MotionState:
     x: float = 0.0
     y: float = 0.0
     heading: float = 0.0          # visual tip direction (radians)
-    phase: str = "idle"           # idle | flying | spring | dwell | done
+    phase: Phase | str = Phase.IDLE
     path_seg1: float = 0.0
     path_seg2: float = 0.0
     path_seg3: float = 0.0
@@ -176,6 +192,27 @@ def plan_path(x0: float, y0: float, th0: float, x1: float, y1: float, th1: float
     For targets very close to the start position, a perpendicular detour
     is added so the arrow always flies a visible arc.
     """
+    return plan_path_from_poses(
+        start=Pose(x0, y0, th0),
+        end=Pose(x1, y1, th1),
+        end_visual_heading=end_visual_heading,
+        target_x=target_x,
+        target_y=target_y,
+        r=r,
+    )
+
+
+def plan_path_from_poses(
+    start: Pose,
+    end: Pose,
+    end_visual_heading: float,
+    target_x: float,
+    target_y: float,
+    r: float = TURN_RADIUS,
+) -> MotionState:
+    """Build a MotionState from explicit start/end poses."""
+    x0, y0, th0 = start.x, start.y, start.heading
+    x1, y1, th1 = end.x, end.y, end.heading
     dx = x1 - x0
     dy = y1 - y0
     D = math.hypot(dx, dy)
@@ -194,7 +231,7 @@ def plan_path(x0: float, y0: float, th0: float, x1: float, y1: float, th1: float
 
     state = MotionState(
         x=x0, y=y0, heading=th0 + math.pi,  # visual heading = motion + pi (tip trails)
-        phase="flying",
+        phase=Phase.FLYING,
         path_x0=x0, path_y0=y0, path_th0=th0,
         path_r=detour_r,
         target_x=target_x, target_y=target_y,
@@ -294,12 +331,12 @@ def _sample_path(s: float, state: MotionState) -> tuple[float, float, float]:
 
 def tick(state: MotionState, dt: float) -> None:
     """Advance the motion state by dt seconds. Idempotent when idle/done."""
-    if state.phase in ("idle", "dwell", "done"):
+    if state.phase in (Phase.IDLE, "idle", Phase.DWELL, "dwell", Phase.DONE, "done"):
         return
 
-    if state.phase == "flying":
+    if state.phase in (Phase.FLYING, "flying"):
         _tick_flying(state, dt)
-    elif state.phase == "spring":
+    elif state.phase in (Phase.SPRING, "spring"):
         _tick_spring(state, dt)
 
 
@@ -324,7 +361,7 @@ def _tick_flying(state: MotionState, dt: float):
         state.x = end_x
         state.y = end_y
         state.heading = state.end_heading
-        state.phase = "spring"
+        state.phase = Phase.SPRING
     else:
         sx, sy, sth = _sample_path(state.distance, state)
         state.x = sx
@@ -353,4 +390,4 @@ def _tick_spring(state: MotionState, dt: float):
     if math.hypot(ox, oy) < 0.3 and math.hypot(vx, vy) < 2:
         state.x = state.target_x
         state.y = state.target_y
-        state.phase = "dwell"
+        state.phase = Phase.DWELL

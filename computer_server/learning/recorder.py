@@ -195,6 +195,7 @@ class LearningRecorder:
         self._app_detector = None
         self._keystroke_buncher = None
         self._scroll_buncher = None
+        self._last_uia_value = None
 
     # ================================================================
     # Event handlers (called from pynput listener threads)
@@ -209,7 +210,7 @@ class LearningRecorder:
                      modifiers: list[str], is_special: bool) -> None:
         """Called from InputCapture on a listener thread."""
         with self._lock:
-            if self._session is None:
+            if self._session is None or self._stopping:
                 return
             app_detector = self._app_detector
             uia = self._uia
@@ -272,9 +273,12 @@ class LearningRecorder:
                         lambda: self._get_current_url(exe), timeout=0.5,
                     )
                     # Snapshot UIA value at bunch start for diff extraction
-                    self._last_uia_value = self._run_uia_with_timeout(
+                    last_uia_value = self._run_uia_with_timeout(
                         lambda: uia.read_focused_value(), timeout=0.5,
                     ) if uia is not None else None
+                    with self._lock:
+                        if not self._stopping:
+                            self._last_uia_value = last_uia_value
                 self._keystroke_buncher.append(
                     char=char,
                     app_name=name,
@@ -287,7 +291,7 @@ class LearningRecorder:
     def _on_mouse_down(self, x: float, y: float, button: str, count: int) -> None:
         """Called from InputCapture on a listener thread."""
         with self._lock:
-            if self._session is None:
+            if self._session is None or self._stopping:
                 return
             app_detector = self._app_detector
             uia = self._uia
@@ -362,7 +366,7 @@ class LearningRecorder:
     def _on_scroll(self, x: float, y: float, dx: int, dy: int) -> None:
         """Called from InputCapture on a listener thread."""
         with self._lock:
-            if self._session is None:
+            if self._session is None or self._stopping:
                 return
             app_detector = self._app_detector
 
@@ -393,18 +397,20 @@ class LearningRecorder:
                              element_context) -> None:
         # Probe UIA for the real text content (pynput raw keystrokes miss IME chars).
         # Diff against the value at bunch start to extract only newly typed text.
-        if self._uia is not None:
-            current = self._run_uia_with_timeout(
-                lambda: self._uia.read_focused_value(), timeout=0.5,
-            )
+        with self._lock:
+            uia = self._uia
             prev = self._last_uia_value or ""
+            self._last_uia_value = None
+        if uia is not None:
+            current = self._run_uia_with_timeout(
+                lambda: uia.read_focused_value(), timeout=0.5,
+            )
             if current and current.strip():
                 if current.startswith(prev) and len(current) > len(prev):
                     text = current[len(prev):]
                 elif not current.isascii():
                     # Full replacement: entire value is non-ASCII (e.g. form field)
                     text = current
-            self._last_uia_value = None  # consume once
         action = ObservedAction(
             timestamp=time.perf_counter_ns(),
             action_type=ObservedActionType.TYPE_TEXT,

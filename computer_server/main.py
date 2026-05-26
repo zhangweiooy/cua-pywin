@@ -77,13 +77,12 @@ try:
 except Exception:
     package_version = "unknown"
 
-(
-    accessibility_handler,
-    automation_handler,
-    file_handler,
-    desktop_handler,
-    window_handler,
-) = HandlerFactory.create_handlers()
+_handlers = HandlerFactory.create_handlers()
+accessibility_handler = _handlers.accessibility
+automation_handler = _handlers.automation
+file_handler = _handlers.file
+desktop_handler = _handlers.desktop
+window_handler = _handlers.window
 
 
 async def _scroll_direction_handler(direction: str, clicks: int = 1) -> Dict[str, Any]:
@@ -187,7 +186,14 @@ async def status():
     features = []
     if _check_mcp():
         features.append("mcp")
-    return {"status": "ok", "os_type": OS_TYPE, "features": features}
+    return {
+        "status": "ok",
+        "os_type": OS_TYPE,
+        "features": features,
+        "http_api": "legacy",
+        "mcp_endpoint": "/mcp",
+        "note": "The /ws command API is a legacy subset. Prefer MCP for full tool coverage.",
+    }
 
 
 @app.get("/commands")
@@ -220,6 +226,8 @@ async def list_commands():
             commands_info[cmd_name]["aliases"] = aliases_by_command[cmd_name]
 
     return {
+        "api": "legacy_http_subset",
+        "mcp_endpoint": "/mcp",
         "commands": commands_info,
         "aliases": COMMAND_ALIASES,
     }

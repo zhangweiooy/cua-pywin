@@ -30,7 +30,12 @@ def parse_args(args: Optional[List[str]] = None) -> argparse.Namespace:
         help="Auto-detect and log the actual screen resolution at startup",
     )
     parser.add_argument(
-        "--host", default="0.0.0.0", help="Host to bind the server to (default: 0.0.0.0)"
+        "--host", default="127.0.0.1", help="Host to bind the server to (default: 127.0.0.1)"
+    )
+    parser.add_argument(
+        "--i-know-this-exposes-my-computer",
+        action="store_true",
+        help="Required when binding to a non-localhost host.",
     )
     parser.add_argument(
         "--port", type=int, default=8000, help="Port to bind the server to (default: 8000)"
@@ -88,6 +93,20 @@ def main() -> None:
     if sys.platform != "win32":
         logger.error("cua-pywin 仅支持 Windows 平台")
         sys.exit(1)
+
+    local_hosts = {"127.0.0.1", "localhost", "::1"}
+    if args.host not in local_hosts and not args.i_know_this_exposes_my_computer:
+        logger.error(
+            "Refusing to bind desktop-control HTTP server to %s without "
+            "--i-know-this-exposes-my-computer",
+            args.host,
+        )
+        sys.exit(2)
+    if args.host not in local_hosts:
+        logger.warning(
+            "Binding to %s exposes desktop-control tools to the network.",
+            args.host,
+        )
 
     # Import Server lazily so the module-level handler factory runs after
     # the platform check.

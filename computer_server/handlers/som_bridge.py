@@ -16,6 +16,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import threading
+import warnings
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional
 
@@ -238,12 +239,22 @@ async def detect(
     use_ocr: bool = True,
     vision_index_start: int = 10000,
 ) -> Optional[VisionResult]:
-    """Run SOM detection on screenshot bytes and return a VisionResult.
+    """Deprecated async SOM detection wrapper.
+
+    MCP stdio handlers should call detect_sync() after startup warm-up. The
+    async executor path is retained for external callers that are not running
+    under FastMCP's anyio stdio transport.
 
     Returns None if SOM is not available or if detection fails; never raises
     to the caller.
     """
     global _parser_state
+    warnings.warn(
+        "som_bridge.detect() is deprecated for MCP handlers; use detect_sync() "
+        "after warm_up() has started.",
+        DeprecationWarning,
+        stacklevel=2,
+    )
     if not is_available():
         return None
     if not _wait_if_loading(timeout=30.0):

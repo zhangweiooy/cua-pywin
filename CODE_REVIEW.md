@@ -48,41 +48,41 @@
 
 - [ ] `computer_server/mcp_server.py:491`、`computer_server/mcp_server.py:1835`、`computer_server/mcp_server.py:2461` — `mcp_server.py` 过度承担 application service 职责 | 现状：工具注册、坐标转换、window state、SOM、replay、learning 入口都集中在单文件 | 风险：修改任何能力都容易影响其他工具，测试粒度过大 | 修复方案：拆出 `window_state_service.py`、`coordinate_service.py`、`replay_resolver.py`；`mcp_server.py` 只做 schema/参数校验/调用服务。
 
-- [ ] `computer_server/handlers/factory.py:23`、`computer_server/mcp_server.py:126`、`computer_server/mcp_server.py:1321` — `_get_handlers()` 返回 5 元组，调用点靠位置解构 | 现状：大量 `_, automation_handler, _, _, _` 和 index-style 解构 | 风险：新增 handler 或调整顺序会产生隐蔽错误 | 修复方案：改为 `@dataclass Handlers(accessibility, automation, file, desktop, window)`。
+- [√] `computer_server/handlers/factory.py:23`、`computer_server/mcp_server.py:126`、`computer_server/mcp_server.py:1321` — `_get_handlers()` 返回 5 元组，调用点靠位置解构 | 现状：大量 `_, automation_handler, _, _, _` 和 index-style 解构 | 风险：新增 handler 或调整顺序会产生隐蔽错误 | 修复方案：改为 `@dataclass Handlers(accessibility, automation, file, desktop, window)`。
 
-- [ ] `computer_server/handlers/generic.py:149`、`computer_server/handlers/generic.py:801` — GenericWindowHandler 混入 Windows 专有 foreground lock 逻辑 | 现状：generic handler 内部使用 Win32 `SetForegroundWindow`、Alt key bypass | 风险：模块命名误导，未来跨平台维护容易出错 | 修复方案：拆 `WindowsWindowHandler`；generic 只保留平台无关 open/path 逻辑。
+- [√] `computer_server/handlers/generic.py:149`、`computer_server/handlers/generic.py:801` — GenericWindowHandler 混入 Windows 专有 foreground lock 逻辑 | 现状：generic handler 内部使用 Win32 `SetForegroundWindow`、Alt key bypass | 风险：模块命名误导，未来跨平台维护容易出错 | 修复方案：拆 `WindowsWindowHandler`；generic 只保留平台无关 open/path 逻辑。
 
-- [ ] `computer_server/handlers/windows.py:363`、`computer_server/mcp_server.py:1023`、`computer_server/mcp_server.py:1117` — async handler 内使用 `time.sleep` 阻塞事件循环 | 现状：drag/scroll/activate 等路径在 async 函数中直接 sleep | 风险：MCP/HTTP 并发请求时阻塞整个 event loop，尤其 smooth scroll 和 drag 可持续数百毫秒 | 修复方案：替换为 `await asyncio.sleep`；纯同步 mouse stepping 放到专用 worker 或明确串行化。
+- [√] `computer_server/handlers/windows.py:363`、`computer_server/mcp_server.py:1023`、`computer_server/mcp_server.py:1117` — async handler 内使用 `time.sleep` 阻塞事件循环 | 现状：drag/scroll/activate 等路径在 async 函数中直接 sleep | 风险：MCP/HTTP 并发请求时阻塞整个 event loop，尤其 smooth scroll 和 drag 可持续数百毫秒 | 修复方案：替换为 `await asyncio.sleep`；纯同步 mouse stepping 放到专用 worker 或明确串行化。
 
-- [ ] `computer_server/mcp_server.py:434`、`computer_server/mcp_server.py:878` — `_send_input_click` 命名与实现不符 | 现状：函数名/结果写 `send_input`，实际使用 legacy `win32api.mouse_event` | 风险：误导调试和文档；在 UIPI、RDP、DPI 场景行为不可控 | 修复方案：要么改名 `_mouse_event_click`，要么用 ctypes 实现真正 `SendInput` 并检查返回值。
+- [√] `computer_server/mcp_server.py:434`、`computer_server/mcp_server.py:878` — `_send_input_click` 命名与实现不符 | 现状：函数名/结果写 `send_input`，实际使用 legacy `win32api.mouse_event` | 风险：误导调试和文档；在 UIPI、RDP、DPI 场景行为不可控 | 修复方案：要么改名 `_mouse_event_click`，要么用 ctypes 实现真正 `SendInput` 并检查返回值。
 
-- [ ] `computer_server/handlers/windows.py:485`、`computer_server/handlers/base.py:370`、`computer_server/mcp_server.py:1196` — clipboard typing 缺少并发保护和敏感内容策略 | 现状：type_text 保存原剪贴板、分块复制、最后恢复；多个调用并发时会互相覆盖；中途失败可能保留待输入文本 | 风险：用户剪贴板被污染或敏感输入短暂暴露给其他应用 | 修复方案：加进程级 clipboard lock；失败路径 finally 恢复；提供 `paste_all_at_once` 默认；敏感文本不写日志。
+- [√] `computer_server/handlers/windows.py:485`、`computer_server/handlers/base.py:370`、`computer_server/mcp_server.py:1196` — clipboard typing 缺少并发保护和敏感内容策略 | 现状：type_text 保存原剪贴板、分块复制、最后恢复；多个调用并发时会互相覆盖；中途失败可能保留待输入文本 | 风险：用户剪贴板被污染或敏感输入短暂暴露给其他应用 | 修复方案：加进程级 clipboard lock；失败路径 finally 恢复；提供 `paste_all_at_once` 默认；敏感文本不写日志。
 
-- [ ] `computer_server/learning/coalescer.py:72`、`computer_server/learning/recorder.py:592` — timer flush 与 stop 并发边界需要更明确 | 现状：Timer 回调可能与 stop flush 同时触发，依赖 buncher 内部锁避免重复，但 recorder 状态切换与 `_last_uia_value` 不是同一锁 | 风险：极端时 typeText 顺序/IME diff 可能错乱 | 修复方案：stop 时先 freeze input，再 cancel timers，再在 recorder lock 下统一 flush；`_last_uia_value` 与 buncher lifecycle 绑定。
+- [√] `computer_server/learning/coalescer.py:72`、`computer_server/learning/recorder.py:592` — timer flush 与 stop 并发边界需要更明确 | 现状：Timer 回调可能与 stop flush 同时触发，依赖 buncher 内部锁避免重复，但 recorder 状态切换与 `_last_uia_value` 不是同一锁 | 风险：极端时 typeText 顺序/IME diff 可能错乱 | 修复方案：stop 时先 freeze input，再 cancel timers，再在 recorder lock 下统一 flush；`_last_uia_value` 与 buncher lifecycle 绑定。
 
-- [ ] `computer_server/learning/session.py:120`、`computer_server/learning/session.py:179` — `SECURE_FIELD` 序列化缺少显式 payload | 现状：`ObservedActionType.SECURE_FIELD` 在 `to_dict` 中没有专门字段，只保留通用 app/window/element | 风险：下游模型难以区分“安全字段被跳过”与普通空动作 | 修复方案：为 secureField 输出 `reason: "sensitive_field"` 和 `redacted: true`。
+- [√] `computer_server/learning/session.py:120`、`computer_server/learning/session.py:179` — `SECURE_FIELD` 序列化缺少显式 payload | 现状：`ObservedActionType.SECURE_FIELD` 在 `to_dict` 中没有专门字段，只保留通用 app/window/element | 风险：下游模型难以区分“安全字段被跳过”与普通空动作 | 修复方案：为 secureField 输出 `reason: "sensitive_field"` 和 `redacted: true`。
 
-- [ ] `computer_server/handlers/browser_cdp.py:195` — `query_dom` 允许提取 `innerHTML`，可能返回敏感 DOM 片段 | 现状：attributes 可由调用方指定，`innerHTML` 截断到 1000 字符 | 风险：页面 token、隐藏字段、用户隐私可能被读出 | 修复方案：默认禁用 `innerHTML`，需要显式 `allow_html=True`；对 password/input hidden 做过滤。
+- [√] `computer_server/handlers/browser_cdp.py:195` — `query_dom` 允许提取 `innerHTML`，可能返回敏感 DOM 片段 | 现状：attributes 可由调用方指定，`innerHTML` 截断到 1000 字符 | 风险：页面 token、隐藏字段、用户隐私可能被读出 | 修复方案：默认禁用 `innerHTML`，需要显式 `allow_html=True`；对 password/input hidden 做过滤。
 
-- [ ] `computer_server/handlers/som_bridge.py:197`、`computer_server/mcp_server.py:2059` — 同时保留 async `detect` 与 sync `detect_sync`，但实际策略混乱 | 现状：注释说 async-friendly executor，实际 mcp_server 因 anyio 限制同步调用 `detect_sync` | 风险：未来调用者误用 async detect 造成之前已知死锁/延迟问题 | 修复方案：明确废弃或隔离 async detect；文档写清只允许启动前预加载 + handler 内 sync detect。
+- [√] `computer_server/handlers/som_bridge.py:197`、`computer_server/mcp_server.py:2059` — 同时保留 async `detect` 与 sync `detect_sync`，但实际策略混乱 | 现状：注释说 async-friendly executor，实际 mcp_server 因 anyio 限制同步调用 `detect_sync` | 风险：未来调用者误用 async detect 造成之前已知死锁/延迟问题 | 修复方案：明确废弃或隔离 async detect；文档写清只允许启动前预加载 + handler 内 sync detect。
 
-- [ ] `computer_server/main.py:117`、`computer_server/mcp_server.py:491` — HTTP handlers 与 MCP tools 两套 API 不一致 | 现状：HTTP `/ws` 暴露旧命令集，不包含 rich window state、recording、learning、CDP 等新能力；MCP 工具更完整 | 风险：测试和用户路径分裂，bug 修复可能只覆盖 MCP | 修复方案：要么声明 HTTP API legacy/minimal，要么让 HTTP 动态调用同一 tool registry。
+- [√] `computer_server/main.py:117`、`computer_server/mcp_server.py:491` — HTTP handlers 与 MCP tools 两套 API 不一致 | 现状：HTTP `/ws` 暴露旧命令集，不包含 rich window state、recording、learning、CDP 等新能力；MCP 工具更完整 | 风险：测试和用户路径分裂，bug 修复可能只覆盖 MCP | 修复方案：要么声明 HTTP API legacy/minimal，要么让 HTTP 动态调用同一 tool registry。
 
-- [ ] `computer_server/handlers/generic.py:912`、`computer_server/handlers/generic.py:924`、`computer_server/handlers/generic.py:1009` — 文件工具无 sandbox/root 限制 | 现状：任意绝对路径读写删，路径只做 expanduser/resolve | 风险：配合 HTTP 暴露时可读写用户任意文件；即使本地 MCP，也缺少审计边界 | 修复方案：支持 `--root`/allowlist；危险写删默认禁用；返回路径审计日志。
+- [√] `computer_server/handlers/generic.py:912`、`computer_server/handlers/generic.py:924`、`computer_server/handlers/generic.py:1009` — 文件工具无 sandbox/root 限制 | 现状：任意绝对路径读写删，路径只做 expanduser/resolve | 风险：配合 HTTP 暴露时可读写用户任意文件；即使本地 MCP，也缺少审计边界 | 修复方案：支持 `--root`/allowlist；危险写删默认禁用；返回路径审计日志。
 
-- [ ] `computer_server/handlers/windows_uia.py:208`、`computer_server/learning/platform.py:554` — UIA ControlType 映射维护两套 | 现状：`windows_uia` 映射为 Button/Edit 等，learning 映射为 AXButton/AXTextField 等 | 风险：同一控件在 MCP 与 learning 输出语义不一致 | 修复方案：建立统一 control type normalization 模块，同时输出 `uia_control_type` 与 `semantic_role`。
+- [√] `computer_server/handlers/windows_uia.py:208`、`computer_server/learning/platform.py:554` — UIA ControlType 映射维护两套 | 现状：`windows_uia` 映射为 Button/Edit 等，learning 映射为 AXButton/AXTextField 等 | 风险：同一控件在 MCP 与 learning 输出语义不一致 | 修复方案：建立统一 control type normalization 模块，同时输出 `uia_control_type` 与 `semantic_role`。
 
 - [ ] `computer_server/recording/session.py:21`、`computer_server/learning/recorder.py:611` — Recording 与 Learning 不应合并，但底层能力重复 | 现状：两套系统分别做截图、OCR、UIA、窗口上下文 | 风险：多显示器、IME、隐私修复需要改两遍 | 修复方案：保留两个 recorder；共享 `capture_service`、`uia_service`、`ocr_service`、`window_identity_service`。
 
-- [ ] `computer_server/mcp_server.py:610`、`computer_server/handlers/windows.py:661` — screenshot 大小控制分散 | 现状：automation handler 产 base64，MCP 再 decode/resize/re-encode；window_state 再存文件 | 风险：CPU/内存额外消耗，截图路径难测 | 修复方案：集中 screenshot service，支持直接返回 PIL/image bytes/file path，并携带 geometry metadata。
+- [√] `computer_server/mcp_server.py:610`、`computer_server/handlers/windows.py:661` — screenshot 大小控制分散 | 现状：automation handler 产 base64，MCP 再 decode/resize/re-encode；window_state 再存文件 | 风险：CPU/内存额外消耗，截图路径难测 | 修复方案：集中 screenshot service，支持直接返回 PIL/image bytes/file path，并携带 geometry metadata。
 
-- [ ] `computer_server/mcp_server.py:2445`、`computer_server/mcp_server.py:2578` — recording/learning 单例生命周期挂在函数属性或模块全局 | 现状：recording session 是 module global，learning recorder 存在 `computer_learn_start._recorder` | 风险：多 FastMCP 实例、HTTP+stdio 并存或测试并发时状态污染 | 修复方案：引入 `ServerContext`，所有 session/registry/cache 挂在 context 上。
+- [√] `computer_server/mcp_server.py:2445`、`computer_server/mcp_server.py:2578` — recording/learning 单例生命周期挂在函数属性或模块全局 | 现状：recording session 是 module global，learning recorder 存在 `computer_learn_start._recorder` | 风险：多 FastMCP 实例、HTTP+stdio 并存或测试并发时状态污染 | 修复方案：引入 `ServerContext`，所有 session/registry/cache 挂在 context 上。
 
-- [ ] `computer_server/handlers/som_bridge.py:31` — `VisionResult.metadata` 使用 mutable-ish 默认 None + type ignore | 现状：dataclass 字段 `metadata: Dict[str, Any] = None` 再 `__post_init__` 修正 | 风险：类型检查噪音，小问题但可清理 | 修复方案：改为 `field(default_factory=dict)`。
+- [√] `computer_server/handlers/som_bridge.py:31` — `VisionResult.metadata` 使用 mutable-ish 默认 None + type ignore | 现状：dataclass 字段 `metadata: Dict[str, Any] = None` 再 `__post_init__` 修正 | 风险：类型检查噪音，小问题但可清理 | 修复方案：改为 `field(default_factory=dict)`。
 
-- [ ] `computer_server/overlay/motion.py:37`、`computer_server/overlay/motion.py:171` — overlay motion 使用 raw str phase 和参数过多 | 现状：`phase` 为字符串，`plan_path` 参数 10+ | 风险：状态机 typo 和调用可读性差 | 修复方案：引入 `Phase` enum 和 `Pose` dataclass。
+- [√] `computer_server/overlay/motion.py:37`、`computer_server/overlay/motion.py:171` — overlay motion 使用 raw str phase 和参数过多 | 现状：`phase` 为字符串，`plan_path` 参数 10+ | 风险：状态机 typo 和调用可读性差 | 修复方案：引入 `Phase` enum 和 `Pose` dataclass。
 
-- [ ] `computer_server/cli.py:33`、`computer_server/server.py:38` — CLI 默认暴露范围不适合桌面自动化工具 | 现状：host 默认 `0.0.0.0`，日志提示 HTTP API 可用 | 风险：用户无意中把桌面控制服务暴露给局域网 | 修复方案：默认 `127.0.0.1`；启动时如果 host 非 localhost，打印强警告并要求 `--i-know-this-exposes-my-computer`。
+- [√] `computer_server/cli.py:33`、`computer_server/server.py:38` — CLI 默认暴露范围不适合桌面自动化工具 | 现状：host 默认 `0.0.0.0`，日志提示 HTTP API 可用 | 风险：用户无意中把桌面控制服务暴露给局域网 | 修复方案：默认 `127.0.0.1`；启动时如果 host 非 localhost，打印强警告并要求 `--i-know-this-exposes-my-computer`。
 
 ## 整体评价
 

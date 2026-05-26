@@ -175,6 +175,9 @@ class ObservedAction:
                 d["x"] = self.x
             if self.y is not None:
                 d["y"] = self.y
+        elif self.action_type == ObservedActionType.SECURE_FIELD:
+            d["reason"] = "sensitive_field"
+            d["redacted"] = True
 
         return d
 
