@@ -72,7 +72,7 @@ def main() -> None:
 
     # Create and start the server
     logger.info(f"Starting Cua Computer API server on {args.host}:{args.port}...")
-    logger.info("HTTP API available at /ws, /status endpoints")
+    logger.info("HTTP status available at /status")
     logger.info("MCP server available at /mcp endpoint (if fastmcp installed)")
 
     # Handle SSL configuration

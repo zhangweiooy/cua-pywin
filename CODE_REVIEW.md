@@ -4,7 +4,7 @@
 
 ## P0 - 致命问题
 
-- [ ] `computer_server/server.py:38`、`computer_server/main.py:54`、`computer_server/main.py:117`、`computer_server/main.py:228`、`computer_server/mcp_server.py:1420`、`computer_server/handlers/windows.py:732` — HTTP/WebSocket 默认对外暴露高危本机能力 | 现状：HTTP server 默认绑定 `0.0.0.0`，CORS `allow_origins=["*"]`，`/ws` 无认证，handlers 暴露 `run_command`、文件读写、删除、剪贴板、窗口控制等能力，MCP tool 也有同类本机控制工具 | 风险：同一局域网或被浏览器诱导连接的页面可执行本机命令、读写文件、修改剪贴板、操控桌面；这是远程代码执行级别风险 | 修复方案：默认 host 改为 `127.0.0.1`；WebSocket 和 HTTP MCP 加 token 或本机 origin 校验；默认禁用 `run_command`、文件删除/写入等危险命令，必须显式 `--allow-dangerous-tools`；CORS 不允许 `*`；在 README/CLI 中标注安全边界。
+- [√] `computer_server/server.py:38`、`computer_server/main.py:54`、`computer_server/main.py:117`、`computer_server/main.py:228`、`computer_server/mcp_server.py:1420`、`computer_server/handlers/windows.py:732` — HTTP/WebSocket 默认对外暴露高危本机能力 | 现状：HTTP server 与直接运行 `main.py` 默认绑定 `127.0.0.1`，CORS 只允许 localhost origin，legacy `/ws` 与 `/commands` API 已删除；HTTP 仅保留 `/status` 与 `/mcp` MCP transport，文件工具已有 root/危险操作限制 | 风险：默认局域网暴露和 legacy WebSocket 命令入口已移除；MCP 工具仍是高权限桌面控制能力，因此非 localhost 绑定仍需 CLI 显式确认 | 修复方案：保留本机 `/mcp`，删除 legacy `/ws`，收紧 CORS，README/CLI 标注 HTTP MCP 本机边界。
 
 - [√] `computer_server/mcp_server.py:824`、`computer_server/mcp_server.py:997`、`computer_server/mcp_server.py:1100` — window-relative resized 坐标反算公式错误 | 现状：pixel click/drag/scroll 在提供 `pid + window_id` 时使用 `int((origin_x + x) * ratio)`，把窗口 screen origin 也乘以 resize ratio | 风险：窗口不在 `(0,0)` 且截图发生缩放时，点击、拖拽、滚动会偏移；高 DPI 或大窗口下可能点到错误应用/错误按钮，replay 也会放大偏差 | 修复方案：改为 `screen_x = origin_x + int(x * ratio)`、`screen_y = origin_y + int(y * ratio)`；drag/scroll 同步修正；为窗口 `(0,0)`、`(200,100)`、负坐标、resize 触发、多显示器分别加坐标单测。
 
@@ -66,7 +66,7 @@
 
 - [√] `computer_server/handlers/som_bridge.py:197`、`computer_server/mcp_server.py:2059` — 同时保留 async `detect` 与 sync `detect_sync`，但实际策略混乱 | 现状：注释说 async-friendly executor，实际 mcp_server 因 anyio 限制同步调用 `detect_sync` | 风险：未来调用者误用 async detect 造成之前已知死锁/延迟问题 | 修复方案：明确废弃或隔离 async detect；文档写清只允许启动前预加载 + handler 内 sync detect。
 
-- [√] `computer_server/main.py:117`、`computer_server/mcp_server.py:491` — HTTP handlers 与 MCP tools 两套 API 不一致 | 现状：HTTP `/ws` 暴露旧命令集，不包含 rich window state、recording、learning、CDP 等新能力；MCP 工具更完整 | 风险：测试和用户路径分裂，bug 修复可能只覆盖 MCP | 修复方案：要么声明 HTTP API legacy/minimal，要么让 HTTP 动态调用同一 tool registry。
+- [√] `computer_server/main.py:117`、`computer_server/mcp_server.py:491` — HTTP handlers 与 MCP tools 两套 API 不一致 | 现状：legacy HTTP `/ws` 与 `/commands` 已删除，HTTP 仅保留 `/status` 与 `/mcp` MCP transport；完整工具能力只通过 MCP 暴露 | 风险：旧的双 API 分裂路径已移除 | 修复方案：保留 MCP tool registry 作为唯一高权限工具入口。
 
 - [√] `computer_server/handlers/generic.py:912`、`computer_server/handlers/generic.py:924`、`computer_server/handlers/generic.py:1009` — 文件工具无 sandbox/root 限制 | 现状：任意绝对路径读写删，路径只做 expanduser/resolve | 风险：配合 HTTP 暴露时可读写用户任意文件；即使本地 MCP，也缺少审计边界 | 修复方案：支持 `--root`/allowlist；危险写删默认禁用；返回路径审计日志。
 
@@ -88,13 +88,13 @@
 
 - 代码质量：7/10
 
-项目的核心方向正确：Windows + 中文 UI 优先、UIA 优先/SOM 回退、MCP recording 与 human learning 分离、对 FastMCP outputSchema bug 和 C-extension import deadlock 有明确工程经验沉淀。实现已经能覆盖大量真实 Windows 自动化场景，但当前最大短板是安全边界、坐标几何统一、以及 UIA/SOM/recording 这些重资源能力集中在 `mcp_server.py` 导致耦合偏高。
+项目的核心方向正确：Windows + 中文 UI 优先、UIA 优先/SOM 回退、MCP recording 与 human learning 分离、对 FastMCP outputSchema bug 和 C-extension import deadlock 有明确工程经验沉淀。实现已经能覆盖大量真实 Windows 自动化场景；默认 HTTP 暴露和坐标几何风险已处理，当前主要短板是 `mcp_server.py` 仍承担过多 application service 职责，以及 Recording/Learning 底层能力还有重复。
 
 ### Top 3 致命风险
 
-1. HTTP/WebSocket 默认对外暴露本机命令、文件、剪贴板和桌面控制能力，且无认证。
-2. resized window 坐标反算把 window origin 也乘以 ratio，可能导致点击/拖拽/滚动落到错误位置。
-3. UIA COM timeout 不能真正取消底层 COM 调用，hung provider 下可能累积线程泄漏并拖垮服务。
+1. 非 localhost 绑定 `/mcp` 仍是高权限桌面控制入口，必须保持显式确认和清晰文档。
+2. `mcp_server.py` 聚合工具注册、window state、坐标转换、replay、learning，后续修改仍容易产生跨能力回归。
+3. Recording/Learning 共用的截图、OCR、UIA、窗口识别能力未完全服务化，多显示器和隐私修复仍可能需要重复维护。
 
 ### Top 3 性能瓶颈
 

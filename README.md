@@ -27,7 +27,7 @@ Windows AI Agent 桌面操控 MCP 服务 — 54 个计算机控制工具。
 cua-pywin/
 ├─ computer_server/          ← 主程序
 │  ├─ mcp_server.py          ← 54 MCP 工具 + 录制/回放/学习入口
-│  ├─ main.py                ← HTTP 服务器 (WebSocket + MCP SSE)
+│  ├─ main.py                ← 本机 HTTP MCP 服务器
 │  ├─ cli.py                 ← CLI 入口
 │  ├─ handlers/
 │  │  ├─ windows.py          ← Windows 实现：ImageGrab + win32gui + pynput
@@ -80,7 +80,7 @@ uv sync --index-url https://pypi.tuna.tsinghua.edu.cn/simple
 # MCP stdio 模式（Claude Code / Claude Desktop）
 python -m computer_server.mcp_server
 
-# HTTP 服务器模式
+# HTTP MCP 模式（默认只监听 127.0.0.1，不再提供 legacy /ws API）
 python -m computer_server --port 8000
 ```
 
@@ -187,7 +187,7 @@ python -m py_compile computer_server/learning/*.py
 cua-pywin/
 ├─ computer_server/          ← Main package
 │  ├─ mcp_server.py          ← 54 MCP tools + recording/replay/learning entry points
-│  ├─ main.py                ← HTTP server (WebSocket + MCP SSE)
+│  ├─ main.py                ← Local HTTP MCP server
 │  ├─ cli.py                 ← CLI entry point
 │  ├─ handlers/
 │  │  ├─ windows.py          ← Windows: ImageGrab + win32gui + pynput
@@ -240,7 +240,7 @@ First import loads EasyOCR models (~30s). Subsequent starts are instant.
 # MCP stdio mode (Claude Code / Claude Desktop)
 python -m computer_server.mcp_server
 
-# HTTP server mode
+# HTTP MCP mode (binds to 127.0.0.1 by default; legacy /ws API removed)
 python -m computer_server --port 8000
 ```
 
