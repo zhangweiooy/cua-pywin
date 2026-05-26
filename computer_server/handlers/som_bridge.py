@@ -16,7 +16,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import threading
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional
 
 from computer_server.handlers.element_cache import CachedElement
@@ -35,11 +35,7 @@ class VisionResult:
 
     elements: List[CachedElement]
     annotated_image_base64: Optional[str] = None
-    metadata: Dict[str, Any] = None  # type: ignore[assignment]
-
-    def __post_init__(self):
-        if self.metadata is None:
-            self.metadata = {}
+    metadata: Dict[str, Any] = field(default_factory=dict)
 
 
 # ---------------------------------------------------------------------------
@@ -47,9 +43,41 @@ class VisionResult:
 # ---------------------------------------------------------------------------
 
 _parser_instance: Optional[Any] = None
-_parser_lock = threading.Lock()
+_parser_lock = threading.RLock()
+_parser_condition = threading.Condition(_parser_lock)
+_parse_lock = threading.Lock()
+_parser_state = "idle"  # idle | loading | ready | failed
+_parser_failure: Optional[str] = None
 _som_available: Optional[bool] = None
 _som_available_lock = threading.Lock()
+
+
+def _set_parser_state(state: str, failure: Optional[str] = None) -> None:
+    global _parser_state, _parser_failure
+    with _parser_condition:
+        _parser_state = state
+        _parser_failure = failure
+        _parser_condition.notify_all()
+
+
+def parser_status() -> Dict[str, Optional[str]]:
+    """Return current SOM parser lifecycle status."""
+    with _parser_condition:
+        return {"state": _parser_state, "failure": _parser_failure}
+
+
+def _wait_if_loading(timeout: float = 30.0) -> bool:
+    """Wait for background warm-up to finish. Returns False if still loading."""
+    import time
+
+    deadline = time.monotonic() + timeout
+    with _parser_condition:
+        while _parser_state == "loading":
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                return False
+            _parser_condition.wait(timeout=remaining)
+        return _parser_state != "loading"
 
 
 def is_available() -> bool:
@@ -107,6 +135,11 @@ def warm_up() -> None:
             if not is_available():
                 logger.debug("SOM not available, skipping warm-up")
                 return
+            with _parser_condition:
+                if _parser_state in ("loading", "ready"):
+                    logger.debug("SOM warm-up skipped; state=%s", _parser_state)
+                    return
+                _set_parser_state("loading")
             logger.info("SOM available, starting background warm-up...")
 
             from concurrent.futures import ThreadPoolExecutor
@@ -114,14 +147,17 @@ def warm_up() -> None:
             parser = _get_parser()
             logger.info("SOM parser singleton created; loading YOLO + OCR in parallel...")
 
-            with ThreadPoolExecutor(max_workers=2) as ex:
-                f_yolo = ex.submit(parser.detector.load_model)
-                f_ocr = ex.submit(parser.ocr._ensure_reader)
-                f_yolo.result()
-                f_ocr.result()
+            with _parse_lock:
+                with ThreadPoolExecutor(max_workers=2) as ex:
+                    f_yolo = ex.submit(parser.detector.load_model)
+                    f_ocr = ex.submit(parser.ocr._ensure_reader)
+                    f_yolo.result()
+                    f_ocr.result()
 
+            _set_parser_state("ready")
             logger.info("SOM OmniParser pre-warmed — YOLO + OCR ready")
         except Exception as exc:
+            _set_parser_state("failed", str(exc))
             logger.warning("SOM pre-warm failed: %s", exc)
 
     t = threading.Thread(target=_init, name="som-warmup", daemon=True)
@@ -207,27 +243,40 @@ async def detect(
     Returns None if SOM is not available or if detection fails; never raises
     to the caller.
     """
+    global _parser_state
     if not is_available():
         return None
+    if not _wait_if_loading(timeout=30.0):
+        logger.info("SOM detect skipped: parser still warming up")
+        return VisionResult(elements=[], metadata={"status": "warming_up"})
 
     try:
+        with _parser_condition:
+            if _parser_state == "failed":
+                return VisionResult(elements=[], metadata={"status": "failed", "failure": _parser_failure})
+            if _parser_state == "idle":
+                _parser_state = "loading"
         parser = _get_parser()
     except Exception as exc:
+        _set_parser_state("failed", str(exc))
         logger.warning("Failed to initialize SOM OmniParser: %s", exc)
         return None
 
     loop = asyncio.get_running_loop()
 
     def _run_parse() -> Any:
-        return parser.parse(
-            screenshot_bytes,
-            box_threshold=box_threshold,
-            use_ocr=use_ocr,
-        )
+        with _parse_lock:
+            return parser.parse(
+                screenshot_bytes,
+                box_threshold=box_threshold,
+                use_ocr=use_ocr,
+            )
 
     try:
         result = await loop.run_in_executor(None, _run_parse)
+        _set_parser_state("ready")
     except Exception as exc:
+        _set_parser_state("failed", str(exc))
         logger.warning("SOM parse failed: %s", exc)
         return None
 
@@ -271,22 +320,34 @@ def detect_sync(
     runs on the calling thread.  Use this from async handlers to keep
     heavy ML imports off the event-loop thread.
     """
+    global _parser_state
     if not is_available():
         logger.warning("SOM detect_sync: not available")
         return None
+    if not _wait_if_loading(timeout=30.0):
+        logger.info("SOM detect_sync: parser still warming up")
+        return VisionResult(elements=[], metadata={"status": "warming_up"})
 
     try:
+        with _parser_condition:
+            if _parser_state == "failed":
+                return VisionResult(elements=[], metadata={"status": "failed", "failure": _parser_failure})
+            if _parser_state == "idle":
+                _parser_state = "loading"
         parser = _get_parser()
     except Exception as exc:
+        _set_parser_state("failed", str(exc))
         logger.warning("SOM detect_sync: parser init failed: %s", exc)
         return None
 
     try:
-        result = parser.parse(
-            screenshot_bytes,
-            box_threshold=box_threshold,
-            use_ocr=use_ocr,
-        )
+        with _parse_lock:
+            result = parser.parse(
+                screenshot_bytes,
+                box_threshold=box_threshold,
+                use_ocr=use_ocr,
+            )
+        _set_parser_state("ready")
         logger.info("SOM detect_sync: parse complete — %d elements", len(getattr(result, "elements", []) or []))
     except Exception as exc:
         logger.warning("SOM detect_sync: parse failed: %s", exc)

@@ -25,6 +25,7 @@ from .platform import (
     KEY_CODE_TO_NAME,
     MAX_RECORDING_DURATION,
     RESTRICTED_PROCESSES,
+    SENSITIVE_FIELD_PATTERNS,
 )
 from .session import (
     ElementContext,
@@ -225,8 +226,11 @@ class LearningRecorder:
         # Check app switch (may call back to _on_app_switch -> _append)
         app_detector.check_app_switch_with_info(name, exe, self)
 
-        # Check password field
-        if uia is not None and uia.is_password_field_focused():
+        # Check password field (guarded by timeout to avoid hung UIA provider)
+        is_secure = self._run_uia_with_timeout(
+            lambda: uia.is_password_field_focused(), timeout=0.5,
+        ) if uia is not None else False
+        if is_secure:
             if self._keystroke_buncher:
                 self._keystroke_buncher.flush()
             self._append(ObservedAction(
@@ -260,13 +264,17 @@ class LearningRecorder:
                 ec = None
                 url = None
                 if self._keystroke_buncher.is_empty():
-                    ctx = uia.focused_element_context() if uia is not None else None
+                    ctx = self._run_uia_with_timeout(
+                        lambda: uia.focused_element_context(), timeout=0.5,
+                    ) if uia is not None else None
                     ec = ElementContext(**ctx) if ctx else None
                     url = self._run_uia_with_timeout(
                         lambda: self._get_current_url(exe), timeout=0.5,
                     )
                     # Snapshot UIA value at bunch start for diff extraction
-                    self._last_uia_value = uia.read_focused_value() if uia is not None else None
+                    self._last_uia_value = self._run_uia_with_timeout(
+                        lambda: uia.read_focused_value(), timeout=0.5,
+                    ) if uia is not None else None
                 self._keystroke_buncher.append(
                     char=char,
                     app_name=name,
@@ -309,7 +317,9 @@ class LearningRecorder:
         # UIA enrich in real-time (~1ms)
         ec = None
         if uia is not None:
-            ctx = uia.enrich_click(x, y)
+            ctx = self._run_uia_with_timeout(
+                lambda: uia.enrich_click(x, y), timeout=0.75,
+            )
             if ctx:
                 ec = ElementContext(**ctx)
 
@@ -333,7 +343,10 @@ class LearningRecorder:
 
         # For clicks without UIA labels, capture a small region around the
         # click point for later OCR enrichment at stop time.
-        if ec is None or (not ec.title and not ec.identifier):
+        # Skip when the click context is sensitive (password fields, etc.)
+        # to avoid saving sensitive screen content via OCR screenshots.
+        if (ec is None or (not ec.title and not ec.identifier)) \
+                and not self._is_sensitive_context(uia, ec):
             try:
                 from .platform import Screenshotter
                 png = Screenshotter().capture_region(
@@ -381,7 +394,9 @@ class LearningRecorder:
         # Probe UIA for the real text content (pynput raw keystrokes miss IME chars).
         # Diff against the value at bunch start to extract only newly typed text.
         if self._uia is not None:
-            current = self._uia.read_focused_value()
+            current = self._run_uia_with_timeout(
+                lambda: self._uia.read_focused_value(), timeout=0.5,
+            )
             prev = self._last_uia_value or ""
             if current and current.strip():
                 if current.startswith(prev) and len(current) > len(prev):
@@ -403,7 +418,11 @@ class LearningRecorder:
 
         # If UIA couldn't help and text is all ASCII (likely pinyin),
         # capture the active window NOW for later OCR at stop time.
-        if text.isascii():
+        # Re-check sensitive context before capturing — if the focused
+        # field is a password field (or element_context matches sensitive
+        # patterns), skip the full-window OCR screenshot.
+        if text.isascii() \
+                and not self._is_sensitive_context(self._uia, element_context):
             try:
                 from .platform import Screenshotter
                 png, win_x, win_y = Screenshotter().capture_active_window()
@@ -499,6 +518,36 @@ class LearningRecorder:
             logger.debug("UIA operation timed out after %.1fs", timeout)
             return None
         return result
+
+    def _is_sensitive_context(self, uia, element_context=None) -> bool:
+        """Check if the current UI context is sensitive (password field, etc.).
+
+        Two-tier check:
+        1. UIA: whether the focused element is a password field
+           (guarded by timeout — None/timed-out is treated as NOT sensitive
+           to avoid blocking legitimate recordings on slow UIA providers).
+        2. Element context: whether title/identifier matches
+           SENSITIVE_FIELD_PATTERNS keywords.
+
+        Returns True if OCR / screenshots should be skipped for this context.
+        """
+        if uia is not None:
+            is_secure = self._run_uia_with_timeout(
+                lambda: uia.is_password_field_focused(), timeout=0.5,
+            )
+            if is_secure:  # Explicit True only; None (timeout) → not sensitive
+                return True
+
+        if element_context is not None:
+            for attr in ("title", "identifier"):
+                val = getattr(element_context, attr, None)
+                if val and isinstance(val, str):
+                    val_lower = val.lower()
+                    for pattern in SENSITIVE_FIELD_PATTERNS:
+                        if pattern in val_lower:
+                            return True
+
+        return False
 
     def _read_browser_url(self) -> Optional[str]:
         """Read the URL from a browser's address bar via UIA.
@@ -650,19 +699,16 @@ class LearningRecorder:
             "urls": list(session.urls),
             "actions": serialized,
         }
-        path = os.path.join(self._output_dir, "session.json")
-        with open(path, "w", encoding="utf-8") as f:
-            json.dump(data, f, indent=2, ensure_ascii=False, default=str)
-
         screenshots_dir = os.path.join(self._output_dir, "screenshots")
         os.makedirs(screenshots_dir, exist_ok=True)
 
         try:
             from .platform import Screenshotter
-            png = Screenshotter().capture_full()
+            png, origin_x, origin_y = Screenshotter().capture_full_with_origin()
             if png:
                 with open(os.path.join(screenshots_dir, "full.png"), "wb") as f:
                     f.write(png)
+                data["screenshot_origin"] = {"x": origin_x or 0, "y": origin_y or 0}
         except Exception:
             pass
 
@@ -678,6 +724,11 @@ class LearningRecorder:
                     a.ocr_image = os.path.join("screenshots", fname)
                 except Exception:
                     pass
+
+        data["actions"] = [a.to_dict() for a in actions]
+        path = os.path.join(self._output_dir, "session.json")
+        with open(path, "w", encoding="utf-8") as f:
+            json.dump(data, f, indent=2, ensure_ascii=False, default=str)
 
     def _enrich_vision(self, actions: list) -> None:
         """Batch-enrich click actions with YOLO+OCR text labels.

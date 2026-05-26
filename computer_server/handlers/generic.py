@@ -20,6 +20,7 @@ from typing import Any, Dict, Optional
 logger = logging.getLogger(__name__)
 
 from .base import BaseDesktopHandler, BaseFileHandler, BaseWindowHandler
+from .screen_geometry import get_virtual_screen_geometry
 
 
 # ---------------------------------------------------------------------------
@@ -105,7 +106,11 @@ class GenericDesktopHandler(BaseDesktopHandler):
         except Exception:
             pass
 
-        return {
+        virtual_screen = None
+        if IS_WINDOWS_PLATFORM:
+            virtual_screen = get_virtual_screen_geometry().to_dict()
+
+        environment = {
             "success": True,
             "environment": platform.system().lower(),
             "os_name": platform.system(),
@@ -114,6 +119,9 @@ class GenericDesktopHandler(BaseDesktopHandler):
             "machine": platform.machine(),
             "monitors": monitors,
         }
+        if virtual_screen is not None:
+            environment["virtual_screen"] = virtual_screen
+        return environment
 
     async def set_wallpaper(self, path: str) -> Dict[str, Any]:
         try:

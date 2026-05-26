@@ -58,7 +58,7 @@ class Server:
         self.ssl_certfile = ssl_certfile
         self.app = fastapi_app
         self._server_task: Optional[asyncio.Task] = None
-        self._should_exit = asyncio.Event()
+        self._server: Optional[uvicorn.Server] = None
 
     def start(self) -> None:
         """
@@ -87,8 +87,8 @@ class Server:
             ssl_certfile=self.ssl_certfile,
         )
 
-        self._should_exit.clear()
         server = uvicorn.Server(server_config)
+        self._server = server
 
         # Create a task to run the server
         self._server_task = asyncio.create_task(server.serve())
@@ -104,15 +104,18 @@ class Server:
         Stop the server if it's running asynchronously.
         """
         if self._server_task and not self._server_task.done():
-            # Signal the server to exit
-            self._should_exit.set()
-
-            # Cancel the server task
-            self._server_task.cancel()
-
+            if self._server is not None:
+                self._server.should_exit = True
             try:
-                await self._server_task
-            except asyncio.CancelledError:
-                logger.info("Server stopped")
+                await asyncio.wait_for(self._server_task, timeout=10.0)
+            except asyncio.TimeoutError:
+                logger.warning("Timed out waiting for uvicorn shutdown; cancelling task")
+                self._server_task.cancel()
+                try:
+                    await self._server_task
+                except asyncio.CancelledError:
+                    pass
+            logger.info("Server stopped")
 
             self._server_task = None
+            self._server = None

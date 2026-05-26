@@ -69,6 +69,9 @@ from .base import (
     BaseAutomationHandler,
     normalize_screenshot_format,
 )
+from .screen_geometry import ensure_dpi_awareness, get_virtual_screen_geometry
+
+ensure_dpi_awareness()
 
 
 def _has_non_ascii(text: str) -> bool:
@@ -654,7 +657,7 @@ class WindowsAutomationHandler(BaseAutomationHandler):
         except ValueError as e:
             return {"success": False, "error": str(e)}
         try:
-            screenshot = ImageGrab.grab()
+            screenshot = ImageGrab.grab(all_screens=True)
             if not isinstance(screenshot, Image.Image):
                 return {"success": False, "error": "Failed to capture screenshot"}
 
@@ -667,7 +670,14 @@ class WindowsAutomationHandler(BaseAutomationHandler):
                 screenshot.save(buffered, format="PNG", optimize=True)
             buffered.seek(0)
             image_data = base64.b64encode(buffered.getvalue()).decode()
-            return {"success": True, "image_data": image_data, "format": fmt}
+            geometry = get_virtual_screen_geometry()
+            return {
+                "success": True,
+                "image_data": image_data,
+                "format": fmt,
+                "origin": {"x": geometry.x, "y": geometry.y},
+                "virtual_screen": geometry.to_dict(),
+            }
         except Exception as e:
             return {"success": False, "error": f"Screenshot error: {str(e)}"}
 
@@ -682,13 +692,21 @@ class WindowsAutomationHandler(BaseAutomationHandler):
         """
         try:
             if WINDOWS_API_AVAILABLE:
-                width = win32api.GetSystemMetrics(win32con.SM_CXSCREEN)
-                height = win32api.GetSystemMetrics(win32con.SM_CYSCREEN)
-                return {"success": True, "size": {"width": width, "height": height}}
+                geometry = get_virtual_screen_geometry()
+                return {
+                    "success": True,
+                    "size": {
+                        "width": geometry.width,
+                        "height": geometry.height,
+                        "x": geometry.x,
+                        "y": geometry.y,
+                    },
+                    "virtual_screen": geometry.to_dict(),
+                }
             else:
                 # Fallback: use ImageGrab
-                img = ImageGrab.grab()
-                return {"success": True, "size": {"width": img.width, "height": img.height}}
+                img = ImageGrab.grab(all_screens=True)
+                return {"success": True, "size": {"width": img.width, "height": img.height, "x": 0, "y": 0}}
         except Exception as e:
             return {"success": False, "error": str(e)}
 

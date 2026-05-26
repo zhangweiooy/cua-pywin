@@ -10,6 +10,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import time
 from typing import Any, Dict, List, Optional
 
 logger = logging.getLogger(__name__)
@@ -24,6 +25,8 @@ class CDPClient:
 
     def __init__(self) -> None:
         self._message_id = 0
+        self._target_cache: Dict[tuple[str, int], tuple[float, List[Dict[str, Any]]]] = {}
+        self._target_cache_ttl = 2.0
 
     def _next_id(self) -> int:
         """Get next JSON-RPC message ID."""
@@ -31,7 +34,7 @@ class CDPClient:
         return self._message_id
 
     async def discover(
-        self, port: int = 9222, host: str = "localhost"
+        self, port: int = 9222, host: str = "localhost", force_refresh: bool = False
     ) -> Optional[List[Dict[str, Any]]]:
         """Discover available browser targets (tabs).
 
@@ -43,6 +46,14 @@ class CDPClient:
         """
         import aiohttp
 
+        cache_key = (host, int(port))
+        if not force_refresh:
+            cached = self._target_cache.get(cache_key)
+            if cached is not None:
+                cached_at, targets = cached
+                if time.monotonic() - cached_at <= self._target_cache_ttl:
+                    return targets
+
         url = f"http://{host}:{port}/json"
         try:
             async with aiohttp.ClientSession() as session:
@@ -50,7 +61,9 @@ class CDPClient:
                     if resp.status == 200:
                         targets = await resp.json()
                         # Only return "page" type targets (exclude service workers, extensions)
-                        return [t for t in targets if t.get("type") == "page"]
+                        pages = [t for t in targets if t.get("type") == "page"]
+                        self._target_cache[cache_key] = (time.monotonic(), pages)
+                        return pages
                     else:
                         logger.warning("CDP discover failed: HTTP %s", resp.status)
                         return None
@@ -104,10 +117,14 @@ class CDPClient:
             return {"error": f"CDP WebSocket error: {str(e)}"}
 
     async def _get_ws_url(
-        self, port: int, tab_index: int = 0, host: str = "localhost"
+        self,
+        port: int,
+        tab_index: int = 0,
+        host: str = "localhost",
+        force_refresh: bool = False,
     ) -> Optional[str]:
         """Get WebSocket URL for a specific tab."""
-        targets = await self.discover(port, host)
+        targets = await self.discover(port, host, force_refresh=force_refresh)
         if not targets:
             return None
         if tab_index >= len(targets):
@@ -133,15 +150,20 @@ class CDPClient:
                 "error": f"No page target found at port {port} (tab index {tab_index})",
             }
 
-        response = await self._send_command(
-            ws_url,
-            "Runtime.evaluate",
-            {
-                "expression": expression,
-                "returnByValue": True,
-                "awaitPromise": True,
-            },
-        )
+        params = {
+            "expression": expression,
+            "returnByValue": True,
+            "awaitPromise": True,
+        }
+        response = await self._send_command(ws_url, "Runtime.evaluate", params)
+        if isinstance(response.get("error"), str):
+            retry_ws_url = await self._get_ws_url(
+                port, tab_index, host, force_refresh=True
+            )
+            if retry_ws_url and retry_ws_url != ws_url:
+                response = await self._send_command(
+                    retry_ws_url, "Runtime.evaluate", params
+                )
 
         if "error" in response and isinstance(response["error"], str):
             return {"result": None, "error": response["error"]}
@@ -176,6 +198,7 @@ class CDPClient:
         attributes: Optional[List[str]] = None,
         tab_index: int = 0,
         host: str = "localhost",
+        allow_html: bool = False,
     ) -> List[Dict[str, Any]]:
         """Query DOM elements by CSS selector and extract attributes.
 
@@ -191,6 +214,8 @@ class CDPClient:
         """
         if attributes is None:
             attributes = ["textContent", "href", "id", "class"]
+        if not allow_html:
+            attributes = [a for a in attributes if a != "innerHTML"]
 
         attrs_json = json.dumps(attributes)
         js = (
@@ -199,7 +224,11 @@ class CDPClient:
             f"const attrs = {attrs_json};"
             "return Array.from(elements).slice(0, 100).map(el => {"
             "  const obj = {};"
+            "  const tag = (el.tagName || '').toLowerCase();"
+            "  const type = (el.getAttribute('type') || '').toLowerCase();"
+            "  const sensitive = tag === 'input' && (type === 'password' || type === 'hidden');"
             "  attrs.forEach(attr => {"
+            "    if (sensitive && (attr === 'value' || attr === 'textContent' || attr === 'innerHTML')) { return; }"
             "    if (attr === 'textContent') { obj[attr] = (el.textContent || '').trim().substring(0, 500); }"
             "    else if (attr === 'innerHTML') { obj[attr] = (el.innerHTML || '').substring(0, 1000); }"
             "    else {"

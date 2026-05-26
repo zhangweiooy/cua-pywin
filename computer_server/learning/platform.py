@@ -778,23 +778,32 @@ class AppDetector:
 class Screenshotter:
     """Captures screen regions for future YOLO+OCR enrichment."""
 
-    def capture_full(self) -> bytes | None:
-        """Capture the entire primary monitor as PNG bytes."""
+    def capture_full_with_origin(self) -> tuple[bytes | None, int | None, int | None]:
+        """Capture the full virtual desktop and include its screen origin."""
         if not IS_WINDOWS:
-            return None
+            return (None, None, None)
         try:
             import mss
             with mss.mss() as sct:
-                monitor = sct.monitors[1]
+                monitor = sct.monitors[0]
                 screenshot = sct.grab(monitor)
                 import mss.tools
-                return mss.tools.to_png(screenshot.rgb, screenshot.size)
+                return (
+                    mss.tools.to_png(screenshot.rgb, screenshot.size),
+                    int(monitor["left"]),
+                    int(monitor["top"]),
+                )
         except ImportError:
             logger.warning("mss not installed — screenshots unavailable")
-            return None
+            return (None, None, None)
         except Exception:
             logger.debug("Screenshot capture failed", exc_info=True)
-            return None
+            return (None, None, None)
+
+    def capture_full(self) -> bytes | None:
+        """Capture the entire virtual desktop (all monitors) as PNG bytes."""
+        png, _x, _y = self.capture_full_with_origin()
+        return png
 
     def capture_active_window(self) -> tuple[bytes, int, int] | tuple[None, None, None]:
         """Capture the foreground window as PNG bytes.
@@ -821,21 +830,53 @@ class Screenshotter:
             return (None, None, None)
 
     def capture_region(self, x: int, y: int, width: int, height: int) -> bytes | None:
-        """Capture a specific screen region as PNG bytes."""
+        png, _x, _y = self.capture_region_with_origin(x, y, width, height)
+        return png
+
+    def capture_region_with_origin(
+        self, x: int, y: int, width: int, height: int
+    ) -> tuple[bytes | None, int | None, int | None]:
+        """Capture a specific screen region as PNG bytes.
+
+        The requested region is clamped to the virtual desktop (all monitors).
+        Regions that lie entirely outside the virtual desktop (or have
+        non-positive clamped dimensions) return None.
+        """
         if not IS_WINDOWS:
-            return None
+            return (None, None, None)
         try:
             import mss
             with mss.mss() as sct:
-                region = {"left": x, "top": y, "width": width, "height": height}
+                vd = sct.monitors[0]
+                vd_left = vd["left"]
+                vd_top = vd["top"]
+                vd_right = vd_left + vd["width"]
+                vd_bottom = vd_top + vd["height"]
+
+                clamped_left = max(x, vd_left)
+                clamped_top = max(y, vd_top)
+                clamped_right = min(x + width, vd_right)
+                clamped_bottom = min(y + height, vd_bottom)
+                clamped_width = clamped_right - clamped_left
+                clamped_height = clamped_bottom - clamped_top
+
+                if clamped_width <= 0 or clamped_height <= 0:
+                    return (None, None, None)
+
+                region = {"left": clamped_left, "top": clamped_top,
+                          "width": clamped_width, "height": clamped_height}
                 screenshot = sct.grab(region)
                 import mss.tools
-                return mss.tools.to_png(screenshot.rgb, screenshot.size)
+                return (
+                    mss.tools.to_png(screenshot.rgb, screenshot.size),
+                    clamped_left,
+                    clamped_top,
+                )
         except ImportError:
-            return None
+            return (None, None, None)
         except Exception:
             logger.debug("Region capture failed", exc_info=True)
-            return None
+            return (None, None, None)
 
 
 # ============================================================

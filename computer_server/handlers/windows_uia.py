@@ -37,7 +37,7 @@ class UiaNode:
     center_x: int = 0
     center_y: int = 0
     actions: List[str] = field(default_factory=list)
-    element_ref: Any = None  # IUIAutomationElement COM object (None on non-Windows)
+    element_ref: Any = None  # Deprecated: COM refs are not exported across calls
     depth: int = 0
     is_enabled: bool = True
     is_offscreen: bool = False
@@ -134,28 +134,46 @@ else:
     # -----------------------------------------------------------------------
 
     import ctypes
-    import concurrent.futures
     import comtypes
     from comtypes import COMError
 
-    # Per-element COM call timeout (seconds).  Individual UIA calls to a hung
-    # or frozen window can block forever — the default UIA timeout is 0
-    # (infinite).  This guard returns a safe default instead of deadlocking
-    # the whole tree walk.
-    _UIA_COM_TIMEOUT = 3.0
-
-    # Shared thread pool for COM calls that need timeout protection.
-    _com_executor = concurrent.futures.ThreadPoolExecutor(max_workers=4)
+    # Note on COM call timeouts:
+    #
+    # An earlier implementation submitted every UIA property/pattern call
+    # to a shared ThreadPoolExecutor and used `Future.result(timeout=...)`
+    # as a soft-cancel mechanism.  That design was flawed in two ways:
+    #
+    # 1. UIA COM objects are STA-affine.  Calling them from a *different*
+    #    thread than the one that materialised them cross-marshals every
+    #    call back to the originating apartment, defeating any thread-pool
+    #    "isolation" the timeout was supposed to provide.
+    # 2. When a target window is hung, the underlying COM call never
+    #    returns — `Future.result(timeout=...)` only releases the *waiter*;
+    #    the worker thread stays blocked forever.  Across many calls, the
+    #    pool is permanently drained.
+    #
+    # The fix: call COM directly inside the STA thread that owns the UIA
+    # instance (the executor thread that runs walk_uia_tree).  Per-call
+    # timeout is impossible without killing the thread, which Python does
+    # not support safely.  Instead, hangs are bounded one level up: the
+    # caller (mcp_server.computer_get_window_state) wraps the entire walk
+    # in `asyncio.wait_for` and uses an in-flight gate + unhealthy cooldown
+    # so a stuck window cannot keep enqueuing fresh executor jobs.
+    _UIA_COM_TIMEOUT = 3.0  # retained for API compatibility; unused
 
     def _com_call(fn, timeout=_UIA_COM_TIMEOUT, default=None):
-        """Call *fn* in a thread and return its result, or *default* on timeout.
+        """Direct call into UIA — no cross-thread submission.
 
-        Used to guard individual UIA / COM calls against hung target windows.
+        This used to submit *fn* to a shared executor and wait with a
+        timeout.  See the note above for why that approach leaked
+        threads.  We now call directly and let the outer walk-level
+        gate bound the worst case.
         """
         try:
-            fut = _com_executor.submit(fn)
-            return fut.result(timeout=timeout)
-        except (concurrent.futures.TimeoutError, RuntimeError):
+            return fn()
+        except (COMError, AttributeError, ValueError, TypeError):
+            return default
+        except Exception:
             return default
 
     # Per-thread COM init is done inside walk_uia_tree().
@@ -367,6 +385,57 @@ else:
             )
         return _thread_local.uia
 
+    def _co_initialize_sta() -> bool:
+        try:
+            comtypes.CoInitializeEx(comtypes.COINIT_APARTMENTTHREADED)
+            return True
+        except OSError:
+            return False
+
+    def _co_uninitialize_if_needed(initialized: bool) -> None:
+        if not initialized:
+            return
+        try:
+            if hasattr(_thread_local, "uia"):
+                delattr(_thread_local, "uia")
+        except Exception:
+            pass
+        try:
+            comtypes.CoUninitialize()
+        except Exception:
+            pass
+
+    def _uia_element_from_point(uia: Any, x: int, y: int) -> Any:
+        """Resolve the current UIA element at a physical screen point."""
+        try:
+            from ctypes import wintypes
+
+            return uia.ElementFromPoint(wintypes.POINT(int(x), int(y)))
+        except Exception:
+            return uia.ElementFromPoint((int(x), int(y)))
+
+    def invoke_at_point(x: int, y: int) -> None:
+        """Resolve a fresh UIA element at a point and invoke it."""
+        initialized = _co_initialize_sta()
+        try:
+            uia = get_uia_instance()
+            element = _uia_element_from_point(uia, x, y)
+            pattern = element.GetCurrentPattern(UIA_InvokePatternId)
+            pattern.Invoke()
+        finally:
+            _co_uninitialize_if_needed(initialized)
+
+    def set_value_at_point(x: int, y: int, value: str) -> None:
+        """Resolve a fresh UIA element at a point and set ValuePattern."""
+        initialized = _co_initialize_sta()
+        try:
+            uia = get_uia_instance()
+            element = _uia_element_from_point(uia, x, y)
+            pattern = element.GetCurrentPattern(UIA_ValuePatternId)
+            pattern.SetValue(value)
+        finally:
+            _co_uninitialize_if_needed(initialized)
+
     def _build_cache_request(uia: Any) -> Any:
         cache_request = uia.CreateCacheRequest()
         for prop_id in (
@@ -471,7 +540,7 @@ else:
             bbox=bbox,
             center_x=center_x,
             center_y=center_y,
-            element_ref=element,
+            element_ref=None,
             depth=depth,
             is_enabled=is_enabled,
             is_offscreen=is_offscreen,
@@ -612,94 +681,102 @@ else:
 
         Per-thread COM initialization (needed when called from executor threads).
         """
-        try:
-            comtypes.CoInitializeEx(comtypes.COINIT_APARTMENTTHREADED)
-        except OSError:
-            pass  # Already initialized on this thread
-
-        if UIA is None:
-            return UiaTreeResult(
-                tree_markdown="",
-                nodes=[],
-                tree_quality="empty",
-                total_elements=0,
-            )
+        com_initialized = _co_initialize_sta()
 
         try:
-            uia = get_uia_instance()
-        except Exception as exc:
-            logger.error("Failed to create CUIAutomation: %s", exc)
-            return UiaTreeResult(
-                tree_markdown="",
-                nodes=[],
-                indexed_nodes=[],
-                tree_quality="empty",
-                total_elements=0,
-            )
+            if UIA is None:
+                return UiaTreeResult(
+                    tree_markdown="",
+                    nodes=[],
+                    tree_quality="empty",
+                    total_elements=0,
+                )
 
-        cache_request = _build_cache_request(uia)
+            try:
+                uia = get_uia_instance()
+            except Exception as exc:
+                logger.error("Failed to create CUIAutomation: %s", exc)
+                return UiaTreeResult(
+                    tree_markdown="",
+                    nodes=[],
+                    indexed_nodes=[],
+                    tree_quality="empty",
+                    total_elements=0,
+                )
 
-        try:
-            root = uia.ElementFromHandleBuildCache(int(hwnd), cache_request)
-        except COMError as exc:
-            logger.warning("ElementFromHandle(%s) COMError: %s", hwnd, exc)
-            root = None
-        except Exception as exc:
-            logger.warning("ElementFromHandle(%s) error: %s", hwnd, exc)
-            root = None
+            cache_request = _build_cache_request(uia)
 
-        if root is None:
-            return UiaTreeResult(
-                tree_markdown="",
-                nodes=[],
-                indexed_nodes=[],
-                tree_quality="empty",
-                total_elements=0,
-            )
+            try:
+                root = uia.ElementFromHandleBuildCache(int(hwnd), cache_request)
+            except COMError as exc:
+                logger.warning("ElementFromHandle(%s) COMError: %s", hwnd, exc)
+                root = None
+            except Exception as exc:
+                logger.warning("ElementFromHandle(%s) error: %s", hwnd, exc)
+                root = None
 
-        try:
-            walker = uia.RawViewWalker
-        except Exception as exc:
-            logger.error("Failed to obtain RawViewWalker: %s", exc)
-            return UiaTreeResult(
-                tree_markdown="",
-                nodes=[],
-                indexed_nodes=[],
-                tree_quality="empty",
-                total_elements=0,
-            )
+            if root is None:
+                return UiaTreeResult(
+                    tree_markdown="",
+                    nodes=[],
+                    indexed_nodes=[],
+                    tree_quality="empty",
+                    total_elements=0,
+                )
 
-        state = _WalkState(max_depth=max_depth, max_elements=max_elements)
-        try:
-            _dfs(root, 0, state, walker, cache_request)
-        except COMError as exc:
-            logger.warning("Top-level DFS COMError: %s", exc)
-        except Exception as exc:
-            logger.warning("Top-level DFS error: %s", exc)
+            try:
+                walker = uia.RawViewWalker
+            except Exception as exc:
+                logger.error("Failed to obtain RawViewWalker: %s", exc)
+                return UiaTreeResult(
+                    tree_markdown="",
+                    nodes=[],
+                    indexed_nodes=[],
+                    tree_quality="empty",
+                    total_elements=0,
+                )
 
-        markdown = "\n".join(state.markdown_lines)
-        if query:
-            markdown = filter_tree(markdown, query)
+            state = _WalkState(max_depth=max_depth, max_elements=max_elements)
+            try:
+                _dfs(root, 0, state, walker, cache_request)
+            except COMError as exc:
+                logger.warning("Top-level DFS COMError: %s", exc)
+            except Exception as exc:
+                logger.warning("Top-level DFS error: %s", exc)
 
-        if state.total_visited == 0:
-            quality = "empty"
-        else:
-            ratio = state.named_count / state.total_visited
-            count = state.total_visited
-            if ratio > 0.5 and count > 50:
-                quality = "rich"
-            elif ratio > 0.15 and count > 15:
-                quality = "ok"
+            markdown = "\n".join(state.markdown_lines)
+            if query:
+                markdown = filter_tree(markdown, query)
+
+            if state.total_visited == 0:
+                quality = "empty"
             else:
-                quality = "poor"
+                ratio = state.named_count / state.total_visited
+                count = state.total_visited
+                if ratio > 0.5 and count > 50:
+                    quality = "rich"
+                elif ratio > 0.15 and count > 15:
+                    quality = "ok"
+                else:
+                    quality = "poor"
 
-        return UiaTreeResult(
-            tree_markdown=markdown,
-            nodes=state.nodes,
-            indexed_nodes=state.indexed_nodes,
-            tree_quality=quality,
-            total_elements=state.total_visited,
-        )
+            return UiaTreeResult(
+                tree_markdown=markdown,
+                nodes=state.nodes,
+                indexed_nodes=state.indexed_nodes,
+                tree_quality=quality,
+                total_elements=state.total_visited,
+            )
+        finally:
+            _co_uninitialize_if_needed(com_initialized)
 
 
-__all__ = ["UiaNode", "UiaTreeResult", "walk_uia_tree", "filter_tree", "get_uia_instance"]
+__all__ = [
+    "UiaNode",
+    "UiaTreeResult",
+    "walk_uia_tree",
+    "filter_tree",
+    "get_uia_instance",
+    "invoke_at_point",
+    "set_value_at_point",
+]
