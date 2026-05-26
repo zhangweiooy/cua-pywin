@@ -75,6 +75,11 @@ dmypy.json
 # Claude Code
 CLAUDE.md
 
+# Local agent workspaces/config
+AGENTS.md
+.claude/
+.codex/
+
 # Windows
 Thumbs.db
 

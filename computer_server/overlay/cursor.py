@@ -4,6 +4,25 @@ Agent cursor overlay window for Windows.
 Creates a 64x64 WS_EX_LAYERED topmost transparent window, pre-renders
 a glowing arrow, and runs a 60 fps animation thread that flies the
 cursor along a Dubins path with a spring overshoot/settle.
+
+Threading model
+---------------
+A single dedicated overlay thread owns *everything* Win32-related:
+
+* registers the window class
+* creates the HWND
+* allocates the GDI screen DC, memory DC and DIB section
+* runs the per-frame Windows message pump (``PeekMessage`` /
+  ``TranslateMessage`` / ``DispatchMessage``)
+* drives the animation tick + ``UpdateLayeredWindow``
+* destroys the HWND and GDI resources on shutdown
+
+The constructor on the main thread merely starts that thread and
+waits for ``_window_ready`` (or ``_window_failed``).  The public API
+(``move_to``, ``set_initial_position``, ``set_position_visible``,
+``show``, ``hide``, ``shutdown``) communicates with the overlay
+thread through the existing ``_lock`` and pending-flag fields — no
+main-thread call ever touches the HWND, the DCs, or the DIB.
 """
 
 import ctypes
@@ -70,6 +89,38 @@ class BLENDFUNCTION(ctypes.Structure):
 
 
 # ---------------------------------------------------------------------------
+# PeekMessage support — win32gui doesn't expose PeekMessage, so we bind it
+# from user32 via ctypes.  The MSG layout matches Windows' MSG struct.
+# ---------------------------------------------------------------------------
+
+
+class _MSG(ctypes.Structure):
+    _fields_ = [
+        ("hwnd", wintypes.HWND),
+        ("message", wintypes.UINT),
+        ("wParam", wintypes.WPARAM),
+        ("lParam", wintypes.LPARAM),
+        ("time", wintypes.DWORD),
+        ("pt_x", wintypes.LONG),
+        ("pt_y", wintypes.LONG),
+    ]
+
+
+_user32 = ctypes.windll.user32
+_PeekMessageW = _user32.PeekMessageW
+_PeekMessageW.argtypes = [ctypes.POINTER(_MSG), wintypes.HWND, wintypes.UINT, wintypes.UINT, wintypes.UINT]
+_PeekMessageW.restype = wintypes.BOOL
+_TranslateMessage = _user32.TranslateMessage
+_TranslateMessage.argtypes = [ctypes.POINTER(_MSG)]
+_TranslateMessage.restype = wintypes.BOOL
+_DispatchMessageW = _user32.DispatchMessageW
+_DispatchMessageW.argtypes = [ctypes.POINTER(_MSG)]
+_DispatchMessageW.restype = ctypes.c_long
+
+_PM_REMOVE = 0x0001
+
+
+# ---------------------------------------------------------------------------
 # Polygon mask helper (no scikit-image dependency)
 # ---------------------------------------------------------------------------
 
@@ -99,11 +150,19 @@ class AgentCursor:
         self._lock = threading.Lock()
         self._ready_event = threading.Event()
         self._window_ready = threading.Event()
+        self._window_failed = threading.Event()
         self._dwell_start: float = 0.0
         self._thread: threading.Thread | None = None
         self._stop = False
         self._hide_pending = False
         self._show_pending = False
+
+        # GDI/HWND resources — only the overlay thread reads or writes these.
+        self._hdc_screen: int = 0
+        self._hdc_mem: int = 0
+        self._hbmp = 0
+        self._bmi: BITMAPINFO | None = None
+        self._ppv_bits: ctypes.c_void_p | None = None
 
         if not enabled:
             return
@@ -115,20 +174,27 @@ class AgentCursor:
             self.enabled = False
             return
 
-        # Create the window synchronously — no thread-race on window creation.
-        try:
-            self._create_window()
-            self._init_gdi()
-        except Exception:
-            logger.warning("Agent cursor window creation failed", exc_info=True)
+        # Spawn the overlay thread.  All Win32 objects (HWND + GDI) are
+        # created, used and destroyed on this thread to avoid Win32 thread
+        # affinity violations.  The main thread blocks until the window is
+        # either ready or has failed to initialise.
+        self._thread = threading.Thread(target=self._overlay_thread_main, daemon=True, name="agent-cursor")
+        self._thread.start()
+
+        # Wait up to 5s for the overlay thread to finish window/GDI setup.
+        # If it fails, downgrade to invisible mode rather than blocking
+        # callers indefinitely.
+        if not self._window_ready.wait(timeout=5.0):
+            logger.warning("Agent cursor window did not become ready within 5s — degrading to invisible mode")
+            self._stop = True
             self.enabled = False
             return
 
-        self._thread = threading.Thread(target=self._animate_loop, daemon=True, name="agent-cursor")
-        self._thread.start()
+        if self._window_failed.is_set():
+            self.enabled = False
 
     # ------------------------------------------------------------------
-    # Window creation (called on animation thread)
+    # Window creation (called on overlay thread)
     # ------------------------------------------------------------------
 
     def _create_window(self):
@@ -300,22 +366,98 @@ class AgentCursor:
         self._hide_pending = True
 
     def shutdown(self):
+        """Signal the overlay thread to exit and wait for it to clean up."""
         self._stop = True
-        if self._thread is not None:
+        # Unblock any caller still waiting on a fly-to.
+        self._ready_event.set()
+        if self._thread is not None and self._thread is not threading.current_thread():
             self._thread.join(timeout=2)
 
     # ------------------------------------------------------------------
-    # Animation loop (runs on animation thread — owns the window)
+    # Overlay thread — owns HWND + GDI for their entire lifetime
+    # ------------------------------------------------------------------
+
+    def _overlay_thread_main(self):
+        """Create the window, run the message pump + animation, then clean up.
+
+        The overlay thread does *all* Win32 work for this object so HWND/DC
+        affinity is never violated.  ``_window_ready`` is set once setup
+        succeeds; ``_window_failed`` is set if anything in setup raised.
+        """
+        try:
+            self._create_window()
+            self._init_gdi()
+        except Exception:
+            logger.warning("Agent cursor window/GDI setup failed", exc_info=True)
+            self._window_failed.set()
+            self._window_ready.set()
+            self._destroy_window_and_gdi()
+            return
+
+        self._window_ready.set()
+
+        try:
+            self._animate_loop()
+        except Exception:
+            logger.warning("Agent cursor animation loop crashed", exc_info=True)
+        finally:
+            self._destroy_window_and_gdi()
+
+    def _pump_messages(self):
+        """Drain pending messages for this thread without blocking."""
+        msg = _MSG()
+        # Cap the iterations so a flood of messages can't starve animation.
+        for _ in range(64):
+            if not _PeekMessageW(ctypes.byref(msg), None, 0, 0, _PM_REMOVE):
+                return
+            _TranslateMessage(ctypes.byref(msg))
+            _DispatchMessageW(ctypes.byref(msg))
+
+    def _destroy_window_and_gdi(self):
+        """Tear down GDI then HWND — only called from the overlay thread."""
+        if self._hbmp:
+            try:
+                ctypes.windll.gdi32.DeleteObject(self._hbmp)
+            except Exception:
+                logger.debug("DeleteObject(_hbmp) failed", exc_info=True)
+            self._hbmp = 0
+        if self._hdc_mem:
+            try:
+                win32gui.DeleteDC(self._hdc_mem)
+            except Exception:
+                logger.debug("DeleteDC(_hdc_mem) failed", exc_info=True)
+            self._hdc_mem = 0
+        if self._hdc_screen:
+            try:
+                win32gui.ReleaseDC(0, self._hdc_screen)
+            except Exception:
+                logger.debug("ReleaseDC(_hdc_screen) failed", exc_info=True)
+            self._hdc_screen = 0
+        if self._hwnd:
+            try:
+                win32gui.DestroyWindow(self._hwnd)
+            except Exception:
+                logger.debug("DestroyWindow(_hwnd) failed", exc_info=True)
+            self._hwnd = 0
+
+    # ------------------------------------------------------------------
+    # Animation loop (runs on overlay thread — owns the window)
     # ------------------------------------------------------------------
 
     def _animate_loop(self):
-        """60 fps animation thread.  Window was created on the main thread."""
+        """60 fps animation thread.  Pumps Win32 messages each frame."""
         target_interval = 1.0 / 60.0
         _was_dwell = False
         _last_phase = "idle"
 
         while not self._stop:
             t0 = time.perf_counter()
+
+            # Every frame: drain pending Windows messages so WM_DESTROY,
+            # WM_TIMER, WM_PAINT etc. are routed to the wnd_proc instead
+            # of piling up.  This thread *must* pump because it owns the
+            # window — Windows requires the creating thread to dispatch.
+            self._pump_messages()
 
             # Process pending hide/show requests
             if self._hide_pending:
@@ -348,7 +490,10 @@ class AgentCursor:
                 self._ready_event.set()
 
             if should_render:
-                self._render_and_present(render_x, render_y, render_heading)
+                try:
+                    self._render_and_present(render_x, render_y, render_heading)
+                except Exception:
+                    logger.debug("Agent cursor render failed", exc_info=True)
 
             if phase == "dwell":
                 if not _was_dwell:
@@ -366,22 +511,11 @@ class AgentCursor:
             elapsed = time.perf_counter() - t0
             time.sleep(max(0.0, target_interval - elapsed))
 
-        # Clean up GDI and window on the thread that owns them
-        if hasattr(self, '_hbmp') and self._hbmp:
-            ctypes.windll.gdi32.DeleteObject(self._hbmp)
-            self._hbmp = 0
-        if hasattr(self, '_hdc_mem') and self._hdc_mem:
-            win32gui.DeleteDC(self._hdc_mem)
-            self._hdc_mem = 0
-        if hasattr(self, '_hdc_screen') and self._hdc_screen:
-            win32gui.ReleaseDC(0, self._hdc_screen)
-            self._hdc_screen = 0
-        if self._hwnd:
-            win32gui.DestroyWindow(self._hwnd)
-            self._hwnd = 0
+        # Cleanup happens in _overlay_thread_main's finally block so it
+        # runs even on exception paths.
 
     # ------------------------------------------------------------------
-    # Per-frame rendering (called on animation thread)
+    # Per-frame rendering (called on overlay thread)
     # ------------------------------------------------------------------
 
     def _get_rotated_frame(self, heading: float) -> bytes:
@@ -416,7 +550,7 @@ class AgentCursor:
         return bgra_bytes
 
     def _init_gdi(self):
-        """Create reusable GDI resources — called once after window creation."""
+        """Create reusable GDI resources — called once on the overlay thread."""
         self._hdc_screen = win32gui.GetDC(0)
         self._hdc_mem = win32gui.CreateCompatibleDC(self._hdc_screen)
 

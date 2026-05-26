@@ -42,25 +42,26 @@ class ZoomRegistry:
 
     def __init__(self):
         if not hasattr(self, "_initialized"):
-            self._data: Dict[int, ZoomContext] = {}
+            self._data: Dict[Tuple[int, int], ZoomContext] = {}
             self._data_lock = threading.Lock()
             self._initialized = True
 
-    def set(self, pid: int, ctx: ZoomContext) -> None:
-        """Store zoom context for a process."""
+    def set(self, pid: int, window_id: int, ctx: ZoomContext) -> None:
+        """Store zoom context for a (pid, window_id) pair."""
         with self._data_lock:
-            self._data[pid] = ctx
+            self._data[(pid, window_id)] = ctx
 
-    def get(self, pid: int) -> Optional[ZoomContext]:
-        """Retrieve zoom context for a process, or None."""
+    def get(self, pid: int, window_id: int) -> Optional[ZoomContext]:
+        """Retrieve zoom context for a (pid, window_id) pair, or None."""
         with self._data_lock:
-            return self._data.get(pid)
+            return self._data.get((pid, window_id))
 
-    def unscale(self, pid: int, x: int, y: int) -> Tuple[int, int]:
+    def unscale(self, pid: int, window_id: int, x: int, y: int) -> Tuple[int, int]:
         """Convert coordinates from zoomed image space back to original screen space.
 
         Args:
             pid: The process that was zoomed.
+            window_id: The window that was zoomed.
             x: X coordinate in the zoomed image.
             y: Y coordinate in the zoomed image.
 
@@ -68,13 +69,13 @@ class ZoomRegistry:
             (original_x, original_y) in screen coordinates.
 
         Raises:
-            ValueError: If no zoom context exists for this process.
+            ValueError: If no zoom context exists for this (pid, window_id).
         """
         with self._data_lock:
-            ctx = self._data.get(pid)
+            ctx = self._data.get((pid, window_id))
             if ctx is None:
                 raise ValueError(
-                    f"No zoom context for pid {pid}. "
+                    f"No zoom context for pid {pid} window_id {window_id}. "
                     "Call computer_zoom first."
                 )
             # Reverse the zoom: zoomed coords -> original coords
@@ -83,10 +84,10 @@ class ZoomRegistry:
             original_y = int(ctx.crop_rect[1] + y / ctx.scale_y)
             return original_x, original_y
 
-    def clear(self, pid: int) -> None:
-        """Remove zoom context for a process."""
+    def clear(self, pid: int, window_id: int) -> None:
+        """Remove zoom context for a (pid, window_id) pair."""
         with self._data_lock:
-            self._data.pop(pid, None)
+            self._data.pop((pid, window_id), None)
 
     def clear_all(self) -> None:
         """Remove all zoom contexts."""
