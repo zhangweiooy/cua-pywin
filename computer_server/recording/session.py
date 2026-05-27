@@ -209,6 +209,7 @@ class RecordingSession:
         screenshot_bytes: Optional[bytes] = None,
         click_point: Optional[Tuple[int, int]] = None,
         window_ref: Optional[Dict[str, Any]] = None,
+        element_ref: Optional[Dict[str, Any]] = None,
     ) -> None:
         """Record a single tool invocation as a turn.
 
@@ -247,6 +248,7 @@ class RecordingSession:
                 screenshot_bytes,
                 click_point,
                 window_ref,
+                element_ref,
                 turn_num,
             )
 
@@ -306,6 +308,7 @@ class RecordingSession:
                     screenshot_bytes,
                     click_point,
                     window_ref,
+                    element_ref,
                     turn_num,
                 ) = item
                 self._write_turn(
@@ -316,6 +319,7 @@ class RecordingSession:
                     screenshot_bytes,
                     click_point,
                     window_ref,
+                    element_ref,
                     turn_num,
                 )
             except Exception:
@@ -339,6 +343,7 @@ class RecordingSession:
         screenshot_bytes: Optional[bytes],
         click_point: Optional[Tuple[int, int]],
         window_ref: Optional[Dict[str, Any]],
+        element_ref: Optional[Dict[str, Any]],
         turn_number: int,
     ) -> None:
         """Synchronous file writing (runs in writer thread)."""
@@ -354,6 +359,8 @@ class RecordingSession:
         }
         if window_ref:
             action_data["window_ref"] = window_ref
+        if element_ref:
+            action_data["element_ref"] = self._sanitize_for_json(element_ref)
         action_path = os.path.join(turn_dir, "action.json")
         with open(action_path, "w", encoding="utf-8") as f:
             json.dump(action_data, f, indent=2, ensure_ascii=False, default=str)

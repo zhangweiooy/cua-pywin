@@ -504,12 +504,58 @@ def create_mcp_server() -> FastMCP:
             }
         return zoom_ctx.pid, zoom_ctx.window_id, None
 
+    def _build_element_ref(
+        pid: Optional[int],
+        window_id: Optional[int],
+        element_index: Optional[int],
+    ) -> Optional[Dict[str, Any]]:
+        """Build replay metadata for a cached element."""
+        if pid is None or window_id is None or element_index is None:
+            return None
+        try:
+            from computer_server.handlers.element_cache import get_element_cache
+
+            cache = get_element_cache()
+            el = cache.get_element(int(pid), int(window_id), int(element_index))
+            if el is None:
+                return None
+            origin = cache.get_window_origin_optional(int(pid), int(window_id))
+            sensitive_label = f"{el.name or ''} {el.control_type or ''}".lower()
+            redact_value = any(
+                token in sensitive_label
+                for token in ("password", "passcode", "pin", "密码", "口令")
+            )
+            ref: Dict[str, Any] = {
+                "pid": int(pid),
+                "window_id": int(window_id),
+                "recorded_element_index": int(element_index),
+                "source": el.source,
+                "control_type": el.control_type,
+                "name": el.name,
+                "value": None if redact_value else el.value,
+                "actions": list(el.actions or []),
+                "enabled": el.enabled,
+                "center_x": el.center_x,
+                "center_y": el.center_y,
+                "bbox": list(el.bbox),
+            }
+            if origin is not None:
+                ref["origin_x"] = origin[0]
+                ref["origin_y"] = origin[1]
+                ref["screen_x"] = origin[0] + el.center_x
+                ref["screen_y"] = origin[1] + el.center_y
+            return ref
+        except Exception:
+            logger.debug("failed to build element_ref", exc_info=True)
+            return None
+
     async def _recording_hook(
         tool_name: str,
         args: Dict[str, Any],
         result: Dict[str, Any],
         click_point: Optional[Tuple[int, int]] = None,
         window_ref: Optional[Dict[str, Any]] = None,
+        element_ref: Optional[Dict[str, Any]] = None,
     ) -> None:
         """Record a tool invocation for this MCP server instance."""
         try:
@@ -540,6 +586,7 @@ def create_mcp_server() -> FastMCP:
                 screenshot_bytes=screenshot_bytes,
                 click_point=click_point,
                 window_ref=window_ref,
+                element_ref=element_ref,
             )
         except Exception:
             logger.debug("recording hook failed", exc_info=True)
@@ -757,6 +804,8 @@ def create_mcp_server() -> FastMCP:
                 return ref_error
             from_zoom = True
 
+        recorded_element_ref = None
+
         # --- Resolve element_index ---
         if element_index is not None:
             if from_zoom:
@@ -768,6 +817,7 @@ def create_mcp_server() -> FastMCP:
             el = get_element_cache().get_element(pid, window_id, element_index)
             if el is None:
                 return {"success": False, "error": f"No cached element at index {element_index} for pid={pid}, window_id={window_id}", "suggestion": f"The element cache may have expired. Call get_window_state(pid={pid}, window_id={window_id}) to refresh it, then use the new element_index"}
+            recorded_element_ref = _build_element_ref(pid, window_id, element_index)
 
             # Dispatch action
             if action == "raise":
@@ -780,7 +830,7 @@ def create_mcp_server() -> FastMCP:
                     wr = _build_window_ref(pid, window_id, 0, 0)
                     await _recording_hook("computer_click",
                         {"element_index": element_index, "pid": pid, "window_id": window_id, "action": "raise"},
-                        result, window_ref=wr)
+                        result, window_ref=wr, element_ref=recorded_element_ref)
                     if capture_after:
                         result["capture_after"] = await _capture_and_detect(pid, window_id)
                     return result
@@ -850,7 +900,7 @@ def create_mcp_server() -> FastMCP:
                         wr = _build_window_ref(pid, window_id, screen_pt[0], screen_pt[1])
                         await _recording_hook("computer_click",
                             {"element_index": element_index, "pid": pid, "window_id": window_id},
-                            result, click_point=screen_pt, window_ref=wr)
+                            result, click_point=screen_pt, window_ref=wr, element_ref=recorded_element_ref)
 
                         # For editable controls (Edit, ComboBox, Document),
                         # UIA Invoke establishes focus asynchronously —
@@ -949,7 +999,7 @@ def create_mcp_server() -> FastMCP:
                 wr = _build_window_ref(pid, window_id, actual_x, actual_y)
                 await _recording_hook("computer_click",
                     {"x": x, "y": y, "button": button, "force_frontmost": True, "count": count},
-                    result, click_point=(actual_x, actual_y), window_ref=wr)
+                    result, click_point=(actual_x, actual_y), window_ref=wr, element_ref=recorded_element_ref)
                 if capture_after and pid is not None and window_id is not None:
                     cap = await _capture_and_detect(pid, window_id)
                     result["capture_after"] = cap
@@ -994,7 +1044,14 @@ def create_mcp_server() -> FastMCP:
                 await automation_handler.key_up(mod)
 
         wr = _build_window_ref(pid, window_id, actual_x, actual_y)
-        await _recording_hook("computer_click", {"x": x, "y": y, "button": button, "count": count}, result, click_point=(actual_x, actual_y), window_ref=wr)
+        await _recording_hook(
+            "computer_click",
+            {"x": x, "y": y, "button": button, "count": count},
+            result,
+            click_point=(actual_x, actual_y),
+            window_ref=wr,
+            element_ref=recorded_element_ref,
+        )
 
         # capture_after
         if capture_after and pid is not None and window_id is not None:
@@ -1100,11 +1157,14 @@ def create_mcp_server() -> FastMCP:
                 return ref_error
             from_zoom = True
 
+        recorded_element_ref = None
+
         if element_index is not None:
             if from_zoom:
                 return {"success": False, "error": "element_index and from_zoom are mutually exclusive — element_index already returns screen coords", "suggestion": "Remove from_zoom=True or use raw coordinates with from_zoom instead"}
             if pid is None or window_id is None:
                 return {"success": False, "error": "pid and window_id are required with element_index", "suggestion": "Provide pid and window_id from a previous get_window_state call"}
+            recorded_element_ref = _build_element_ref(pid, window_id, element_index)
             try:
                 start_x, start_y = _resolve_element_center(pid, window_id, element_index)
             except ValueError as e:
@@ -1171,7 +1231,7 @@ def create_mcp_server() -> FastMCP:
         await _recording_hook("computer_drag", {
             "start_x": start_x, "start_y": start_y,
             "end_x": end_x, "end_y": end_y, "button": button,
-        }, result, click_point=(actual_start_x, actual_start_y), window_ref=wr)
+        }, result, click_point=(actual_start_x, actual_start_y), window_ref=wr, element_ref=recorded_element_ref)
         return result
 
     @mcp.tool(annotations={"readOnlyHint": False, "destructiveHint": True, "idempotentHint": False, "openWorldHint": True})
@@ -1243,9 +1303,12 @@ def create_mcp_server() -> FastMCP:
             elif direction == "right":
                 scroll_x = amount
 
+        recorded_element_ref = None
+
         if element_index is not None:
             if pid is None or window_id is None:
                 return {"success": False, "error": "pid and window_id are required with element_index", "suggestion": "Provide pid and window_id from a previous get_window_state call"}
+            recorded_element_ref = _build_element_ref(pid, window_id, element_index)
             try:
                 x, y = _resolve_element_center(pid, window_id, element_index)
             except ValueError as e:
@@ -1292,11 +1355,11 @@ def create_mcp_server() -> FastMCP:
             wr = _build_window_ref(pid, window_id, scroll_ax, scroll_ay)
             await _recording_hook("computer_scroll", {
                 "x": x, "y": y, "scroll_x": scroll_x, "scroll_y": scroll_y,
-            }, result, click_point=(scroll_ax, scroll_ay), window_ref=wr)
+            }, result, click_point=(scroll_ax, scroll_ay), window_ref=wr, element_ref=recorded_element_ref)
         else:
             await _recording_hook("computer_scroll", {
                 "x": x, "y": y, "scroll_x": scroll_x, "scroll_y": scroll_y,
-            }, result)
+            }, result, element_ref=recorded_element_ref)
 
         # capture_after
         if capture_after and pid is not None and window_id is not None:
@@ -1513,6 +1576,7 @@ def create_mcp_server() -> FastMCP:
                 "error": f"No cached element at index {element_index} for pid={pid}, window_id={window_id}",
                 "suggestion": f"The element cache may have expired. Call get_window_state(pid={pid}, window_id={window_id}) to refresh it",
             }
+        recorded_element_ref = _build_element_ref(pid, window_id, element_index)
 
         # Convert window-relative element coords to screen space for clicking
         origin = get_element_cache().get_window_origin_optional(pid, window_id)
@@ -1566,7 +1630,7 @@ def create_mcp_server() -> FastMCP:
             try:
                 _set_value_via_uia_point(screen_cx, screen_cy, value)
                 result = {"success": True, "element_index": element_index, "value": response_value, "method": "uia"}
-                await _recording_hook("computer_set_value", record_args, result)
+                await _recording_hook("computer_set_value", record_args, result, element_ref=recorded_element_ref)
                 return result
             except Exception as e:
                 logger.debug("UIA ValuePattern set failed (will fall back): %s", e)
@@ -1580,7 +1644,7 @@ def create_mcp_server() -> FastMCP:
             if not click_result.get("success"):
                 return click_result
             result = {"success": True, "element_index": element_index, "value": response_value, "method": "click"}
-            await _recording_hook("computer_set_value", record_args, result)
+            await _recording_hook("computer_set_value", record_args, result, element_ref=recorded_element_ref)
             return result
 
         # For text-like elements: click to focus, select all, type value
@@ -1602,7 +1666,7 @@ def create_mcp_server() -> FastMCP:
 
             await automation_handler.type_text(value)
             result = {"success": True, "element_index": element_index, "value": response_value, "method": "click_type"}
-            await _recording_hook("computer_set_value", record_args, result)
+            await _recording_hook("computer_set_value", record_args, result, element_ref=recorded_element_ref)
             return result
 
         return {
@@ -2554,12 +2618,39 @@ def create_mcp_server() -> FastMCP:
 
         tool_map = await _get_tool_map(mcp)
 
-        async def tool_executor(tool_name: str, args: Dict[str, Any],
-                                window_ref: Optional[Dict[str, Any]] = None) -> Any:
+        async def tool_executor(
+            tool_name: str,
+            args: Dict[str, Any],
+            window_ref: Optional[Dict[str, Any]] = None,
+            element_ref: Optional[Dict[str, Any]] = None,
+        ) -> Any:
             if tool_name not in tool_map:
                 return {"success": False, "error": f"Unknown tool: {tool_name}"}
 
             resolved = resolve_replay_args(tool_name, args, window_ref=window_ref)
+            if element_ref is not None and tool_name in {
+                "computer_click",
+                "computer_drag",
+                "computer_scroll",
+                "computer_set_value",
+            }:
+                refresh_pid = resolved.get("pid") or element_ref.get("pid")
+                refresh_window_id = resolved.get("window_id") or element_ref.get("window_id")
+                if refresh_pid is not None and refresh_window_id is not None:
+                    try:
+                        await computer_get_window_state(
+                            pid=int(refresh_pid),
+                            window_id=int(refresh_window_id),
+                            query=element_ref.get("name") or None,
+                            include_all_nodes=True,
+                        )
+                    except Exception:
+                        logger.debug("Replay element cache refresh failed", exc_info=True)
+                resolved = resolve_replay_args(
+                    tool_name,
+                    resolved,
+                    element_ref=element_ref,
+                )
 
             try:
                 return await tool_map[tool_name](**resolved)

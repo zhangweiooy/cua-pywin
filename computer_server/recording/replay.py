@@ -71,11 +71,17 @@ async def replay_trajectory(
         tool_name = action_data.get("tool", "")
         args = action_data.get("args", {})
         window_ref = action_data.get("window_ref")
+        element_ref = action_data.get("element_ref")
 
         logger.info("Replaying %s: %s(%s)", turn_name, tool_name, args)
 
         try:
-            result = await tool_executor(tool_name, args, window_ref=window_ref)
+            result = await tool_executor(
+                tool_name,
+                args,
+                window_ref=window_ref,
+                element_ref=element_ref,
+            )
             if isinstance(result, dict) and result.get("success") is False:
                 error_msg = result.get("error", "Unknown error")
                 errors.append({"turn": turn_name, "tool": tool_name, "error": error_msg})

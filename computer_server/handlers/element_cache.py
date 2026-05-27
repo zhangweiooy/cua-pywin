@@ -123,6 +123,14 @@ class ElementCache:
                 return None
             return idx_map.get(index)
 
+    def get_elements(self, pid: int, window_id: int) -> List[CachedElement]:
+        """Return cached elements for a window."""
+        with self._data_lock:
+            key = (pid, window_id)
+            if not self._is_entry_current_unlocked(key):
+                return []
+            return list(self._data.get(key, []))
+
     def get_center(
         self, pid: int, window_id: int, index: int
     ) -> Optional[Tuple[int, int]]:

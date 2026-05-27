@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from computer_server.handlers.element_cache import CachedElement, get_element_cache
 from computer_server.services import replay_resolver
 
 
@@ -63,3 +64,66 @@ def test_resolve_replay_activate_window_rewrites_stale_hwnd(monkeypatch):
     )
 
     assert resolved == {"window_id": "222"}
+
+
+def test_resolve_replay_click_relocates_cached_element(monkeypatch):
+    cache = get_element_cache()
+    cache.clear()
+    monkeypatch.setattr(cache, "_is_window_valid", lambda _window_id: True)
+    try:
+        cache.set_window_origin(11, 22, 100, 200)
+        cache.update(
+            11,
+            22,
+            [
+                CachedElement(
+                    element_index=7,
+                    source="uia",
+                    center_x=10,
+                    center_y=20,
+                    bbox=(1, 2, 19, 38),
+                    control_type="Button",
+                    name="保存",
+                    actions=["invoke"],
+                )
+            ],
+        )
+
+        resolved = replay_resolver.resolve_replay_args(
+            "computer_click",
+            {"x": 300, "y": 400, "button": "left", "pid": 11, "window_id": 22},
+            element_ref={
+                "recorded_element_index": 3,
+                "source": "uia",
+                "control_type": "Button",
+                "name": "保存",
+                "actions": ["invoke"],
+                "center_x": 12,
+                "center_y": 19,
+            },
+        )
+
+        assert resolved == {"button": "left", "pid": 11, "window_id": 22, "element_index": 7}
+    finally:
+        cache.clear()
+
+
+def test_resolve_replay_element_keeps_coordinate_fallback_when_no_match(monkeypatch):
+    cache = get_element_cache()
+    cache.clear()
+    monkeypatch.setattr(cache, "_is_window_valid", lambda _window_id: True)
+    try:
+        args = {"x": 300, "y": 400, "button": "left", "pid": 11, "window_id": 22}
+        resolved = replay_resolver.resolve_replay_args(
+            "computer_click",
+            args,
+            element_ref={
+                "recorded_element_index": 3,
+                "control_type": "Button",
+                "name": "保存",
+            },
+        )
+
+        assert resolved == args
+    finally:
+        cache.clear()
