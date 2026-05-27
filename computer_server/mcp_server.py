@@ -1206,7 +1206,16 @@ def create_mcp_server() -> FastMCP:
         actual_x, actual_y = _scale_to_actual(x, y)
         await _animate_cursor_to(actual_x, actual_y)
         automation_handler = _get_handlers().automation
-        return await automation_handler.move_cursor(actual_x, actual_y)
+        result = await automation_handler.move_cursor(actual_x, actual_y)
+        wr = _build_window_ref(None, None, actual_x, actual_y)
+        await _recording_hook(
+            "computer_move",
+            {"x": x, "y": y},
+            result,
+            click_point=(actual_x, actual_y),
+            window_ref=wr,
+        )
+        return result
 
     @mcp.tool(annotations={"readOnlyHint": False, "destructiveHint": True, "idempotentHint": False, "openWorldHint": True})
     async def computer_drag(
@@ -1617,6 +1626,19 @@ def create_mcp_server() -> FastMCP:
             context.held_mouse_buttons.add(button)
         elif suppression_active:
             _end_learning_input_suppression(suppression_active)
+        click_point = (actual_x, actual_y) if actual_x is not None and actual_y is not None else None
+        wr = (
+            _build_window_ref(None, None, actual_x, actual_y)
+            if actual_x is not None and actual_y is not None
+            else None
+        )
+        await _recording_hook(
+            "computer_mouse_down",
+            {"x": x, "y": y, "button": button},
+            result,
+            click_point=click_point,
+            window_ref=wr,
+        )
         return result
 
     @mcp.tool(annotations={"readOnlyHint": False, "destructiveHint": True, "idempotentHint": False, "openWorldHint": True})
@@ -1656,6 +1678,19 @@ def create_mcp_server() -> FastMCP:
             context.held_mouse_buttons.discard(button)
             if was_held:
                 _end_learning_input_suppression(True)
+        click_point = (actual_x, actual_y) if actual_x is not None and actual_y is not None else None
+        wr = (
+            _build_window_ref(None, None, actual_x, actual_y)
+            if actual_x is not None and actual_y is not None
+            else None
+        )
+        await _recording_hook(
+            "computer_mouse_up",
+            {"x": x, "y": y, "button": button},
+            result,
+            click_point=click_point,
+            window_ref=wr,
+        )
         return result
 
     # ============================================================

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import json
 
-from computer_server.recording.session import RecordingSession
+from computer_server.recording.session import RECORDABLE_TOOLS, RecordingSession
 
 
 def test_write_turn_persists_element_ref(tmp_path):
@@ -32,3 +32,9 @@ def test_write_turn_persists_element_ref(tmp_path):
         "control_type": "Button",
         "name": "保存",
     }
+
+
+def test_low_level_pointer_primitives_are_recordable():
+    assert "computer_move" in RECORDABLE_TOOLS
+    assert "computer_mouse_down" in RECORDABLE_TOOLS
+    assert "computer_mouse_up" in RECORDABLE_TOOLS

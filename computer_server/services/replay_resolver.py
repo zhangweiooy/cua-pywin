@@ -10,7 +10,15 @@ from computer_server.services.window_identity_service import resolve_live_window
 logger = logging.getLogger(__name__)
 
 REPLAY_META_KEYS = frozenset({"window_title", "process_name"})
-REPLAY_COORD_TOOLS = frozenset({"computer_click", "computer_drag", "computer_scroll"})
+REPLAY_COORD_TOOLS = frozenset({
+    "computer_click",
+    "computer_drag",
+    "computer_scroll",
+    "computer_move",
+    "computer_mouse_down",
+    "computer_mouse_up",
+})
+REPLAY_WINDOW_ID_ARG_TOOLS = frozenset({"computer_click", "computer_drag", "computer_scroll"})
 REPLAY_WINDOW_TOOLS = frozenset({"computer_activate_window"})
 REPLAY_ELEMENT_TOOLS = frozenset({
     "computer_click",
@@ -39,17 +47,22 @@ def resolve_replay_args(
             hwnd, rect = resolved_hwnd
             ref_ox = window_ref.get("origin_x", 0)
             ref_oy = window_ref.get("origin_y", 0)
-            if "x" in resolved:
+            if resolved.get("x") is not None and resolved.get("y") is not None:
                 resolved["x"] = int(rect[0] + (resolved["x"] - ref_ox))
                 resolved["y"] = int(rect[1] + (resolved["y"] - ref_oy))
-            if "start_x" in resolved:
+            if (
+                resolved.get("start_x") is not None
+                and resolved.get("start_y") is not None
+                and resolved.get("end_x") is not None
+                and resolved.get("end_y") is not None
+            ):
                 resolved["start_x"] = int(rect[0] + (resolved["start_x"] - ref_ox))
                 resolved["start_y"] = int(rect[1] + (resolved["start_y"] - ref_oy))
                 resolved["end_x"] = int(rect[0] + (resolved["end_x"] - ref_ox))
                 resolved["end_y"] = int(rect[1] + (resolved["end_y"] - ref_oy))
 
             ref_wid = window_ref.get("window_id")
-            if ref_wid is not None and hwnd != int(ref_wid):
+            if ref_wid is not None and hwnd != int(ref_wid) and tool_name in REPLAY_WINDOW_ID_ARG_TOOLS:
                 resolved["window_id"] = str(hwnd)
                 logger.info(
                     "Replay resolved stale window_id %s -> %s for %s",

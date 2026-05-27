@@ -24,7 +24,10 @@ logger = logging.getLogger(__name__)
 RECORDABLE_TOOLS = frozenset(
     [
         "computer_click",
+        "computer_move",
         "computer_drag",
+        "computer_mouse_down",
+        "computer_mouse_up",
         "computer_type",
         "computer_press_key",
         "computer_hotkey",

@@ -51,6 +51,38 @@ def test_resolve_replay_drag_adjusts_both_points(monkeypatch):
     }
 
 
+def test_resolve_replay_move_adjusts_coordinates_without_window_id(monkeypatch):
+    monkeypatch.setattr(
+        replay_resolver,
+        "resolve_live_window",
+        lambda source: (200, (300, 400, 800, 900)),
+    )
+
+    resolved = replay_resolver.resolve_replay_args(
+        "computer_move",
+        {"x": 120, "y": 130},
+        window_ref={"window_id": 100, "origin_x": 100, "origin_y": 100},
+    )
+
+    assert resolved == {"x": 320, "y": 430}
+
+
+def test_resolve_replay_mouse_down_preserves_current_cursor_mode(monkeypatch):
+    monkeypatch.setattr(
+        replay_resolver,
+        "resolve_live_window",
+        lambda source: (200, (300, 400, 800, 900)),
+    )
+
+    resolved = replay_resolver.resolve_replay_args(
+        "computer_mouse_down",
+        {"x": None, "y": None, "button": "left"},
+        window_ref={"window_id": 100, "origin_x": 100, "origin_y": 100},
+    )
+
+    assert resolved == {"x": None, "y": None, "button": "left"}
+
+
 def test_resolve_replay_activate_window_rewrites_stale_hwnd(monkeypatch):
     monkeypatch.setattr(
         replay_resolver,
