@@ -23,18 +23,22 @@ def resolve_from_zoom(
     from_zoom: bool = False,
     pid: Optional[int] = None,
     window_id: Optional[int] = None,
+    zoom_id: Optional[str] = None,
 ) -> Tuple[int, int]:
     """Translate zoom-image coordinates back to screen coordinates."""
-    if not from_zoom:
+    if not from_zoom and not zoom_id:
         return x, y
+    from computer_server.handlers.zoom_registry import get_zoom_registry
+
+    registry = get_zoom_registry()
+    if zoom_id:
+        return registry.unscale_by_id(zoom_id, x, y)
+
     if pid is None:
         raise ValueError("pid is required when from_zoom=True")
     if window_id is None:
         raise ValueError("window_id is required when from_zoom=True")
-
-    from computer_server.handlers.zoom_registry import get_zoom_registry
-
-    return get_zoom_registry().unscale(pid, window_id, x, y)
+    return registry.unscale(pid, window_id, x, y)
 
 
 def resolve_element_center(

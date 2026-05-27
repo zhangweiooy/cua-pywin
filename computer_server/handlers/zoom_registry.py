@@ -15,6 +15,8 @@ from typing import Dict, Optional, Tuple
 class ZoomContext:
     """Stores the context of a zoom operation for coordinate back-translation."""
 
+    zoom_id: str
+    pid: int
     window_id: int
     crop_rect: Tuple[int, int, int, int]  # (x1, y1, x2, y2) in screen coords (after padding)
     scale_x: float  # zoom output_width / crop_width
@@ -43,6 +45,7 @@ class ZoomRegistry:
     def __init__(self):
         if not hasattr(self, "_initialized"):
             self._data: Dict[Tuple[int, int], ZoomContext] = {}
+            self._by_id: Dict[str, ZoomContext] = {}
             self._data_lock = threading.Lock()
             self._initialized = True
 
@@ -50,11 +53,17 @@ class ZoomRegistry:
         """Store zoom context for a (pid, window_id) pair."""
         with self._data_lock:
             self._data[(pid, window_id)] = ctx
+            self._by_id[ctx.zoom_id] = ctx
 
     def get(self, pid: int, window_id: int) -> Optional[ZoomContext]:
         """Retrieve zoom context for a (pid, window_id) pair, or None."""
         with self._data_lock:
             return self._data.get((pid, window_id))
+
+    def get_by_id(self, zoom_id: str) -> Optional[ZoomContext]:
+        """Retrieve zoom context by stable zoom id, or None."""
+        with self._data_lock:
+            return self._by_id.get(zoom_id)
 
     def unscale(self, pid: int, window_id: int, x: int, y: int) -> Tuple[int, int]:
         """Convert coordinates from zoomed image space back to original screen space.
@@ -84,15 +93,32 @@ class ZoomRegistry:
             original_y = int(ctx.crop_rect[1] + y / ctx.scale_y)
             return original_x, original_y
 
+    def unscale_by_id(self, zoom_id: str, x: int, y: int) -> Tuple[int, int]:
+        """Convert zoom-image coordinates using a stable zoom id."""
+        with self._data_lock:
+            ctx = self._by_id.get(zoom_id)
+            if ctx is None:
+                raise ValueError(
+                    f"No zoom context for zoom_id {zoom_id}. Call computer_zoom first."
+                )
+            return (
+                int(ctx.crop_rect[0] + x / ctx.scale_x),
+                int(ctx.crop_rect[1] + y / ctx.scale_y),
+            )
+
     def clear(self, pid: int, window_id: int) -> None:
         """Remove zoom context for a (pid, window_id) pair."""
         with self._data_lock:
             self._data.pop((pid, window_id), None)
+            for zoom_id, ctx in list(self._by_id.items()):
+                if ctx.pid == pid and ctx.window_id == window_id:
+                    self._by_id.pop(zoom_id, None)
 
     def clear_all(self) -> None:
         """Remove all zoom contexts."""
         with self._data_lock:
             self._data.clear()
+            self._by_id.clear()
 
 
 def get_zoom_registry() -> ZoomRegistry:

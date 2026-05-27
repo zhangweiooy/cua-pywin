@@ -6,6 +6,7 @@ from dataclasses import dataclass, field
 from typing import Any, Dict, Optional, Set
 
 from computer_server.recording.session import RecordingSession
+from computer_server.services.observation_context import ObservationContextRegistry
 from computer_server.services.window_state_service import UIAWalkGate
 
 
@@ -21,5 +22,6 @@ class ServerContext:
     recording_session: Optional[RecordingSession] = None
     recording_suppressed: bool = False
     learning_recorder: Optional[Any] = None
+    observations: ObservationContextRegistry = field(default_factory=ObservationContextRegistry)
     uia_walk_gate: UIAWalkGate = field(default_factory=UIAWalkGate)
     seen_popovers: Dict[int, Set[int]] = field(default_factory=dict)

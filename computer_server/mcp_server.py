@@ -185,12 +185,24 @@ def _scale_to_target(x: int, y: int) -> Tuple[int, int]:
 
 
 def _resolve_from_zoom(
-    x: int, y: int, from_zoom: bool = False, pid: Optional[int] = None, window_id: Optional[int] = None,
+    x: int,
+    y: int,
+    from_zoom: bool = False,
+    pid: Optional[int] = None,
+    window_id: Optional[int] = None,
+    zoom_id: Optional[str] = None,
 ) -> Tuple[int, int]:
     """If from_zoom is True, translate zoomed-image coordinates back to screen space."""
     from computer_server.services.coordinate_service import resolve_from_zoom
 
-    return resolve_from_zoom(x, y, from_zoom=from_zoom, pid=pid, window_id=window_id)
+    return resolve_from_zoom(
+        x,
+        y,
+        from_zoom=from_zoom,
+        pid=pid,
+        window_id=window_id,
+        zoom_id=zoom_id,
+    )
 
 
 def _resolve_element_center(
@@ -422,6 +434,76 @@ def create_mcp_server() -> FastMCP:
 
     context = ServerContext()
 
+    def _resolve_snapshot_ref(
+        snapshot_id: Optional[str],
+        pid: Optional[int],
+        window_id: Optional[int],
+    ) -> Tuple[Optional[int], Optional[int], Optional[Dict[str, Any]]]:
+        """Resolve an optional snapshot handle to pid/window_id."""
+        if not snapshot_id:
+            return pid, window_id, None
+
+        snapshot = context.observations.get_snapshot(snapshot_id)
+        if snapshot is None:
+            return pid, window_id, {
+                "success": False,
+                "error": f"Unknown or expired snapshot_id: {snapshot_id}",
+                "suggestion": "Call computer_get_window_state again and use the returned snapshot_id.",
+            }
+        if not context.observations.is_latest(snapshot_id):
+            return pid, window_id, {
+                "success": False,
+                "error": f"snapshot_id is stale for pid={snapshot.pid}, window_id={snapshot.window_id}",
+                "suggestion": "Use the latest snapshot_id returned by computer_get_window_state or capture_after.",
+            }
+        if pid is not None and int(pid) != snapshot.pid:
+            return pid, window_id, {
+                "success": False,
+                "error": f"snapshot_id pid mismatch: snapshot has pid={snapshot.pid}, got pid={pid}",
+            }
+        if window_id is not None and int(window_id) != snapshot.window_id:
+            return pid, window_id, {
+                "success": False,
+                "error": (
+                    "snapshot_id window_id mismatch: "
+                    f"snapshot has window_id={snapshot.window_id}, got window_id={window_id}"
+                ),
+            }
+        return snapshot.pid, snapshot.window_id, None
+
+    def _resolve_zoom_ref(
+        zoom_id: Optional[str],
+        pid: Optional[int],
+        window_id: Optional[int],
+    ) -> Tuple[Optional[int], Optional[int], Optional[Dict[str, Any]]]:
+        """Resolve an optional zoom handle to pid/window_id."""
+        if not zoom_id:
+            return pid, window_id, None
+
+        from computer_server.handlers.zoom_registry import get_zoom_registry
+
+        zoom_ctx = get_zoom_registry().get_by_id(zoom_id)
+        if zoom_ctx is None:
+            return pid, window_id, {
+                "success": False,
+                "error": f"Unknown or expired zoom_id: {zoom_id}",
+                "suggestion": "Call computer_zoom again and use the returned zoom_id.",
+            }
+        if pid is not None and int(pid) != zoom_ctx.pid:
+            return pid, window_id, {
+                "success": False,
+                "error": f"zoom_id pid mismatch: zoom has pid={zoom_ctx.pid}, got pid={pid}",
+            }
+        if window_id is not None and int(window_id) != zoom_ctx.window_id:
+            return pid, window_id, {
+                "success": False,
+                "error": (
+                    "zoom_id window_id mismatch: "
+                    f"zoom has window_id={zoom_ctx.window_id}, got window_id={window_id}"
+                ),
+            }
+        return zoom_ctx.pid, zoom_ctx.window_id, None
+
     async def _recording_hook(
         tool_name: str,
         args: Dict[str, Any],
@@ -488,6 +570,8 @@ def create_mcp_server() -> FastMCP:
                 "nodes": fresh.get("nodes", []),
                 "node_count": fresh.get("node_count", 0),
                 "tree_quality": fresh.get("tree_quality", "empty"),
+                "snapshot_id": fresh.get("snapshot_id"),
+                "snapshot_latest": fresh.get("snapshot_latest", True),
                 "success": True,
             }
         except Exception as _cap_err:
@@ -596,7 +680,9 @@ def create_mcp_server() -> FastMCP:
         element_index: Optional[int] = None,
         window_id: Optional[int] = None,
         pid: Optional[int] = None,
+        snapshot_id: Optional[str] = None,
         from_zoom: bool = False,
+        zoom_id: Optional[str] = None,
         modifier: Optional[List[str]] = None,
         count: int = 1,
         debug_image_out: Optional[str] = None,
@@ -618,7 +704,9 @@ def create_mcp_server() -> FastMCP:
             element_index: Index from get_window_state nodes to click via element cache
             window_id: Window ID (required with element_index)
             pid: Process ID (required with element_index)
+            snapshot_id: Snapshot id returned by computer_get_window_state.
             from_zoom: When True, x/y are zoomed-image coords and get translated back
+            zoom_id: Zoom id returned by computer_zoom.
             modifier: Modifier keys held during click (ctrl, alt, shift, win)
             count: Click count - 1 (single), 2 (double), 3 (triple). Default 1.
             debug_image_out: Optional path to save a debug image with click crosshair.
@@ -653,6 +741,21 @@ def create_mcp_server() -> FastMCP:
                 }
         except ValueError as e:
             return error_result(e)
+
+        pid, window_id, ref_error = _resolve_snapshot_ref(snapshot_id, pid, window_id)
+        if ref_error is not None:
+            return ref_error
+        if zoom_id:
+            if element_index is not None:
+                return {
+                    "success": False,
+                    "error": "element_index and zoom_id are mutually exclusive",
+                    "suggestion": "Use either a snapshot element_index or raw x/y coordinates from the zoom image.",
+                }
+            pid, window_id, ref_error = _resolve_zoom_ref(zoom_id, pid, window_id)
+            if ref_error is not None:
+                return ref_error
+            from_zoom = True
 
         # --- Resolve element_index ---
         if element_index is not None:
@@ -788,7 +891,14 @@ def create_mcp_server() -> FastMCP:
         if from_zoom and window_id is None:
             return {"success": False, "error": "window_id is required when from_zoom=True", "suggestion": "Provide the window_id used in the prior computer_zoom call"}
         try:
-            x, y = _resolve_from_zoom(x, y, from_zoom=from_zoom, pid=pid, window_id=window_id)
+            x, y = _resolve_from_zoom(
+                x,
+                y,
+                from_zoom=from_zoom,
+                pid=pid,
+                window_id=window_id,
+                zoom_id=zoom_id,
+            )
         except ValueError as e:
             return {"success": False, "error": str(e)}
 
@@ -931,7 +1041,9 @@ def create_mcp_server() -> FastMCP:
         element_index: Optional[int] = None,
         window_id: Optional[int] = None,
         pid: Optional[int] = None,
+        snapshot_id: Optional[str] = None,
         from_zoom: bool = False,
+        zoom_id: Optional[str] = None,
         modifier: Optional[List[str]] = None,
     ) -> Any:
         """
@@ -947,7 +1059,9 @@ def create_mcp_server() -> FastMCP:
             element_index: Index from get_window_state to use as drag source
             window_id: Window ID (required with element_index or from_zoom)
             pid: Process ID (required with element_index)
+            snapshot_id: Snapshot id returned by computer_get_window_state.
             from_zoom: When True, coords are in zoomed-image space
+            zoom_id: Zoom id returned by computer_zoom.
             modifier: Modifier keys held during drag (cmd, shift, option, ctrl)
         """
         import asyncio
@@ -971,6 +1085,21 @@ def create_mcp_server() -> FastMCP:
         except ValueError as e:
             return error_result(e)
 
+        pid, window_id, ref_error = _resolve_snapshot_ref(snapshot_id, pid, window_id)
+        if ref_error is not None:
+            return ref_error
+        if zoom_id:
+            if element_index is not None:
+                return {
+                    "success": False,
+                    "error": "element_index and zoom_id are mutually exclusive",
+                    "suggestion": "Use either a snapshot element_index or raw coordinates from the zoom image.",
+                }
+            pid, window_id, ref_error = _resolve_zoom_ref(zoom_id, pid, window_id)
+            if ref_error is not None:
+                return ref_error
+            from_zoom = True
+
         if element_index is not None:
             if from_zoom:
                 return {"success": False, "error": "element_index and from_zoom are mutually exclusive — element_index already returns screen coords", "suggestion": "Remove from_zoom=True or use raw coordinates with from_zoom instead"}
@@ -993,8 +1122,22 @@ def create_mcp_server() -> FastMCP:
         if from_zoom and window_id is None:
             return {"success": False, "error": "window_id is required when from_zoom=True", "suggestion": "Provide the window_id used in the prior computer_zoom call"}
         try:
-            start_x, start_y = _resolve_from_zoom(start_x, start_y, from_zoom=from_zoom, pid=pid, window_id=window_id)
-            end_x, end_y = _resolve_from_zoom(end_x, end_y, from_zoom=from_zoom, pid=pid, window_id=window_id)
+            start_x, start_y = _resolve_from_zoom(
+                start_x,
+                start_y,
+                from_zoom=from_zoom,
+                pid=pid,
+                window_id=window_id,
+                zoom_id=zoom_id,
+            )
+            end_x, end_y = _resolve_from_zoom(
+                end_x,
+                end_y,
+                from_zoom=from_zoom,
+                pid=pid,
+                window_id=window_id,
+                zoom_id=zoom_id,
+            )
         except ValueError as e:
             return {"success": False, "error": str(e)}
 
@@ -1044,6 +1187,7 @@ def create_mcp_server() -> FastMCP:
         element_index: Optional[int] = None,
         window_id: Optional[int] = None,
         pid: Optional[int] = None,
+        snapshot_id: Optional[str] = None,
         capture_after: bool = False,
     ) -> Any:
         """
@@ -1062,6 +1206,7 @@ def create_mcp_server() -> FastMCP:
             element_index: Index from get_window_state to scroll on
             window_id: Window ID (required with element_index)
             pid: Process ID (required with element_index)
+            snapshot_id: Snapshot id returned by computer_get_window_state.
             capture_after: When True, take a fresh screenshot + nodes after the action.
         """
         from computer_server.services.validation_service import (
@@ -1083,6 +1228,10 @@ def create_mcp_server() -> FastMCP:
             amount = validate_scroll_amount(amount)
         except ValueError as e:
             return error_result(e)
+
+        pid, window_id, ref_error = _resolve_snapshot_ref(snapshot_id, pid, window_id)
+        if ref_error is not None:
+            return ref_error
 
         if direction:
             if direction == "up":
@@ -1317,9 +1466,10 @@ def create_mcp_server() -> FastMCP:
     async def computer_set_value(
         element_index: int,
         value: str,
-        window_id: int,
-        pid: int,
+        window_id: Optional[int] = None,
+        pid: Optional[int] = None,
         sensitive: bool = False,
+        snapshot_id: Optional[str] = None,
     ) -> Any:
         """
         Set a value on a UI element (text field, slider, checkbox, select).
@@ -1338,6 +1488,7 @@ def create_mcp_server() -> FastMCP:
             window_id: Window ID.
             pid: Process ID.
             sensitive: When True, redact value in result and recording metadata.
+            snapshot_id: Snapshot id returned by computer_get_window_state.
 
         Returns:
             Dictionary with success status.
@@ -1345,6 +1496,15 @@ def create_mcp_server() -> FastMCP:
         import sys
 
         from computer_server.handlers.element_cache import get_element_cache
+
+        pid, window_id, ref_error = _resolve_snapshot_ref(snapshot_id, pid, window_id)
+        if ref_error is not None:
+            return ref_error
+        if pid is None or window_id is None:
+            return {
+                "success": False,
+                "error": "pid and window_id are required, or provide snapshot_id",
+            }
 
         el = get_element_cache().get_element(pid, window_id, element_index)
         if el is None:
@@ -1986,7 +2146,7 @@ def create_mcp_server() -> FastMCP:
             return error_result(e)
 
         automation_handler = _get_handlers().automation
-        return await get_window_state_snapshot(
+        result = await get_window_state_snapshot(
             automation_handler,
             pid,
             window_id,
@@ -1999,6 +2159,19 @@ def create_mcp_server() -> FastMCP:
             walk_gate=context.uia_walk_gate,
             seen_popovers=context.seen_popovers,
         )
+        if result.get("success"):
+            snapshot = context.observations.create_snapshot(
+                pid=pid,
+                window_id=window_id,
+                node_count=result.get("node_count", 0),
+                unfiltered_node_count=result.get(
+                    "unfiltered_node_count",
+                    result.get("node_count", 0),
+                ),
+            )
+            result["snapshot_id"] = snapshot.snapshot_id
+            result["snapshot_latest"] = True
+        return result
 
     # ============================================================
     # ZOOM

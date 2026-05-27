@@ -9,6 +9,7 @@ import os
 import tempfile
 import threading
 import time
+import uuid
 from dataclasses import dataclass
 from io import BytesIO
 from typing import Any, Dict, List, Optional, Tuple
@@ -743,7 +744,10 @@ async def create_zoom_image(
     padded_w = screen_x2 - screen_x1
     padded_h = screen_y2 - screen_y1
 
+    zoom_id = f"zoom-{uuid.uuid4().hex}"
     zoom_ctx = ZoomContext(
+        zoom_id=zoom_id,
+        pid=pid,
         window_id=window_id,
         crop_rect=(screen_x1, screen_y1, screen_x2, screen_y2),
         scale_x=cropped.width / padded_w if padded_w > 0 else 1.0,
@@ -767,4 +771,5 @@ async def create_zoom_image(
         "crop_rect": [screen_x1, screen_y1, screen_x2, screen_y2],
         "pid": pid,
         "window_id": window_id,
+        "zoom_id": zoom_id,
     }
