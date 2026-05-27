@@ -107,3 +107,44 @@ async def test_get_page_info_returns_target_id(monkeypatch):
         "domain": "example.test",
         "target_id": "tab-a",
     }
+
+
+@pytest.mark.asyncio
+async def test_resolve_target_refreshes_when_target_id_misses_cache(monkeypatch):
+    client = CDPClient()
+    refresh_flags: list[bool] = []
+
+    async def fake_discover(port, host="localhost", force_refresh=False):
+        refresh_flags.append(force_refresh)
+        if force_refresh:
+            return [{"id": "tab-b", "webSocketDebuggerUrl": "ws://tab-b"}]
+        return [{"id": "tab-a", "webSocketDebuggerUrl": "ws://tab-a"}]
+
+    monkeypatch.setattr(client, "discover", fake_discover)
+
+    target = await client._resolve_target(port=9222, target_id="tab-b")
+
+    assert target == {"id": "tab-b", "webSocketDebuggerUrl": "ws://tab-b"}
+    assert refresh_flags == [False, True]
+
+
+@pytest.mark.asyncio
+async def test_resolve_target_refreshes_when_tab_index_misses_cache(monkeypatch):
+    client = CDPClient()
+    refresh_flags: list[bool] = []
+
+    async def fake_discover(port, host="localhost", force_refresh=False):
+        refresh_flags.append(force_refresh)
+        if force_refresh:
+            return [
+                {"id": "tab-a", "webSocketDebuggerUrl": "ws://tab-a"},
+                {"id": "tab-b", "webSocketDebuggerUrl": "ws://tab-b"},
+            ]
+        return [{"id": "tab-a", "webSocketDebuggerUrl": "ws://tab-a"}]
+
+    monkeypatch.setattr(client, "discover", fake_discover)
+
+    target = await client._resolve_target(port=9222, tab_index=1)
+
+    assert target == {"id": "tab-b", "webSocketDebuggerUrl": "ws://tab-b"}
+    assert refresh_flags == [False, True]

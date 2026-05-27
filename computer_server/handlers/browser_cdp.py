@@ -128,6 +128,25 @@ class CDPClient:
         targets = await self.discover(port, host, force_refresh=force_refresh)
         if not targets:
             return None
+        target = self._select_target(targets, tab_index=tab_index, target_id=target_id)
+        if target is not None:
+            return target
+        if not force_refresh:
+            fresh_targets = await self.discover(port, host, force_refresh=True)
+            if fresh_targets:
+                return self._select_target(
+                    fresh_targets,
+                    tab_index=tab_index,
+                    target_id=target_id,
+                )
+        return None
+
+    @staticmethod
+    def _select_target(
+        targets: List[Dict[str, Any]],
+        tab_index: int = 0,
+        target_id: Optional[str] = None,
+    ) -> Optional[Dict[str, Any]]:
         if target_id:
             for target in targets:
                 if target.get("id") == target_id:
