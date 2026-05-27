@@ -1789,6 +1789,7 @@ def create_mcp_server() -> FastMCP:
         screenshot_out_file: Optional[str] = None,
         max_image_dimension: int = 1280,
         force_som: bool = False,
+        include_all_nodes: bool = False,
     ) -> Any:
         """
         Get a rich snapshot of a window's UI state: screenshot + element tree + indexed nodes.
@@ -1800,10 +1801,11 @@ def create_mcp_server() -> FastMCP:
         Args:
             pid: Process ID of the target application.
             window_id: Window ID to snapshot.
-            query: Optional substring filter for the debug tree markdown.
+            query: Optional substring filter for the debug tree markdown and returned nodes.
             screenshot_out_file: Optional path to write screenshot PNG (skips inline base64).
             max_image_dimension: Maximum dimension for the screenshot (default 1280).
             force_som: When True, run SOM vision detection regardless of tree quality.
+            include_all_nodes: When True, return all nodes even if query is set.
 
         Returns:
             Dictionary with:
@@ -1821,11 +1823,12 @@ def create_mcp_server() -> FastMCP:
             automation_handler,
             pid,
             window_id,
-            query,
-            screenshot_out_file,
-            max_image_dimension,
-            force_som,
-            _zoom_metadata,
+            query=query,
+            screenshot_out_file=screenshot_out_file,
+            max_image_dimension=max_image_dimension,
+            force_som=force_som,
+            include_all_nodes=include_all_nodes,
+            zoom_metadata=_zoom_metadata,
             walk_gate=context.uia_walk_gate,
             seen_popovers=context.seen_popovers,
         )

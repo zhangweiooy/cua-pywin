@@ -313,6 +313,40 @@ def build_cached_elements(nodes: List[Dict[str, Any]]) -> list:
     return cached_elements
 
 
+def node_matches_query(node: Dict[str, Any], query: Optional[str]) -> bool:
+    """Return whether a window-state node matches a user query."""
+    if not query:
+        return True
+
+    needle = query.lower()
+    searchable = [
+        node.get("source"),
+        node.get("control_type"),
+        node.get("role"),
+        node.get("name"),
+        node.get("title"),
+        node.get("value"),
+    ]
+    actions = node.get("actions")
+    if isinstance(actions, list):
+        searchable.extend(str(action) for action in actions)
+    elif actions is not None:
+        searchable.append(actions)
+
+    return any(needle in str(value).lower() for value in searchable if value is not None)
+
+
+def filter_nodes_by_query(
+    nodes: List[Dict[str, Any]],
+    query: Optional[str],
+    include_all_nodes: bool,
+) -> List[Dict[str, Any]]:
+    """Filter returned nodes while preserving full internal cache data."""
+    if include_all_nodes or not query:
+        return list(nodes)
+    return [node for node in nodes if node_matches_query(node, query)]
+
+
 def detect_popover_candidates(
     pid: int,
     window_id: int,
@@ -476,6 +510,7 @@ async def get_window_state_snapshot(
     screenshot_out_file: Optional[str] = None,
     max_image_dimension: int = 1280,
     force_som: bool = False,
+    include_all_nodes: bool = False,
     zoom_metadata: Optional[Dict[Tuple[int, int], Dict[str, Any]]] = None,
     walk_gate: Optional[UIAWalkGate] = None,
     seen_popovers: Optional[Dict[int, set[int]]] = None,
@@ -581,6 +616,8 @@ async def get_window_state_snapshot(
             total_elements += vision_node_count
             vision_quality = vision_data["vision_quality"]
 
+        returned_nodes = filter_nodes_by_query(nodes, query, include_all_nodes)
+
         screenshot_field = save_window_state_screenshot(
             img,
             pid,
@@ -591,13 +628,16 @@ async def get_window_state_snapshot(
         response: Dict[str, Any] = {
             "success": True,
             "screenshot": screenshot_field,
-            "nodes": nodes,
-            "node_count": len(nodes),
+            "nodes": returned_nodes,
+            "node_count": len(returned_nodes),
             "tree_markdown": tree_markdown,
             "tree_quality": tree_quality,
             "uia_quality": uia_quality,
             "vision_quality": vision_quality,
             "merged_node_count": len(nodes),
+            "unfiltered_node_count": len(nodes),
+            "returned_node_count": len(returned_nodes),
+            "nodes_filtered": bool(query and not include_all_nodes),
             "uia_node_count": uia_node_count,
             "vision_node_count": vision_node_count,
             "total_elements": total_elements,
