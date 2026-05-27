@@ -30,6 +30,14 @@ class WindowsWindowHandler(GenericWindowHandler):
                 user32.keybd_event(0x12, 0, 2, 0)  # Alt up
                 user32.SetForegroundWindow(hwnd)
                 await asyncio.sleep(0.05)
+                foreground = int(user32.GetForegroundWindow())
+                if foreground != hwnd:
+                    return {
+                        "success": False,
+                        "error": "SetForegroundWindow did not make the target window foreground",
+                        "window_id": hwnd,
+                        "foreground_window_id": foreground,
+                    }
             else:
                 w.activate()
             return {"success": True}

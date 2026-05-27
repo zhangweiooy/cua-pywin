@@ -770,7 +770,7 @@ class GenericWindowHandler(BaseWindowHandler):
                 hwnd = w.getHandle()
                 if not _is_meaningful_window(hwnd):
                     continue
-                windows.append({"id": hwnd, "title": w.title or ""})
+                windows.append({"id": hwnd, "window_id": hwnd, "title": w.title or ""})
             return {"success": True, "windows": windows}
         except Exception as e:
             return {"success": False, "error": str(e)}

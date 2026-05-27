@@ -19,6 +19,7 @@ class ServerContext:
     """
 
     recording_session: Optional[RecordingSession] = None
+    recording_suppressed: bool = False
     learning_recorder: Optional[Any] = None
     uia_walk_gate: UIAWalkGate = field(default_factory=UIAWalkGate)
     seen_popovers: Dict[int, Set[int]] = field(default_factory=dict)

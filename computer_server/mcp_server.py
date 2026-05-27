@@ -435,6 +435,8 @@ def create_mcp_server() -> FastMCP:
 
             if tool_name not in RECORDABLE_TOOLS:
                 return
+            if context.recording_suppressed:
+                return
             session = context.recording_session
             if session is None or not session.active:
                 return
@@ -513,16 +515,19 @@ def create_mcp_server() -> FastMCP:
         """
         from PIL import Image as PILImage
 
-        from computer_server.handlers.base import normalize_screenshot_format
         from computer_server.handlers.screenshot_service import (
             encode_for_mcp_image,
             resize_to_max_dimension,
         )
+        from computer_server.services.validation_service import (
+            error_result,
+            validate_screenshot_request,
+        )
 
         try:
-            fmt, quality = normalize_screenshot_format(format, quality)
+            fmt, quality = validate_screenshot_request(format, quality)
         except ValueError as e:
-            fmt, quality = "jpeg", 85
+            return error_result(e)
 
         automation_handler = _get_handlers().automation
         result = await automation_handler.screenshot(format=fmt, quality=quality)
@@ -625,6 +630,29 @@ def create_mcp_server() -> FastMCP:
         import asyncio
 
         from computer_server.handlers.element_cache import get_element_cache
+        from computer_server.services.validation_service import (
+            error_result,
+            validate_click_action,
+            validate_click_count,
+            validate_mouse_button,
+            validate_modifiers,
+            validate_optional_coordinate,
+        )
+
+        try:
+            button = validate_mouse_button(button)
+            action = validate_click_action(action)
+            count = validate_click_count(count)
+            x = validate_optional_coordinate("x", x)
+            y = validate_optional_coordinate("y", y)
+            modifier = validate_modifiers(modifier)
+            if action != "press" and element_index is None:
+                return {
+                    "success": False,
+                    "error": "action='raise' is only supported with element_index",
+                }
+        except ValueError as e:
+            return error_result(e)
 
         # --- Resolve element_index ---
         if element_index is not None:
@@ -876,6 +904,17 @@ def create_mcp_server() -> FastMCP:
             x: X coordinate in screen pixels
             y: Y coordinate in screen pixels
         """
+        from computer_server.services.validation_service import (
+            error_result,
+            validate_coordinate,
+        )
+
+        try:
+            x = validate_coordinate("x", x)
+            y = validate_coordinate("y", y)
+        except ValueError as e:
+            return error_result(e)
+
         actual_x, actual_y = _scale_to_actual(x, y)
         await _animate_cursor_to(actual_x, actual_y)
         automation_handler = _get_handlers().automation
@@ -911,6 +950,27 @@ def create_mcp_server() -> FastMCP:
             from_zoom: When True, coords are in zoomed-image space
             modifier: Modifier keys held during drag (cmd, shift, option, ctrl)
         """
+        import asyncio
+
+        from computer_server.services.validation_service import (
+            error_result,
+            validate_drag_duration,
+            validate_mouse_button,
+            validate_modifiers,
+            validate_optional_coordinate,
+        )
+
+        try:
+            button = validate_mouse_button(button)
+            duration = validate_drag_duration(duration)
+            start_x = validate_optional_coordinate("start_x", start_x)
+            start_y = validate_optional_coordinate("start_y", start_y)
+            end_x = validate_optional_coordinate("end_x", end_x)
+            end_y = validate_optional_coordinate("end_y", end_y)
+            modifier = validate_modifiers(modifier)
+        except ValueError as e:
+            return error_result(e)
+
         if element_index is not None:
             if from_zoom:
                 return {"success": False, "error": "element_index and from_zoom are mutually exclusive — element_index already returns screen coords", "suggestion": "Remove from_zoom=True or use raw coordinates with from_zoom instead"}
@@ -1004,8 +1064,27 @@ def create_mcp_server() -> FastMCP:
             pid: Process ID (required with element_index)
             capture_after: When True, take a fresh screenshot + nodes after the action.
         """
+        from computer_server.services.validation_service import (
+            error_result,
+            validate_optional_coordinate,
+            validate_scroll_amount,
+            validate_scroll_by,
+            validate_scroll_delta,
+            validate_scroll_direction,
+        )
+
+        try:
+            x = validate_optional_coordinate("x", x)
+            y = validate_optional_coordinate("y", y)
+            scroll_x = validate_scroll_delta("scroll_x", scroll_x)
+            scroll_y = validate_scroll_delta("scroll_y", scroll_y)
+            direction = validate_scroll_direction(direction)
+            by = validate_scroll_by(by)
+            amount = validate_scroll_amount(amount)
+        except ValueError as e:
+            return error_result(e)
+
         if direction:
-            direction = direction.lower()
             if direction == "up":
                 scroll_y = amount
             elif direction == "down":
@@ -1088,6 +1167,19 @@ def create_mcp_server() -> FastMCP:
             y: Optional Y coordinate (uses current position if not specified)
             button: Mouse button - 'left', 'right', or 'middle' (default: 'left')
         """
+        from computer_server.services.validation_service import (
+            error_result,
+            validate_mouse_button,
+            validate_optional_coordinate,
+        )
+
+        try:
+            button = validate_mouse_button(button)
+            x = validate_optional_coordinate("x", x)
+            y = validate_optional_coordinate("y", y)
+        except ValueError as e:
+            return error_result(e)
+
         actual_x, actual_y = None, None
         if x is not None and y is not None:
             actual_x, actual_y = _scale_to_actual(x, y)
@@ -1107,6 +1199,19 @@ def create_mcp_server() -> FastMCP:
             y: Optional Y coordinate (uses current position if not specified)
             button: Mouse button - 'left', 'right', or 'middle' (default: 'left')
         """
+        from computer_server.services.validation_service import (
+            error_result,
+            validate_mouse_button,
+            validate_optional_coordinate,
+        )
+
+        try:
+            button = validate_mouse_button(button)
+            x = validate_optional_coordinate("x", x)
+            y = validate_optional_coordinate("y", y)
+        except ValueError as e:
+            return error_result(e)
+
         actual_x, actual_y = None, None
         if x is not None and y is not None:
             actual_x, actual_y = _scale_to_actual(x, y)
@@ -1124,6 +1229,7 @@ def create_mcp_server() -> FastMCP:
         capture_after: bool = False,
         pid: Optional[int] = None,
         window_id: Optional[int] = None,
+        sensitive: bool = False,
     ) -> Any:
         """
         Type text at the current cursor position via clipboard paste (Ctrl+V).
@@ -1137,10 +1243,12 @@ def create_mcp_server() -> FastMCP:
             capture_after: When True, take a fresh screenshot + nodes after the action.
             pid: Process ID for capture_after look-up.
             window_id: Window ID for capture_after look-up.
+            sensitive: When True, redact text in recording metadata.
         """
         automation_handler = _get_handlers().automation
         result = await automation_handler.type_text(text)
-        await _recording_hook("computer_type", {"text": text}, result)
+        recorded_text = "<redacted>" if sensitive else text
+        await _recording_hook("computer_type", {"text": recorded_text, "sensitive": sensitive}, result)
 
         # capture_after
         if capture_after and pid is not None and window_id is not None:
@@ -1211,6 +1319,7 @@ def create_mcp_server() -> FastMCP:
         value: str,
         window_id: int,
         pid: int,
+        sensitive: bool = False,
     ) -> Any:
         """
         Set a value on a UI element (text field, slider, checkbox, select).
@@ -1228,6 +1337,7 @@ def create_mcp_server() -> FastMCP:
             value: New value to set.
             window_id: Window ID.
             pid: Process ID.
+            sensitive: When True, redact value in result and recording metadata.
 
         Returns:
             Dictionary with success status.
@@ -1270,6 +1380,17 @@ def create_mcp_server() -> FastMCP:
         await _animate_cursor_to(screen_cx, screen_cy)
 
         ct = (el.control_type or "").lower()
+        label = f"{el.name or ''} {el.control_type or ''}".lower()
+        auto_sensitive = any(token in label for token in ("password", "passcode", "pin", "密码", "口令"))
+        redact_value = sensitive or auto_sensitive
+        response_value = "<redacted>" if redact_value else value
+        record_args = {
+            "element_index": element_index,
+            "value": response_value,
+            "pid": pid,
+            "window_id": window_id,
+            "sensitive": redact_value,
+        }
         is_text_like = ct in (
             "edit", "text", "document", "spinner",
         )
@@ -1284,10 +1405,8 @@ def create_mcp_server() -> FastMCP:
         if sys.platform == "win32" and is_text_like:
             try:
                 _set_value_via_uia_point(screen_cx, screen_cy, value)
-                result = {"success": True, "element_index": element_index, "value": value, "method": "uia"}
-                await _recording_hook("computer_set_value", {
-                    "element_index": element_index, "value": value, "pid": pid, "window_id": window_id,
-                }, result)
+                result = {"success": True, "element_index": element_index, "value": response_value, "method": "uia"}
+                await _recording_hook("computer_set_value", record_args, result)
                 return result
             except Exception as e:
                 logger.debug("UIA ValuePattern set failed (will fall back): %s", e)
@@ -1300,10 +1419,8 @@ def create_mcp_server() -> FastMCP:
             click_result = await automation_handler.left_click(actual_cx, actual_cy)
             if not click_result.get("success"):
                 return click_result
-            result = {"success": True, "element_index": element_index, "value": value, "method": "click"}
-            await _recording_hook("computer_set_value", {
-                "element_index": element_index, "value": value, "pid": pid, "window_id": window_id,
-            }, result)
+            result = {"success": True, "element_index": element_index, "value": response_value, "method": "click"}
+            await _recording_hook("computer_set_value", record_args, result)
             return result
 
         # For text-like elements: click to focus, select all, type value
@@ -1324,10 +1441,8 @@ def create_mcp_server() -> FastMCP:
             await automation_handler.hotkey(["ctrl", "a"])
 
             await automation_handler.type_text(value)
-            result = {"success": True, "element_index": element_index, "value": value, "method": "click_type"}
-            await _recording_hook("computer_set_value", {
-                "element_index": element_index, "value": value, "pid": pid, "window_id": window_id,
-            }, result)
+            result = {"success": True, "element_index": element_index, "value": response_value, "method": "click_type"}
+            await _recording_hook("computer_set_value", record_args, result)
             return result
 
         return {
@@ -1367,19 +1482,36 @@ def create_mcp_server() -> FastMCP:
     # ============================================================
 
     @mcp.tool(annotations={"readOnlyHint": False, "destructiveHint": True, "idempotentHint": False, "openWorldHint": True})
-    async def computer_run_command(command: str, shell: str = "powershell") -> Any:
+    async def computer_run_command(
+        command: str,
+        shell: str = "powershell",
+        timeout: Optional[float] = None,
+    ) -> Any:
         """
         Execute a shell command and return the output.
 
         Args:
             command: The shell command to execute.
             shell: "powershell" (default) or "cmd".
+            timeout: Optional timeout in seconds.
 
         Returns:
             Dictionary with 'stdout', 'stderr', and 'return_code' keys.
         """
+        from computer_server.services.validation_service import (
+            error_result,
+            validate_shell,
+            validate_timeout,
+        )
+
+        try:
+            shell = validate_shell(shell)
+            timeout = validate_timeout(timeout)
+        except ValueError as e:
+            return error_result(e)
+
         automation_handler = _get_handlers().automation
-        return await automation_handler.run_command(command, shell=shell)
+        return await automation_handler.run_command(command, shell=shell, timeout=timeout)
 
     # ============================================================
     # FILE SYSTEM OPERATIONS
@@ -1456,6 +1588,16 @@ def create_mcp_server() -> FastMCP:
             browser: Preferred browser for URLs — "chrome", "edge",
                 "firefox", etc. Ignored for files.
         """
+        from urllib.parse import urlparse
+
+        parsed = urlparse(target)
+        has_windows_drive = len(parsed.scheme) == 1 and len(target) >= 3 and target[1:3] in {":\\", ":/"}
+        if parsed.scheme and not has_windows_drive and parsed.scheme not in {"http", "https"}:
+            return {
+                "success": False,
+                "error": "target URL scheme must be http or https; local files should be passed as filesystem paths",
+            }
+
         window_handler = _get_handlers().window
         result = await window_handler.open(target, browser=browser)
         await _recording_hook("computer_open", {"target": target, "browser": browser}, result)
@@ -1504,12 +1646,28 @@ def create_mcp_server() -> FastMCP:
     @mcp.tool(annotations={"readOnlyHint": False, "destructiveHint": True, "idempotentHint": False, "openWorldHint": True})
     async def computer_set_window_size(window_id: str, width: int, height: int) -> Any:
         """Set the size of a window."""
+        from computer_server.services.validation_service import error_result, validate_int_range
+
+        try:
+            width = validate_int_range("width", width, 1, 20000)
+            height = validate_int_range("height", height, 1, 20000)
+        except ValueError as e:
+            return error_result(e)
+
         window_handler = _get_handlers().window
         return await window_handler.set_window_size(window_id, width, height)
 
     @mcp.tool(annotations={"readOnlyHint": False, "destructiveHint": True, "idempotentHint": False, "openWorldHint": True})
     async def computer_set_window_position(window_id: str, x: int, y: int) -> Any:
         """Set the position of a window."""
+        from computer_server.services.validation_service import error_result, validate_coordinate
+
+        try:
+            x = validate_coordinate("x", x)
+            y = validate_coordinate("y", y)
+        except ValueError as e:
+            return error_result(e)
+
         window_handler = _get_handlers().window
         return await window_handler.set_window_position(window_id, x, y)
 
@@ -1570,8 +1728,8 @@ def create_mcp_server() -> FastMCP:
         Args:
             app: PID (numeric), process name, or window title substring.
 
-        Returns a list of windows with 'id' and 'title' fields so you
-        can identify the main window without extra calls.
+        Returns a list of windows with 'window_id', legacy 'id', and
+        'title' fields so you can identify the main window without extra calls.
         """
         window_handler = _get_handlers().window
         return await window_handler.get_application_windows(app)
@@ -1817,6 +1975,15 @@ def create_mcp_server() -> FastMCP:
             - total_elements: total elements visited
         """
         from computer_server.services.window_state_service import get_window_state_snapshot
+        from computer_server.services.validation_service import (
+            error_result,
+            validate_max_image_dimension,
+        )
+
+        try:
+            max_image_dimension = validate_max_image_dimension(max_image_dimension)
+        except ValueError as e:
+            return error_result(e)
 
         automation_handler = _get_handlers().automation
         return await get_window_state_snapshot(
@@ -1869,6 +2036,15 @@ def create_mcp_server() -> FastMCP:
             Dictionary with zoomed image (base64 PNG), dimensions, and crop_rect.
         """
         from computer_server.services.window_state_service import create_zoom_image
+        from computer_server.services.validation_service import (
+            error_result,
+            validate_zoom_rect,
+        )
+
+        try:
+            x1, y1, x2, y2 = validate_zoom_rect(x1, y1, x2, y2)
+        except ValueError as e:
+            return error_result(e)
 
         automation_handler = _get_handlers().automation
         return await create_zoom_image(
@@ -1895,6 +2071,7 @@ def create_mcp_server() -> FastMCP:
         css_selector: Optional[str] = None,
         attributes: Optional[List[str]] = None,
         allow_html: bool = False,
+        allow_javascript: bool = False,
         port: Optional[int] = None,
         tab_index: int = 0,
         target_id: Optional[str] = None,
@@ -1924,6 +2101,7 @@ def create_mcp_server() -> FastMCP:
             css_selector: CSS selector (action='query_dom').
             attributes: Element attributes to extract (action='query_dom').
             allow_html: Allow query_dom to return innerHTML. Defaults to False.
+            allow_javascript: Required to execute arbitrary JS. Defaults to False.
             port: Chrome remote debugging port. If None, auto-discovered from pid
                 command line.
             tab_index: Initial tab index (default 0) when target_id is not provided.
@@ -1933,9 +2111,25 @@ def create_mcp_server() -> FastMCP:
         Returns:
             Dictionary with action-specific results.
         """
-        import sys
         from computer_server.handlers.browser_cdp import get_cdp_client
-        from computer_server.handlers.element_cache import get_element_cache
+        from computer_server.services.validation_service import (
+            error_result,
+            validate_dom_attributes,
+            validate_javascript,
+            validate_page_action,
+            validate_port,
+            validate_tab_index,
+        )
+
+        try:
+            action = validate_page_action(action)
+            port = validate_port(port)
+            tab_index = validate_tab_index(tab_index)
+            attributes = validate_dom_attributes(attributes, allow_html)
+            if css_selector is not None and len(css_selector) > 2048:
+                return {"success": False, "error": "css_selector must be 2048 characters or fewer"}
+        except ValueError as e:
+            return error_result(e)
 
         # --- Soft-validate pid + window_id (best-effort, non-fatal) ---
         try:
@@ -1996,6 +2190,10 @@ def create_mcp_server() -> FastMCP:
                     "pid": pid,
                     "window_id": window_id,
                 }
+            try:
+                resolved_port = validate_port(resolved_port)
+            except ValueError as e:
+                return error_result(e)
 
         assert resolved_port is not None  # guaranteed by fallback above
         cdp = get_cdp_client()
@@ -2040,8 +2238,10 @@ def create_mcp_server() -> FastMCP:
                 return {"success": False, **info}
             result = {"success": True, **info}
         elif action == "execute_javascript":
-            if not javascript:
-                return {"success": False, "error": "javascript is required for execute_javascript"}
+            try:
+                javascript = validate_javascript(javascript, allow_javascript)
+            except ValueError as e:
+                return error_result(e)
             js_result = await cdp.evaluate(
                 port=resolved_port,
                 expression=javascript,
@@ -2071,6 +2271,8 @@ def create_mcp_server() -> FastMCP:
             record_args["attributes"] = attributes
         if allow_html:
             record_args["allow_html"] = allow_html
+        if allow_javascript:
+            record_args["allow_javascript"] = allow_javascript
         await _recording_hook("computer_page", record_args, result)
         return result
 
@@ -2102,6 +2304,12 @@ def create_mcp_server() -> FastMCP:
             Dictionary with recording state summary.
         """
         from computer_server.recording.session import RecordingSession
+        from computer_server.services.validation_service import error_result, validate_int_range
+
+        try:
+            screenshot_every_n = validate_int_range("screenshot_every_n", screenshot_every_n, 1, 1000)
+        except ValueError as e:
+            return error_result(e)
 
         if enabled:
             if not output_dir:
@@ -2158,6 +2366,12 @@ def create_mcp_server() -> FastMCP:
 
         from computer_server.recording.replay import replay_trajectory as _replay
         from computer_server.services.replay_resolver import resolve_replay_args
+        from computer_server.services.validation_service import error_result, validate_int_range
+
+        try:
+            delay_ms = validate_int_range("delay_ms", delay_ms, 0, 60000)
+        except ValueError as e:
+            return error_result(e)
 
         recording_dir = os.path.expanduser(recording_dir)
 
@@ -2175,12 +2389,17 @@ def create_mcp_server() -> FastMCP:
             except Exception as e:
                 return {"success": False, "error": str(e)}
 
-        return await _replay(
-            recording_dir=recording_dir,
-            tool_executor=tool_executor,
-            delay_ms=delay_ms,
-            stop_on_error=stop_on_error,
-        )
+        previous_suppressed = context.recording_suppressed
+        context.recording_suppressed = True
+        try:
+            return await _replay(
+                recording_dir=recording_dir,
+                tool_executor=tool_executor,
+                delay_ms=delay_ms,
+                stop_on_error=stop_on_error,
+            )
+        finally:
+            context.recording_suppressed = previous_suppressed
 
     # ============================================================
     # LEARNING ACTIONS — human user recording with UIA enrichment
