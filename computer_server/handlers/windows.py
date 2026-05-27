@@ -47,7 +47,7 @@ from pynput.mouse import Controller as MouseController
 
 # Configure logger
 logger = logging.getLogger(__name__)
-_CLIPBOARD_TYPE_LOCK = threading.Lock()
+_CLIPBOARD_LOCK = threading.Lock()
 
 # pyautogui removed in favor of pynput
 
@@ -495,7 +495,7 @@ class WindowsAutomationHandler(BaseAutomationHandler):
 
         import pyperclip
 
-        acquired = await asyncio.to_thread(_CLIPBOARD_TYPE_LOCK.acquire)
+        acquired = await asyncio.to_thread(_CLIPBOARD_LOCK.acquire)
         original = None
         try:
             try:
@@ -540,7 +540,7 @@ class WindowsAutomationHandler(BaseAutomationHandler):
                 except Exception:
                     pass
             if acquired:
-                _CLIPBOARD_TYPE_LOCK.release()
+                _CLIPBOARD_LOCK.release()
 
         return {"success": True, "method": "clipboard"}
 
@@ -742,7 +742,39 @@ class WindowsAutomationHandler(BaseAutomationHandler):
         except Exception:
             return None
 
-    # Clipboard inherited from BaseAutomationHandler
+    async def copy_to_clipboard(self) -> Dict[str, Any]:
+        """Get the current clipboard content under the shared clipboard lock."""
+        import asyncio
+
+        import pyperclip
+
+        acquired = False
+        try:
+            acquired = await asyncio.to_thread(_CLIPBOARD_LOCK.acquire)
+            content = pyperclip.paste()
+            return {"success": True, "content": content}
+        except Exception as e:
+            return {"success": False, "error": str(e)}
+        finally:
+            if acquired:
+                _CLIPBOARD_LOCK.release()
+
+    async def set_clipboard(self, text: str) -> Dict[str, Any]:
+        """Set clipboard content under the shared clipboard lock."""
+        import asyncio
+
+        import pyperclip
+
+        acquired = False
+        try:
+            acquired = await asyncio.to_thread(_CLIPBOARD_LOCK.acquire)
+            pyperclip.copy(text)
+            return {"success": True}
+        except Exception as e:
+            return {"success": False, "error": str(e)}
+        finally:
+            if acquired:
+                _CLIPBOARD_LOCK.release()
 
     # Command Execution (Windows override for multi-encoding support)
     async def run_command(self, command: str, shell: str = "powershell", timeout: Optional[float] = None) -> Dict[str, Any]:
