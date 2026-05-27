@@ -48,6 +48,18 @@ _WRITER_STOP = object()
 _MAX_QUEUE_SIZE = 64
 
 
+@dataclass(frozen=True)
+class RecordedTurnContext:
+    """Event-loop side payload for recording a tool invocation."""
+
+    tool_name: str
+    args: Dict[str, Any]
+    result: Dict[str, Any]
+    click_point: Optional[Tuple[int, int]] = None
+    window_ref: Optional[Dict[str, Any]] = None
+    element_ref: Optional[Dict[str, Any]] = None
+
+
 class RecordingSession:
     """Records tool invocations to turn folders.
 

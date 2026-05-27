@@ -404,7 +404,7 @@ class LearningRecorder:
                     max(0, int(x - 50)), max(0, int(y - 15)), 100, 40,
                 )
                 if png:
-                    action._ocr_region = png  # type: ignore[attr-defined]
+                    action.ocr_region = png
             except Exception:
                 pass
 
@@ -483,9 +483,9 @@ class LearningRecorder:
                 from .platform import Screenshotter
                 png, win_x, win_y = Screenshotter().capture_active_window()
                 if png:
-                    action._ocr_region = png  # type: ignore[attr-defined]
-                    action._ocr_win_x = win_x   # type: ignore[attr-defined]
-                    action._ocr_win_y = win_y   # type: ignore[attr-defined]
+                    action.ocr_region = png
+                    action.ocr_window_x = win_x
+                    action.ocr_window_y = win_y
                     action.ocr_ref_x = int(self._last_click_x)
                     action.ocr_ref_y = int(self._last_click_y)
             except Exception:
@@ -748,7 +748,7 @@ class LearningRecorder:
 
         ocr_idx = 0
         for a in actions:
-            png = getattr(a, "_ocr_region", None)
+            png = a.ocr_region
             if png:
                 ocr_idx += 1
                 fname = f"ocr-{ocr_idx:05d}.png"

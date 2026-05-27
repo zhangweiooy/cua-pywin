@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import json
 
-from computer_server.recording.session import RECORDABLE_TOOLS, RecordingSession
+from computer_server.recording.session import RECORDABLE_TOOLS, RecordedTurnContext, RecordingSession
 
 
 def test_write_turn_persists_element_ref(tmp_path):
@@ -38,3 +38,20 @@ def test_low_level_pointer_primitives_are_recordable():
     assert "computer_move" in RECORDABLE_TOOLS
     assert "computer_mouse_down" in RECORDABLE_TOOLS
     assert "computer_mouse_up" in RECORDABLE_TOOLS
+
+
+def test_recorded_turn_context_groups_hook_payload():
+    turn = RecordedTurnContext(
+        tool_name="computer_click",
+        args={"x": 10, "y": 20},
+        result={"success": True},
+        click_point=(10, 20),
+        window_ref={"window_id": 123},
+        element_ref={"name": "保存"},
+    )
+
+    assert turn.tool_name == "computer_click"
+    assert turn.args["x"] == 10
+    assert turn.click_point == (10, 20)
+    assert turn.window_ref == {"window_id": 123}
+    assert turn.element_ref == {"name": "保存"}

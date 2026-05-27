@@ -116,6 +116,9 @@ class ObservedAction:
     ocr_image: str | None = None
     ocr_ref_x: int | None = None
     ocr_ref_y: int | None = None
+    ocr_region: bytes | None = field(default=None, repr=False)
+    ocr_window_x: int | None = None
+    ocr_window_y: int | None = None
 
     def to_dict(self) -> dict:
         """Serialize to JSON-compatible dict matching Swift LearningDispatch format."""

@@ -57,19 +57,18 @@ async def _animate_cursor_to(x: int, y: int) -> None:
 
     Lazy-initializes the overlay if server-startup init failed.
     """
-    from computer_server.overlay import _agent_cursor, _compute_heading, _update_last_target, init as _cursor_init
+    import computer_server.overlay as overlay
 
-    if _agent_cursor is None:
+    if overlay._agent_cursor is None:
         try:
-            _cursor_init()
+            overlay.init()
         except Exception:
             return
-    if _agent_cursor is None:
+    if overlay._agent_cursor is None:
         return
 
-    heading = _compute_heading(x, y)
-    _update_last_target(x, y)
-    _agent_cursor.move_to(x, y, heading)
+    heading = overlay._compute_heading_and_update(x, y)
+    overlay._agent_cursor.move_to(x, y, heading)
 
 
 # Lazy handler initialization to avoid crashes during import
@@ -640,19 +639,31 @@ def create_mcp_server() -> FastMCP:
         except Exception:
             logger.debug("learning input suppression clear failed", exc_info=True)
 
-    async def _recording_hook(
+    def _recorded_turn(
         tool_name: str,
         args: Dict[str, Any],
         result: Dict[str, Any],
         click_point: Optional[Tuple[int, int]] = None,
         window_ref: Optional[Dict[str, Any]] = None,
         element_ref: Optional[Dict[str, Any]] = None,
-    ) -> None:
+    ) -> Any:
+        from computer_server.recording.session import RecordedTurnContext
+
+        return RecordedTurnContext(
+            tool_name=tool_name,
+            args=args,
+            result=result,
+            click_point=click_point,
+            window_ref=window_ref,
+            element_ref=element_ref,
+        )
+
+    async def _recording_hook(turn: Any) -> None:
         """Record a tool invocation for this MCP server instance."""
         try:
             from computer_server.recording.session import RECORDABLE_TOOLS
 
-            if tool_name not in RECORDABLE_TOOLS:
+            if turn.tool_name not in RECORDABLE_TOOLS:
                 return
             if context.recording_suppressed:
                 return
@@ -671,13 +682,13 @@ def create_mcp_server() -> FastMCP:
                     session.note_screenshot_error()
 
             await session.record_turn(
-                tool_name=tool_name,
-                args=args,
-                result=result,
+                tool_name=turn.tool_name,
+                args=turn.args,
+                result=turn.result,
                 screenshot_bytes=screenshot_bytes,
-                click_point=click_point,
-                window_ref=window_ref,
-                element_ref=element_ref,
+                click_point=turn.click_point,
+                window_ref=turn.window_ref,
+                element_ref=turn.element_ref,
             )
         except Exception:
             logger.debug("recording hook failed", exc_info=True)
@@ -947,9 +958,13 @@ def create_mcp_server() -> FastMCP:
                                                "element_index": element_index,
                                                "window_id": window_id}
                     wr = _build_window_ref(pid, window_id, 0, 0)
-                    await _recording_hook("computer_click",
+                    await _recording_hook(_recorded_turn(
+                        "computer_click",
                         {"element_index": element_index, "pid": pid, "window_id": window_id, "action": "raise"},
-                        result, window_ref=wr, element_ref=recorded_element_ref)
+                        result,
+                        window_ref=wr,
+                        element_ref=recorded_element_ref,
+                    ))
                     if capture_after:
                         result["capture_after"] = await _capture_and_detect(pid, window_id)
                     return result
@@ -1017,9 +1032,14 @@ def create_mcp_server() -> FastMCP:
                                 )
 
                         wr = _build_window_ref(pid, window_id, screen_pt[0], screen_pt[1])
-                        await _recording_hook("computer_click",
+                        await _recording_hook(_recorded_turn(
+                            "computer_click",
                             {"element_index": element_index, "pid": pid, "window_id": window_id},
-                            result, click_point=screen_pt, window_ref=wr, element_ref=recorded_element_ref)
+                            result,
+                            click_point=screen_pt,
+                            window_ref=wr,
+                            element_ref=recorded_element_ref,
+                        ))
 
                         # For editable controls (Edit, ComboBox, Document),
                         # UIA Invoke establishes focus asynchronously —
@@ -1118,9 +1138,14 @@ def create_mcp_server() -> FastMCP:
                            "x": actual_x, "y": actual_y, "button": button,
                            "count": count, "force_frontmost": True}
                 wr = _build_window_ref(pid, window_id, actual_x, actual_y)
-                await _recording_hook("computer_click",
+                await _recording_hook(_recorded_turn(
+                    "computer_click",
                     {"x": x, "y": y, "button": button, "force_frontmost": True, "count": count},
-                    result, click_point=(actual_x, actual_y), window_ref=wr, element_ref=recorded_element_ref)
+                    result,
+                    click_point=(actual_x, actual_y),
+                    window_ref=wr,
+                    element_ref=recorded_element_ref,
+                ))
                 if capture_after and pid is not None and window_id is not None:
                     cap = await _capture_and_detect(pid, window_id)
                     result["capture_after"] = cap
@@ -1165,14 +1190,14 @@ def create_mcp_server() -> FastMCP:
                 await automation_handler.key_up(mod)
 
         wr = _build_window_ref(pid, window_id, actual_x, actual_y)
-        await _recording_hook(
+        await _recording_hook(_recorded_turn(
             "computer_click",
             {"x": x, "y": y, "button": button, "count": count},
             result,
             click_point=(actual_x, actual_y),
             window_ref=wr,
             element_ref=recorded_element_ref,
-        )
+        ))
 
         # capture_after
         if capture_after and pid is not None and window_id is not None:
@@ -1208,13 +1233,13 @@ def create_mcp_server() -> FastMCP:
         automation_handler = _get_handlers().automation
         result = await automation_handler.move_cursor(actual_x, actual_y)
         wr = _build_window_ref(None, None, actual_x, actual_y)
-        await _recording_hook(
+        await _recording_hook(_recorded_turn(
             "computer_move",
             {"x": x, "y": y},
             result,
             click_point=(actual_x, actual_y),
             window_ref=wr,
-        )
+        ))
         return result
 
     @mcp.tool(annotations={"readOnlyHint": False, "destructiveHint": True, "idempotentHint": False, "openWorldHint": True})
@@ -1382,10 +1407,17 @@ def create_mcp_server() -> FastMCP:
         await automation_handler.mouse_up(actual_end_x, actual_end_y, button=button)
         result = {"success": True}
         wr = _build_window_ref(pid, window_id, actual_start_x, actual_start_y)
-        await _recording_hook("computer_drag", {
-            "start_x": start_x, "start_y": start_y,
-            "end_x": end_x, "end_y": end_y, "button": button,
-        }, result, click_point=(actual_start_x, actual_start_y), window_ref=wr, element_ref=recorded_element_ref)
+        await _recording_hook(_recorded_turn(
+            "computer_drag",
+            {
+                "start_x": start_x, "start_y": start_y,
+                "end_x": end_x, "end_y": end_y, "button": button,
+            },
+            result,
+            click_point=(actual_start_x, actual_start_y),
+            window_ref=wr,
+            element_ref=recorded_element_ref,
+        ))
         return result
 
     @mcp.tool(annotations={"readOnlyHint": False, "destructiveHint": True, "idempotentHint": False, "openWorldHint": True})
@@ -1570,13 +1602,21 @@ def create_mcp_server() -> FastMCP:
             result = await automation_handler.scroll(scroll_x, scroll_y)
         if scroll_ax is not None and pid is not None and window_id is not None:
             wr = _build_window_ref(pid, window_id, scroll_ax, scroll_ay)
-            await _recording_hook("computer_scroll", {
-                "x": x, "y": y, "scroll_x": scroll_x, "scroll_y": scroll_y,
-            }, result, click_point=(scroll_ax, scroll_ay), window_ref=wr, element_ref=recorded_element_ref)
+            await _recording_hook(_recorded_turn(
+                "computer_scroll",
+                {"x": x, "y": y, "scroll_x": scroll_x, "scroll_y": scroll_y},
+                result,
+                click_point=(scroll_ax, scroll_ay),
+                window_ref=wr,
+                element_ref=recorded_element_ref,
+            ))
         else:
-            await _recording_hook("computer_scroll", {
-                "x": x, "y": y, "scroll_x": scroll_x, "scroll_y": scroll_y,
-            }, result, element_ref=recorded_element_ref)
+            await _recording_hook(_recorded_turn(
+                "computer_scroll",
+                {"x": x, "y": y, "scroll_x": scroll_x, "scroll_y": scroll_y},
+                result,
+                element_ref=recorded_element_ref,
+            ))
 
         # capture_after
         if capture_after and pid is not None and window_id is not None:
@@ -1632,13 +1672,13 @@ def create_mcp_server() -> FastMCP:
             if actual_x is not None and actual_y is not None
             else None
         )
-        await _recording_hook(
+        await _recording_hook(_recorded_turn(
             "computer_mouse_down",
             {"x": x, "y": y, "button": button},
             result,
             click_point=click_point,
             window_ref=wr,
-        )
+        ))
         return result
 
     @mcp.tool(annotations={"readOnlyHint": False, "destructiveHint": True, "idempotentHint": False, "openWorldHint": True})
@@ -1684,13 +1724,13 @@ def create_mcp_server() -> FastMCP:
             if actual_x is not None and actual_y is not None
             else None
         )
-        await _recording_hook(
+        await _recording_hook(_recorded_turn(
             "computer_mouse_up",
             {"x": x, "y": y, "button": button},
             result,
             click_point=click_point,
             window_ref=wr,
-        )
+        ))
         return result
 
     # ============================================================
@@ -1724,7 +1764,11 @@ def create_mcp_server() -> FastMCP:
         _suppress_learning_input(estimated_seconds)
         result = await automation_handler.type_text(text)
         recorded_text = "<redacted>" if sensitive else text
-        await _recording_hook("computer_type", {"text": recorded_text, "sensitive": sensitive}, result)
+        await _recording_hook(_recorded_turn(
+            "computer_type",
+            {"text": recorded_text, "sensitive": sensitive},
+            result,
+        ))
 
         # capture_after
         if capture_after and pid is not None and window_id is not None:
@@ -1743,7 +1787,7 @@ def create_mcp_server() -> FastMCP:
         automation_handler = _get_handlers().automation
         _suppress_learning_input(1.0)
         result = await automation_handler.press_key(key)
-        await _recording_hook("computer_press_key", {"key": key}, result)
+        await _recording_hook(_recorded_turn("computer_press_key", {"key": key}, result))
         return result
 
     @mcp.tool(annotations={"readOnlyHint": False, "destructiveHint": True, "idempotentHint": False, "openWorldHint": True})
@@ -1758,7 +1802,7 @@ def create_mcp_server() -> FastMCP:
         automation_handler = _get_handlers().automation
         _suppress_learning_input(1.0)
         result = await automation_handler.hotkey(keys)
-        await _recording_hook("computer_hotkey", {"keys": keys}, result)
+        await _recording_hook(_recorded_turn("computer_hotkey", {"keys": keys}, result))
         return result
 
     @mcp.tool(annotations={"readOnlyHint": False, "destructiveHint": True, "idempotentHint": False, "openWorldHint": True})
@@ -1782,7 +1826,7 @@ def create_mcp_server() -> FastMCP:
             context.held_keys.add(key)
         elif suppression_active:
             _end_learning_input_suppression(suppression_active)
-        await _recording_hook("computer_key_down", {"key": key}, result)
+        await _recording_hook(_recorded_turn("computer_key_down", {"key": key}, result))
         return result
 
     @mcp.tool(annotations={"readOnlyHint": False, "destructiveHint": True, "idempotentHint": False, "openWorldHint": True})
@@ -1801,7 +1845,7 @@ def create_mcp_server() -> FastMCP:
             context.held_keys.discard(key)
             if was_held:
                 _end_learning_input_suppression(True)
-        await _recording_hook("computer_key_up", {"key": key}, result)
+        await _recording_hook(_recorded_turn("computer_key_up", {"key": key}, result))
         return result
 
     @mcp.tool(annotations={"readOnlyHint": False, "destructiveHint": True, "idempotentHint": True, "openWorldHint": True})
@@ -1928,7 +1972,12 @@ def create_mcp_server() -> FastMCP:
             try:
                 _set_value_via_uia_point(screen_cx, screen_cy, value)
                 result = {"success": True, "element_index": element_index, "value": response_value, "method": "uia"}
-                await _recording_hook("computer_set_value", record_args, result, element_ref=recorded_element_ref)
+                await _recording_hook(_recorded_turn(
+                    "computer_set_value",
+                    record_args,
+                    result,
+                    element_ref=recorded_element_ref,
+                ))
                 return result
             except Exception as e:
                 logger.debug("UIA ValuePattern set failed (will fall back): %s", e)
@@ -1942,7 +1991,12 @@ def create_mcp_server() -> FastMCP:
             if not click_result.get("success"):
                 return click_result
             result = {"success": True, "element_index": element_index, "value": response_value, "method": "click"}
-            await _recording_hook("computer_set_value", record_args, result, element_ref=recorded_element_ref)
+            await _recording_hook(_recorded_turn(
+                "computer_set_value",
+                record_args,
+                result,
+                element_ref=recorded_element_ref,
+            ))
             return result
 
         # For text-like elements: click to focus, select all, type value
@@ -1964,7 +2018,12 @@ def create_mcp_server() -> FastMCP:
 
             await automation_handler.type_text(value)
             result = {"success": True, "element_index": element_index, "value": response_value, "method": "click_type"}
-            await _recording_hook("computer_set_value", record_args, result, element_ref=recorded_element_ref)
+            await _recording_hook(_recorded_turn(
+                "computer_set_value",
+                record_args,
+                result,
+                element_ref=recorded_element_ref,
+            ))
             return result
 
         return {
@@ -2124,7 +2183,11 @@ def create_mcp_server() -> FastMCP:
 
         window_handler = _get_handlers().window
         result = await window_handler.open(target, browser=browser)
-        await _recording_hook("computer_open", {"target": target, "browser": browser}, result)
+        await _recording_hook(_recorded_turn(
+            "computer_open",
+            {"target": target, "browser": browser},
+            result,
+        ))
         return result
 
     @mcp.tool(annotations={"readOnlyHint": False, "destructiveHint": True, "idempotentHint": False, "openWorldHint": True})
@@ -2140,7 +2203,11 @@ def create_mcp_server() -> FastMCP:
         """
         window_handler = _get_handlers().window
         result = await window_handler.launch(app, args)
-        await _recording_hook("computer_launch_app", {"app": app, "args": args}, result)
+        await _recording_hook(_recorded_turn(
+            "computer_launch_app",
+            {"app": app, "args": args},
+            result,
+        ))
         return result
 
     @mcp.tool(annotations={"readOnlyHint": True, "destructiveHint": False, "idempotentHint": True, "openWorldHint": True})
@@ -2217,8 +2284,11 @@ def create_mcp_server() -> FastMCP:
                 process_name = psutil.Process(pid).name() or ""
         except Exception:
             pass
-        await _recording_hook("computer_activate_window",
-            {"window_id": window_id, "window_title": window_title, "process_name": process_name}, result)
+        await _recording_hook(_recorded_turn(
+            "computer_activate_window",
+            {"window_id": window_id, "window_title": window_title, "process_name": process_name},
+            result,
+        ))
         return result
 
     @mcp.tool(annotations={"readOnlyHint": False, "destructiveHint": True, "idempotentHint": False, "openWorldHint": True})
@@ -2812,7 +2882,7 @@ def create_mcp_server() -> FastMCP:
             record_args["allow_html"] = allow_html
         if allow_javascript:
             record_args["allow_javascript"] = allow_javascript
-        await _recording_hook("computer_page", record_args, result)
+        await _recording_hook(_recorded_turn("computer_page", record_args, result))
         return result
 
     # ============================================================

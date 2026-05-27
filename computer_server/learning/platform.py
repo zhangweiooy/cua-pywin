@@ -816,7 +816,7 @@ class VisionEnricher:
         """Enrich click actions with OCR vision labels.
 
         For clicks whose UIA element has no title/identifier, OCRs the
-        pre-captured ``_ocr_region`` (a small PNG region around the click
+        pre-captured ``ocr_region`` (a small PNG region around the click
         point, captured at recording time).  Sets ``vision_label`` on
         the element_context.
 
@@ -840,7 +840,7 @@ class VisionEnricher:
             if ec and (ec.title or ec.identifier):
                 continue  # UIA already gave a label
 
-            png_bytes = getattr(action, "_ocr_region", None)
+            png_bytes = action.ocr_region
             if not png_bytes:
                 continue
 
@@ -861,7 +861,7 @@ class VisionEnricher:
     def enrich_type_texts(self, actions: list) -> None:
         """OCR IME-typed text for typeText actions whose text is still pinyin.
 
-        Each typeText action has ``_ocr_region`` (active-window PNG bytes)
+        Each typeText action has ``ocr_region`` (active-window PNG bytes)
         captured at recording time.  The full window image is OCR'd and all
         detected text is stored as ``ocr_text`` on the action — the model
         can use surrounding context to determine what was actually typed.
@@ -874,7 +874,7 @@ class VisionEnricher:
             a for a in actions
             if a.action_type == ObservedActionType.TYPE_TEXT
             and a.text and a.text.isascii()
-            and getattr(a, "_ocr_region", None) is not None
+            and a.ocr_region is not None
         ]
         if not type_texts:
             return
@@ -883,7 +883,7 @@ class VisionEnricher:
             return
 
         for action in type_texts:
-            png_bytes = action._ocr_region
+            png_bytes = action.ocr_region
             detections = self._ocr_image(png_bytes, timeout_seconds=5)
             if not detections:
                 continue
