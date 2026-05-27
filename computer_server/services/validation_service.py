@@ -115,6 +115,78 @@ def validate_modifiers(modifier: Optional[Sequence[str]]) -> Optional[list[str]]
     return normalized
 
 
+def validate_coordinate_space(coordinate_space: Optional[str]) -> Optional[str]:
+    if coordinate_space is None:
+        return None
+    return validate_choice(
+        "coordinate_space",
+        coordinate_space,
+        {"screen", "window_resized", "window_full_res", "zoom", "element"},
+    )
+
+
+def resolve_coordinate_space(
+    coordinate_space: Optional[str],
+    *,
+    element_index: Optional[int],
+    from_zoom: bool = False,
+    zoom_id: Optional[str] = None,
+    pid: Optional[int] = None,
+    window_id: Optional[int] = None,
+    supports_zoom: bool = True,
+) -> str:
+    """Return the effective coordinate space for pointer-style tools.
+
+    ``None`` preserves the legacy behavior:
+    element index -> element, zoom args -> zoom, pid/window_id -> window_resized,
+    otherwise screen.
+    """
+    space = validate_coordinate_space(coordinate_space)
+    uses_zoom = bool(from_zoom or zoom_id)
+
+    if space is None:
+        if element_index is not None:
+            if uses_zoom:
+                raise ValidationError("element_index cannot be combined with zoom coordinates")
+            return "element"
+        if uses_zoom:
+            if not supports_zoom:
+                raise ValidationError("zoom coordinates are not supported for this tool")
+            return "zoom"
+        if pid is not None and window_id is not None:
+            return "window_resized"
+        return "screen"
+
+    if space == "element":
+        if element_index is None:
+            raise ValidationError("coordinate_space='element' requires element_index")
+        if uses_zoom:
+            raise ValidationError("coordinate_space='element' cannot be combined with zoom coordinates")
+        return space
+
+    if element_index is not None:
+        raise ValidationError("element_index requires coordinate_space='element'")
+
+    if space == "zoom":
+        if not supports_zoom:
+            raise ValidationError("zoom coordinates are not supported for this tool")
+        if not zoom_id and (pid is None or window_id is None):
+            raise ValidationError("coordinate_space='zoom' requires zoom_id or pid and window_id")
+        return space
+
+    if uses_zoom:
+        raise ValidationError("from_zoom and zoom_id require coordinate_space='zoom'")
+
+    if space in {"window_resized", "window_full_res"} and (
+        pid is None or window_id is None
+    ):
+        raise ValidationError(
+            f"coordinate_space='{space}' requires pid and window_id or snapshot_id"
+        )
+
+    return space
+
+
 def validate_shell(shell: str) -> str:
     return validate_choice("shell", shell, {"powershell", "cmd"})
 

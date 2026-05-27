@@ -32,11 +32,12 @@ values, then assert the arithmetic of the helper directly.
 
 from __future__ import annotations
 
+import sys
 from typing import Tuple
 
 import pytest
 
-from computer_server.mcp_server import _window_resized_to_screen
+from computer_server.mcp_server import _window_full_res_to_screen, _window_resized_to_screen
 
 
 @pytest.fixture
@@ -230,3 +231,29 @@ class TestWindowResizedToScreen:
         """
         fake_window(origin=(10, 20), ratio=1.5)
         assert _window_resized_to_screen(pid=1, window_id=1, x=3, y=3) == (14, 24)
+
+
+class TestWindowFullResToScreen:
+    def test_uses_window_origin_without_resize_ratio(self, fake_window):
+        fake_window(origin=(200, 100), ratio=2.0)
+
+        assert _window_full_res_to_screen(pid=1, window_id=1, x=10, y=5) == (210, 105)
+
+    def test_raises_when_origin_is_unavailable(self, monkeypatch):
+        class _FakeCache:
+            def get_window_origin_optional(self, pid, window_id):
+                return None
+
+        monkeypatch.setattr(
+            "computer_server.handlers.element_cache.get_element_cache",
+            lambda: _FakeCache(),
+        )
+
+        class _FakeWin32Gui:
+            @staticmethod
+            def GetWindowRect(window_id):
+                raise RuntimeError("no hwnd")
+
+        monkeypatch.setitem(sys.modules, "win32gui", _FakeWin32Gui())
+        with pytest.raises(ValueError):
+            _window_full_res_to_screen(pid=1, window_id=1, x=10, y=5)

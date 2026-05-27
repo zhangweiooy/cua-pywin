@@ -252,6 +252,17 @@ def _window_resized_to_screen(
     )
 
 
+def _window_full_res_to_screen(
+    pid: Optional[int],
+    window_id: Optional[int],
+    x: int,
+    y: int,
+) -> Tuple[int, int]:
+    from computer_server.services.coordinate_service import window_full_res_to_screen
+
+    return window_full_res_to_screen(pid, window_id, x, y)
+
+
 # ---------------------------------------------------------------------------
 # Window change detection (mirrors Swift WindowChangeDetector)
 # ---------------------------------------------------------------------------
@@ -810,6 +821,7 @@ def create_mcp_server() -> FastMCP:
         snapshot_id: Optional[str] = None,
         from_zoom: bool = False,
         zoom_id: Optional[str] = None,
+        coordinate_space: Optional[str] = None,
         modifier: Optional[List[str]] = None,
         count: int = 1,
         debug_image_out: Optional[str] = None,
@@ -820,9 +832,18 @@ def create_mcp_server() -> FastMCP:
         """
         Click at the specified screen coordinates or on a cached element.
 
-        Two addressing modes:
-        - (x, y): click at pixel coordinates in screenshot space
-        - element_index + window_id + pid: click a cached element from get_window_state
+        Addressing modes:
+        - coordinate_space='screen': x/y are absolute screen coordinates.
+        - coordinate_space='window_resized': x/y are coordinates in the resized
+          get_window_state screenshot for pid/window_id.
+        - coordinate_space='window_full_res': x/y are full-resolution
+          window-local coordinates.
+        - coordinate_space='zoom': x/y are zoom-image coordinates.
+        - coordinate_space='element': element_index addresses a cached node.
+
+        If coordinate_space is omitted, legacy inference is preserved:
+        element_index -> element, zoom args -> zoom, pid/window_id ->
+        window_resized, otherwise screen.
 
         Args:
             x: X coordinate in pixels (ignored when element_index is set)
@@ -834,6 +855,7 @@ def create_mcp_server() -> FastMCP:
             snapshot_id: Snapshot id returned by computer_get_window_state.
             from_zoom: When True, x/y are zoomed-image coords and get translated back
             zoom_id: Zoom id returned by computer_zoom.
+            coordinate_space: Explicit coordinate space for x/y or element_index.
             modifier: Modifier keys held during click (ctrl, alt, shift, win)
             count: Click count - 1 (single), 2 (double), 3 (triple). Default 1.
             debug_image_out: Optional path to save a debug image with click crosshair.
@@ -852,6 +874,7 @@ def create_mcp_server() -> FastMCP:
             validate_mouse_button,
             validate_modifiers,
             validate_optional_coordinate,
+            resolve_coordinate_space,
         )
 
         try:
@@ -884,6 +907,20 @@ def create_mcp_server() -> FastMCP:
             pid, window_id, ref_error = _resolve_zoom_ref(zoom_id, pid, window_id)
             if ref_error is not None:
                 return ref_error
+            from_zoom = True
+
+        try:
+            coordinate_space = resolve_coordinate_space(
+                coordinate_space,
+                element_index=element_index,
+                from_zoom=from_zoom,
+                zoom_id=zoom_id,
+                pid=pid,
+                window_id=window_id,
+            )
+        except ValueError as e:
+            return error_result(e)
+        if coordinate_space == "zoom":
             from_zoom = True
 
         recorded_element_ref = None
@@ -1012,21 +1049,23 @@ def create_mcp_server() -> FastMCP:
         if x is None or y is None:
             return {"success": False, "error": "x and y are required (or element_index + pid + window_id)", "suggestion": "Provide (x, y) pixel coordinates or (element_index + pid + window_id) from a previous get_window_state call"}
 
-        # For pixel clicks (no element_index), if pid+window_id are provided,
-        # add window origin to convert window-relative screenshot coords to screen coords.
-        # Never do this for from_zoom — zoom coords go through _resolve_from_zoom which
-        # already translates to screen space via the stored crop_rect.
-        if element_index is None and pid is not None and window_id is not None and not from_zoom:
+        # Convert explicit/legacy non-screen spaces to absolute screen coords.
+        if element_index is None and coordinate_space == "window_resized":
             x, y = _window_resized_to_screen(pid, window_id, x, y)
+        elif element_index is None and coordinate_space == "window_full_res":
+            try:
+                x, y = _window_full_res_to_screen(pid, window_id, x, y)
+            except ValueError as e:
+                return {"success": False, "error": str(e)}
 
         # Translate from_zoom coords
-        if from_zoom and window_id is None:
+        if coordinate_space == "zoom" and window_id is None:
             return {"success": False, "error": "window_id is required when from_zoom=True", "suggestion": "Provide the window_id used in the prior computer_zoom call"}
         try:
             x, y = _resolve_from_zoom(
                 x,
                 y,
-                from_zoom=from_zoom,
+                from_zoom=coordinate_space == "zoom",
                 pid=pid,
                 window_id=window_id,
                 zoom_id=zoom_id,
@@ -1183,6 +1222,7 @@ def create_mcp_server() -> FastMCP:
         snapshot_id: Optional[str] = None,
         from_zoom: bool = False,
         zoom_id: Optional[str] = None,
+        coordinate_space: Optional[str] = None,
         modifier: Optional[List[str]] = None,
     ) -> Any:
         """
@@ -1201,6 +1241,7 @@ def create_mcp_server() -> FastMCP:
             snapshot_id: Snapshot id returned by computer_get_window_state.
             from_zoom: When True, coords are in zoomed-image space
             zoom_id: Zoom id returned by computer_zoom.
+            coordinate_space: Explicit coordinate space for start/end coords.
             modifier: Modifier keys held during drag (cmd, shift, option, ctrl)
         """
         import asyncio
@@ -1211,6 +1252,7 @@ def create_mcp_server() -> FastMCP:
             validate_mouse_button,
             validate_modifiers,
             validate_optional_coordinate,
+            resolve_coordinate_space,
         )
 
         try:
@@ -1241,6 +1283,20 @@ def create_mcp_server() -> FastMCP:
                 return ref_error
             from_zoom = True
 
+        try:
+            coordinate_space = resolve_coordinate_space(
+                coordinate_space,
+                element_index=element_index,
+                from_zoom=from_zoom,
+                zoom_id=zoom_id,
+                pid=pid,
+                window_id=window_id,
+            )
+        except ValueError as e:
+            return error_result(e)
+        if coordinate_space == "zoom":
+            from_zoom = True
+
         recorded_element_ref = None
 
         if element_index is not None:
@@ -1257,19 +1313,24 @@ def create_mcp_server() -> FastMCP:
         if start_x is None or start_y is None or end_x is None or end_y is None:
             return {"success": False, "error": "start_x, start_y, end_x, end_y are required", "suggestion": "Provide all four coordinates: start_x, start_y (from cursor position or element), and end_x, end_y (target position)"}
 
-        # Pixel coords: add window origin to convert window-relative to screen coords.
-        # Skip for from_zoom — _resolve_from_zoom already translates to screen space.
-        if element_index is None and pid is not None and window_id is not None and not from_zoom:
+        # Convert explicit/legacy non-screen spaces to absolute screen coords.
+        if element_index is None and coordinate_space == "window_resized":
             start_x, start_y = _window_resized_to_screen(pid, window_id, start_x, start_y)
             end_x, end_y = _window_resized_to_screen(pid, window_id, end_x, end_y)
+        elif element_index is None and coordinate_space == "window_full_res":
+            try:
+                start_x, start_y = _window_full_res_to_screen(pid, window_id, start_x, start_y)
+                end_x, end_y = _window_full_res_to_screen(pid, window_id, end_x, end_y)
+            except ValueError as e:
+                return {"success": False, "error": str(e)}
 
-        if from_zoom and window_id is None:
+        if coordinate_space == "zoom" and window_id is None:
             return {"success": False, "error": "window_id is required when from_zoom=True", "suggestion": "Provide the window_id used in the prior computer_zoom call"}
         try:
             start_x, start_y = _resolve_from_zoom(
                 start_x,
                 start_y,
-                from_zoom=from_zoom,
+                from_zoom=coordinate_space == "zoom",
                 pid=pid,
                 window_id=window_id,
                 zoom_id=zoom_id,
@@ -1277,7 +1338,7 @@ def create_mcp_server() -> FastMCP:
             end_x, end_y = _resolve_from_zoom(
                 end_x,
                 end_y,
-                from_zoom=from_zoom,
+                from_zoom=coordinate_space == "zoom",
                 pid=pid,
                 window_id=window_id,
                 zoom_id=zoom_id,
@@ -1332,6 +1393,9 @@ def create_mcp_server() -> FastMCP:
         window_id: Optional[int] = None,
         pid: Optional[int] = None,
         snapshot_id: Optional[str] = None,
+        from_zoom: bool = False,
+        zoom_id: Optional[str] = None,
+        coordinate_space: Optional[str] = None,
         capture_after: bool = False,
     ) -> Any:
         """
@@ -1351,10 +1415,14 @@ def create_mcp_server() -> FastMCP:
             window_id: Window ID (required with element_index)
             pid: Process ID (required with element_index)
             snapshot_id: Snapshot id returned by computer_get_window_state.
+            from_zoom: When True, x/y are zoomed-image coords and get translated back
+            zoom_id: Zoom id returned by computer_zoom.
+            coordinate_space: Explicit coordinate space for x/y or element_index.
             capture_after: When True, take a fresh screenshot + nodes after the action.
         """
         from computer_server.services.validation_service import (
             error_result,
+            resolve_coordinate_space,
             validate_optional_coordinate,
             validate_scroll_amount,
             validate_scroll_by,
@@ -1378,6 +1446,31 @@ def create_mcp_server() -> FastMCP:
         pid, window_id, ref_error = _resolve_snapshot_ref(snapshot_id, pid, window_id)
         if ref_error is not None:
             return ref_error
+        if zoom_id:
+            if element_index is not None:
+                return {
+                    "success": False,
+                    "error": "element_index and zoom_id are mutually exclusive",
+                    "suggestion": "Use either a snapshot element_index or raw coordinates from the zoom image.",
+                }
+            pid, window_id, ref_error = _resolve_zoom_ref(zoom_id, pid, window_id)
+            if ref_error is not None:
+                return ref_error
+            from_zoom = True
+
+        try:
+            coordinate_space = resolve_coordinate_space(
+                coordinate_space,
+                element_index=element_index,
+                from_zoom=from_zoom,
+                zoom_id=zoom_id,
+                pid=pid,
+                window_id=window_id,
+            )
+        except ValueError as e:
+            return error_result(e)
+        if coordinate_space == "zoom":
+            from_zoom = True
 
         if direction:
             if direction == "up":
@@ -1400,16 +1493,45 @@ def create_mcp_server() -> FastMCP:
             except ValueError as e:
                 return {"success": False, "error": str(e), "suggestion": f"Call get_window_state(pid={pid}, window_id={window_id}) to refresh the element cache"}
 
-        # Pixel coords: add window origin to convert window-relative to screen coords.
-        # scroll only uses (x, y) when both are provided; partial coords go through as-is.
+        # Convert explicit/legacy non-screen spaces to absolute screen coords.
+        # Scroll only uses (x, y) when both are provided; partial coords go
+        # through as-is to preserve legacy "scroll current cursor" behavior.
         if (
             element_index is None
-            and pid is not None
-            and window_id is not None
             and x is not None
             and y is not None
+            and coordinate_space == "window_resized"
         ):
             x, y = _window_resized_to_screen(pid, window_id, x, y)
+        elif (
+            element_index is None
+            and x is not None
+            and y is not None
+            and coordinate_space == "window_full_res"
+        ):
+            try:
+                x, y = _window_full_res_to_screen(pid, window_id, x, y)
+            except ValueError as e:
+                return {"success": False, "error": str(e)}
+        elif (
+            element_index is None
+            and x is not None
+            and y is not None
+            and coordinate_space == "zoom"
+        ):
+            if window_id is None:
+                return {"success": False, "error": "window_id is required when from_zoom=True", "suggestion": "Provide the window_id used in the prior computer_zoom call"}
+            try:
+                x, y = _resolve_from_zoom(
+                    x,
+                    y,
+                    from_zoom=True,
+                    pid=pid,
+                    window_id=window_id,
+                    zoom_id=zoom_id,
+                )
+            except ValueError as e:
+                return {"success": False, "error": str(e)}
 
         automation_handler = _get_handlers().automation
 

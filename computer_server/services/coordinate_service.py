@@ -101,3 +101,34 @@ def window_resized_to_screen(
     if origin is None:
         return x, y
     return (origin[0] + x, origin[1] + y)
+
+
+def window_full_res_to_screen(
+    pid: Optional[int],
+    window_id: Optional[int],
+    x: int,
+    y: int,
+) -> Tuple[int, int]:
+    """Convert full-resolution window-local coordinates to screen coordinates."""
+    if pid is None or window_id is None:
+        raise ValueError("pid and window_id are required for window_full_res coordinates")
+
+    from computer_server.handlers.element_cache import get_element_cache
+
+    origin = get_element_cache().get_window_origin_optional(pid, window_id)
+    if origin is not None:
+        return (origin[0] + x, origin[1] + y)
+
+    try:
+        import win32gui
+
+        rect = win32gui.GetWindowRect(int(window_id))
+        if rect:
+            return (int(rect[0]) + x, int(rect[1]) + y)
+    except Exception:
+        pass
+
+    raise ValueError(
+        f"No window origin available for pid={pid}, window_id={window_id}; "
+        "call computer_get_window_state first or use coordinate_space='screen'"
+    )

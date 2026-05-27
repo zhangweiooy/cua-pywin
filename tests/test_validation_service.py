@@ -6,6 +6,7 @@ import pytest
 
 from computer_server.services.validation_service import (
     ValidationError,
+    resolve_coordinate_space,
     validate_click_action,
     validate_click_count,
     validate_drag_duration,
@@ -100,3 +101,47 @@ def test_validate_javascript_requires_explicit_allow_flag():
         validate_javascript("document.title", allow_javascript=False)
 
     assert validate_javascript("document.title", allow_javascript=True) == "document.title"
+
+
+def test_resolve_coordinate_space_preserves_legacy_inference():
+    assert resolve_coordinate_space(None, element_index=1) == "element"
+    assert resolve_coordinate_space(None, element_index=None, from_zoom=True) == "zoom"
+    assert (
+        resolve_coordinate_space(
+            None,
+            element_index=None,
+            pid=123,
+            window_id=456,
+        )
+        == "window_resized"
+    )
+    assert resolve_coordinate_space(None, element_index=None) == "screen"
+
+
+def test_resolve_coordinate_space_rejects_ambiguous_combinations():
+    with pytest.raises(ValidationError):
+        resolve_coordinate_space("screen", element_index=1)
+    with pytest.raises(ValidationError):
+        resolve_coordinate_space("screen", element_index=None, zoom_id="zoom-1")
+    with pytest.raises(ValidationError):
+        resolve_coordinate_space("window_full_res", element_index=None, pid=1)
+
+
+def test_resolve_coordinate_space_accepts_explicit_modes():
+    assert (
+        resolve_coordinate_space(
+            "WINDOW_FULL_RES",
+            element_index=None,
+            pid=1,
+            window_id=2,
+        )
+        == "window_full_res"
+    )
+    assert (
+        resolve_coordinate_space(
+            "zoom",
+            element_index=None,
+            zoom_id="zoom-1",
+        )
+        == "zoom"
+    )
