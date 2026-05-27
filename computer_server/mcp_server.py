@@ -587,6 +587,48 @@ def create_mcp_server() -> FastMCP:
             "errors": errors,
         }
 
+    def _suppress_learning_input(duration_seconds: float = 1.0) -> None:
+        recorder = context.learning_recorder
+        if recorder is None:
+            return
+        try:
+            if getattr(recorder, "is_recording", False):
+                recorder.suppress_agent_input(duration_seconds)
+        except Exception:
+            logger.debug("learning input suppression failed", exc_info=True)
+
+    def _begin_learning_input_suppression() -> bool:
+        recorder = context.learning_recorder
+        if recorder is None:
+            return False
+        try:
+            if getattr(recorder, "is_recording", False):
+                recorder.begin_agent_input_suppression()
+                return True
+        except Exception:
+            logger.debug("learning input suppression begin failed", exc_info=True)
+        return False
+
+    def _end_learning_input_suppression(active: bool, grace_seconds: float = 0.25) -> None:
+        if not active:
+            return
+        recorder = context.learning_recorder
+        if recorder is None:
+            return
+        try:
+            recorder.end_agent_input_suppression(grace_seconds)
+        except Exception:
+            logger.debug("learning input suppression end failed", exc_info=True)
+
+    def _clear_learning_input_suppression() -> None:
+        recorder = context.learning_recorder
+        if recorder is None:
+            return
+        try:
+            recorder.clear_agent_input_suppression()
+        except Exception:
+            logger.debug("learning input suppression clear failed", exc_info=True)
+
     async def _recording_hook(
         tool_name: str,
         args: Dict[str, Any],
@@ -826,6 +868,8 @@ def create_mcp_server() -> FastMCP:
                 }
         except ValueError as e:
             return error_result(e)
+
+        _suppress_learning_input(3.0)
 
         pid, window_id, ref_error = _resolve_snapshot_ref(snapshot_id, pid, window_id)
         if ref_error is not None:
@@ -1180,6 +1224,8 @@ def create_mcp_server() -> FastMCP:
         except ValueError as e:
             return error_result(e)
 
+        _suppress_learning_input(max(1.0, duration + 0.75))
+
         pid, window_id, ref_error = _resolve_snapshot_ref(snapshot_id, pid, window_id)
         if ref_error is not None:
             return ref_error
@@ -1327,6 +1373,8 @@ def create_mcp_server() -> FastMCP:
         except ValueError as e:
             return error_result(e)
 
+        _suppress_learning_input(max(1.0, abs(scroll_x) * 0.02, abs(scroll_y) * 0.02, amount * 0.02))
+
         pid, window_id, ref_error = _resolve_snapshot_ref(snapshot_id, pid, window_id)
         if ref_error is not None:
             return ref_error
@@ -1435,9 +1483,18 @@ def create_mcp_server() -> FastMCP:
             actual_x, actual_y = _scale_to_actual(x, y)
             await _animate_cursor_to(actual_x, actual_y)
         automation_handler = _get_handlers().automation
-        result = await automation_handler.mouse_down(actual_x, actual_y, button=button)
+        already_held = button in context.held_mouse_buttons
+        suppression_active = False if already_held else _begin_learning_input_suppression()
+        try:
+            result = await automation_handler.mouse_down(actual_x, actual_y, button=button)
+        except Exception:
+            if suppression_active:
+                _end_learning_input_suppression(suppression_active)
+            raise
         if result.get("success") is not False:
             context.held_mouse_buttons.add(button)
+        elif suppression_active:
+            _end_learning_input_suppression(suppression_active)
         return result
 
     @mcp.tool(annotations={"readOnlyHint": False, "destructiveHint": True, "idempotentHint": False, "openWorldHint": True})
@@ -1470,9 +1527,13 @@ def create_mcp_server() -> FastMCP:
             actual_x, actual_y = _scale_to_actual(x, y)
             await _animate_cursor_to(actual_x, actual_y)
         automation_handler = _get_handlers().automation
+        _suppress_learning_input(1.0)
+        was_held = button in context.held_mouse_buttons
         result = await automation_handler.mouse_up(actual_x, actual_y, button=button)
         if result.get("success") is not False:
             context.held_mouse_buttons.discard(button)
+            if was_held:
+                _end_learning_input_suppression(True)
         return result
 
     # ============================================================
@@ -1502,6 +1563,8 @@ def create_mcp_server() -> FastMCP:
             sensitive: When True, redact text in recording metadata.
         """
         automation_handler = _get_handlers().automation
+        estimated_seconds = min(60.0, max(1.0, (len(text) / 3.0) * 0.12 + 0.75))
+        _suppress_learning_input(estimated_seconds)
         result = await automation_handler.type_text(text)
         recorded_text = "<redacted>" if sensitive else text
         await _recording_hook("computer_type", {"text": recorded_text, "sensitive": sensitive}, result)
@@ -1521,6 +1584,7 @@ def create_mcp_server() -> FastMCP:
             key: The key to press (e.g., 'enter', 'tab', 'escape', 'a', 'b', etc.)
         """
         automation_handler = _get_handlers().automation
+        _suppress_learning_input(1.0)
         result = await automation_handler.press_key(key)
         await _recording_hook("computer_press_key", {"key": key}, result)
         return result
@@ -1535,6 +1599,7 @@ def create_mcp_server() -> FastMCP:
                   ['ctrl', 'c'] for copy, ['ctrl', 'v'] for paste, ['alt', 'tab'] for window switch)
         """
         automation_handler = _get_handlers().automation
+        _suppress_learning_input(1.0)
         result = await automation_handler.hotkey(keys)
         await _recording_hook("computer_hotkey", {"keys": keys}, result)
         return result
@@ -1548,9 +1613,18 @@ def create_mcp_server() -> FastMCP:
             key: The key to hold down
         """
         automation_handler = _get_handlers().automation
-        result = await automation_handler.key_down(key)
+        already_held = key in context.held_keys
+        suppression_active = False if already_held else _begin_learning_input_suppression()
+        try:
+            result = await automation_handler.key_down(key)
+        except Exception:
+            if suppression_active:
+                _end_learning_input_suppression(suppression_active)
+            raise
         if result.get("success") is not False:
             context.held_keys.add(key)
+        elif suppression_active:
+            _end_learning_input_suppression(suppression_active)
         await _recording_hook("computer_key_down", {"key": key}, result)
         return result
 
@@ -1563,9 +1637,13 @@ def create_mcp_server() -> FastMCP:
             key: The key to release
         """
         automation_handler = _get_handlers().automation
+        _suppress_learning_input(1.0)
+        was_held = key in context.held_keys
         result = await automation_handler.key_up(key)
         if result.get("success") is not False:
             context.held_keys.discard(key)
+            if was_held:
+                _end_learning_input_suppression(True)
         await _recording_hook("computer_key_up", {"key": key}, result)
         return result
 
@@ -1577,7 +1655,10 @@ def create_mcp_server() -> FastMCP:
         Use this after interrupted key_down/mouse_down sequences or failed
         replay runs to return input state to neutral.
         """
-        return await _release_tracked_inputs()
+        _suppress_learning_input(1.0)
+        result = await _release_tracked_inputs()
+        _clear_learning_input_suppression()
+        return result
 
     # ============================================================
     # ELEMENT VALUE ACTIONS
@@ -1660,6 +1741,8 @@ def create_mcp_server() -> FastMCP:
         window_handler = _get_handlers().window
         await window_handler.activate_window(window_id)
         await _animate_cursor_to(screen_cx, screen_cy)
+        estimated_seconds = min(60.0, max(1.0, (len(value) / 3.0) * 0.12 + 1.0))
+        _suppress_learning_input(estimated_seconds)
 
         ct = (el.control_type or "").lower()
         label = f"{el.name or ''} {el.control_type or ''}".lower()
@@ -2734,6 +2817,7 @@ def create_mcp_server() -> FastMCP:
             return replay_result
         finally:
             await _release_tracked_inputs()
+            _clear_learning_input_suppression()
             context.recording_suppressed = previous_suppressed
 
     # ============================================================

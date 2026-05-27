@@ -66,6 +66,8 @@ class LearningRecorder:
 
         # Prevent concurrent stop() from timer + user call
         self._stopping = False
+        self._agent_input_suppression_count = 0
+        self._agent_input_suppressed_until = 0.0
 
         from computer_server.services.uia_service import UIACallGate
 
@@ -187,6 +189,45 @@ class LearningRecorder:
             healthy = self._input.is_healthy() if self._input else None
             return (True, count, duration, app, healthy)
 
+    def suppress_agent_input(self, duration_seconds: float = 1.0) -> None:
+        """Temporarily ignore events likely injected by agent tools."""
+        self.flush_pending_input()
+        duration_seconds = max(0.0, float(duration_seconds))
+        with self._lock:
+            self._agent_input_suppressed_until = max(
+                self._agent_input_suppressed_until,
+                time.monotonic() + duration_seconds,
+            )
+
+    def begin_agent_input_suppression(self) -> None:
+        """Start a scoped suppression span for held-key/button primitives."""
+        self.flush_pending_input()
+        with self._lock:
+            self._agent_input_suppression_count += 1
+
+    def end_agent_input_suppression(self, grace_seconds: float = 0.25) -> None:
+        """End a scoped suppression span and keep a short event-settle grace."""
+        with self._lock:
+            if self._agent_input_suppression_count > 0:
+                self._agent_input_suppression_count -= 1
+            self._agent_input_suppressed_until = max(
+                self._agent_input_suppressed_until,
+                time.monotonic() + max(0.0, float(grace_seconds)),
+            )
+
+    def clear_agent_input_suppression(self) -> None:
+        """Clear all scoped suppression state."""
+        with self._lock:
+            self._agent_input_suppression_count = 0
+            self._agent_input_suppressed_until = 0.0
+
+    def flush_pending_input(self) -> None:
+        """Flush coalescers so user input is separated from agent input."""
+        if self._keystroke_buncher:
+            self._keystroke_buncher.flush()
+        if self._scroll_buncher:
+            self._scroll_buncher.flush()
+
     def _cleanup(self):
         self._input = None
         self._uia = None
@@ -194,6 +235,8 @@ class LearningRecorder:
         self._keystroke_buncher = None
         self._scroll_buncher = None
         self._last_uia_value = None
+        self._agent_input_suppression_count = 0
+        self._agent_input_suppressed_until = 0.0
 
     # ================================================================
     # Event handlers (called from pynput listener threads)
@@ -207,6 +250,9 @@ class LearningRecorder:
     def _on_key_down(self, vk_code: int, char: Optional[str],
                      modifiers: list[str], is_special: bool) -> None:
         """Called from InputCapture on a listener thread."""
+        if self._drop_agent_input_event():
+            return
+
         with self._lock:
             if self._session is None or self._stopping:
                 return
@@ -288,6 +334,9 @@ class LearningRecorder:
 
     def _on_mouse_down(self, x: float, y: float, button: str, count: int) -> None:
         """Called from InputCapture on a listener thread."""
+        if self._drop_agent_input_event():
+            return
+
         with self._lock:
             if self._session is None or self._stopping:
                 return
@@ -363,6 +412,9 @@ class LearningRecorder:
 
     def _on_scroll(self, x: float, y: float, dx: int, dy: int) -> None:
         """Called from InputCapture on a listener thread."""
+        if self._drop_agent_input_event():
+            return
+
         with self._lock:
             if self._session is None or self._stopping:
                 return
@@ -482,6 +534,15 @@ class LearningRecorder:
                 self._session.apps.add(action.app_name)
             if action.url:
                 self._session.urls.add(action.url)
+
+    def _drop_agent_input_event(self) -> bool:
+        with self._lock:
+            if self._session is None or self._stopping:
+                return False
+            return (
+                self._agent_input_suppression_count > 0
+                or time.monotonic() < self._agent_input_suppressed_until
+            )
 
     def _get_current_url(self, exe: str) -> Optional[str]:
         """Get the current URL if the foreground app is a browser."""
