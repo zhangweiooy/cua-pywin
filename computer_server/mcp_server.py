@@ -1663,11 +1663,13 @@ def create_mcp_server() -> FastMCP:
             validate_shell,
             validate_timeout,
         )
+        from computer_server.services.permission_service import RuntimePermissionPolicy
 
         try:
+            RuntimePermissionPolicy.from_env().require_run_command()
             shell = validate_shell(shell)
             timeout = validate_timeout(timeout)
-        except ValueError as e:
+        except (PermissionError, ValueError) as e:
             return error_result(e)
 
         automation_handler = _get_handlers().automation
@@ -2293,6 +2295,7 @@ def create_mcp_server() -> FastMCP:
             validate_port,
             validate_tab_index,
         )
+        from computer_server.services.permission_service import RuntimePermissionPolicy
 
         try:
             action = validate_page_action(action)
@@ -2412,8 +2415,9 @@ def create_mcp_server() -> FastMCP:
             result = {"success": True, **info}
         elif action == "execute_javascript":
             try:
+                RuntimePermissionPolicy.from_env().require_cdp_javascript()
                 javascript = validate_javascript(javascript, allow_javascript)
-            except ValueError as e:
+            except (PermissionError, ValueError) as e:
                 return error_result(e)
             js_result = await cdp.evaluate(
                 port=resolved_port,

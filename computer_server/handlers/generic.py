@@ -14,13 +14,18 @@ import os
 import platform
 import subprocess
 import webbrowser
-from pathlib import Path
 from typing import Any, Dict, Optional
 
 logger = logging.getLogger(__name__)
 
 from .base import BaseDesktopHandler, BaseFileHandler, BaseWindowHandler
 from .screen_geometry import get_virtual_screen_geometry
+from computer_server.services.permission_service import (
+    RuntimePermissionPolicy,
+    audit_path as _audit_path,
+    resolve_allowed_path,
+    resolve_path,
+)
 
 
 # ---------------------------------------------------------------------------
@@ -61,72 +66,6 @@ try:
     import pywinctl as pwc
 except Exception:  # pragma: no cover
     pwc = None  # type: ignore
-
-
-def resolve_path(path: str) -> Path:
-    """Resolve a path to its absolute path. Expand ~ to the user's home directory.
-
-    Args:
-        path: The file or directory path to resolve
-
-    Returns:
-        Path: The resolved absolute path
-    """
-    return Path(path).expanduser().resolve()
-
-
-def _configured_file_roots() -> list[Path]:
-    roots = os.environ.get("CUA_FILE_ROOTS", "")
-    result: list[Path] = []
-    for raw in roots.split(os.pathsep):
-        raw = raw.strip()
-        if raw:
-            result.append(resolve_path(raw))
-    return result
-
-
-def _dangerous_file_tools_disabled() -> bool:
-    return os.environ.get("CUA_DISABLE_DANGEROUS_FILE_TOOLS", "").lower() in {
-        "1",
-        "true",
-        "yes",
-        "on",
-    }
-
-
-def _path_in_root(path: Path, root: Path) -> bool:
-    try:
-        path.relative_to(root)
-        return True
-    except ValueError:
-        return False
-
-
-def resolve_allowed_path(path: str, operation: str, dangerous: bool = False) -> Path:
-    """Resolve and validate file-tool paths against optional allowlist roots."""
-    if dangerous and _dangerous_file_tools_disabled():
-        raise PermissionError(
-            f"{operation} is disabled by CUA_DISABLE_DANGEROUS_FILE_TOOLS"
-        )
-
-    resolved = resolve_path(path)
-    roots = _configured_file_roots()
-    if roots and not any(_path_in_root(resolved, root) for root in roots):
-        allowed = ", ".join(str(root) for root in roots)
-        raise PermissionError(
-            f"Path is outside configured CUA_FILE_ROOTS for {operation}: "
-            f"{resolved}. Allowed roots: {allowed}"
-        )
-    return resolved
-
-
-def _audit_path(path: Path, operation: str) -> Dict[str, Any]:
-    roots = _configured_file_roots()
-    return {
-        "path": str(path),
-        "operation": operation,
-        "root_restricted": bool(roots),
-    }
 
 
 # ===== Cross-platform Desktop command handlers =====
@@ -227,6 +166,7 @@ class GenericWindowHandler(BaseWindowHandler):
                 import shutil
                 which = shutil.which(target)
                 path = which if which else str(resolve_path(target))
+            RuntimePermissionPolicy.from_env().require_local_open(path)
             os.startfile(path)  # type: ignore[attr-defined]
             return {"success": True}
         except Exception as e:
