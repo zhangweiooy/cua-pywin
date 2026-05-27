@@ -549,6 +549,44 @@ def create_mcp_server() -> FastMCP:
             logger.debug("failed to build element_ref", exc_info=True)
             return None
 
+    async def _release_tracked_inputs() -> Dict[str, Any]:
+        """Release keys/buttons tracked by this server instance."""
+        automation_handler = _get_handlers().automation
+        released_keys: List[str] = []
+        released_buttons: List[str] = []
+        errors: List[str] = []
+
+        for key in list(context.held_keys):
+            try:
+                result = await automation_handler.key_up(key)
+                if result.get("success") is False:
+                    errors.append(f"key {key}: {result.get('error', 'unknown error')}")
+                else:
+                    released_keys.append(key)
+            except Exception as exc:
+                errors.append(f"key {key}: {exc}")
+            finally:
+                context.held_keys.discard(key)
+
+        for button in list(context.held_mouse_buttons):
+            try:
+                result = await automation_handler.mouse_up(button=button)
+                if result.get("success") is False:
+                    errors.append(f"mouse {button}: {result.get('error', 'unknown error')}")
+                else:
+                    released_buttons.append(button)
+            except Exception as exc:
+                errors.append(f"mouse {button}: {exc}")
+            finally:
+                context.held_mouse_buttons.discard(button)
+
+        return {
+            "success": not errors,
+            "released_keys": released_keys,
+            "released_mouse_buttons": released_buttons,
+            "errors": errors,
+        }
+
     async def _recording_hook(
         tool_name: str,
         args: Dict[str, Any],
@@ -1397,7 +1435,10 @@ def create_mcp_server() -> FastMCP:
             actual_x, actual_y = _scale_to_actual(x, y)
             await _animate_cursor_to(actual_x, actual_y)
         automation_handler = _get_handlers().automation
-        return await automation_handler.mouse_down(actual_x, actual_y, button=button)
+        result = await automation_handler.mouse_down(actual_x, actual_y, button=button)
+        if result.get("success") is not False:
+            context.held_mouse_buttons.add(button)
+        return result
 
     @mcp.tool(annotations={"readOnlyHint": False, "destructiveHint": True, "idempotentHint": False, "openWorldHint": True})
     async def computer_mouse_up(
@@ -1429,7 +1470,10 @@ def create_mcp_server() -> FastMCP:
             actual_x, actual_y = _scale_to_actual(x, y)
             await _animate_cursor_to(actual_x, actual_y)
         automation_handler = _get_handlers().automation
-        return await automation_handler.mouse_up(actual_x, actual_y, button=button)
+        result = await automation_handler.mouse_up(actual_x, actual_y, button=button)
+        if result.get("success") is not False:
+            context.held_mouse_buttons.discard(button)
+        return result
 
     # ============================================================
     # KEYBOARD ACTIONS
@@ -1505,6 +1549,8 @@ def create_mcp_server() -> FastMCP:
         """
         automation_handler = _get_handlers().automation
         result = await automation_handler.key_down(key)
+        if result.get("success") is not False:
+            context.held_keys.add(key)
         await _recording_hook("computer_key_down", {"key": key}, result)
         return result
 
@@ -1518,8 +1564,20 @@ def create_mcp_server() -> FastMCP:
         """
         automation_handler = _get_handlers().automation
         result = await automation_handler.key_up(key)
+        if result.get("success") is not False:
+            context.held_keys.discard(key)
         await _recording_hook("computer_key_up", {"key": key}, result)
         return result
+
+    @mcp.tool(annotations={"readOnlyHint": False, "destructiveHint": True, "idempotentHint": True, "openWorldHint": True})
+    async def computer_release_all_inputs() -> Any:
+        """
+        Release all keys and mouse buttons currently tracked as held down.
+
+        Use this after interrupted key_down/mouse_down sequences or failed
+        replay runs to return input state to neutral.
+        """
+        return await _release_tracked_inputs()
 
     # ============================================================
     # ELEMENT VALUE ACTIONS
@@ -2660,13 +2718,22 @@ def create_mcp_server() -> FastMCP:
         previous_suppressed = context.recording_suppressed
         context.recording_suppressed = True
         try:
-            return await _replay(
+            replay_result = await _replay(
                 recording_dir=recording_dir,
                 tool_executor=tool_executor,
                 delay_ms=delay_ms,
                 stop_on_error=stop_on_error,
             )
+            release_result = await _release_tracked_inputs()
+            if (
+                release_result.get("released_keys")
+                or release_result.get("released_mouse_buttons")
+                or release_result.get("errors")
+            ):
+                replay_result["release_all_inputs"] = release_result
+            return replay_result
         finally:
+            await _release_tracked_inputs()
             context.recording_suppressed = previous_suppressed
 
     # ============================================================

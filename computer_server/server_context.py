@@ -25,3 +25,5 @@ class ServerContext:
     observations: ObservationContextRegistry = field(default_factory=ObservationContextRegistry)
     uia_walk_gate: UIAWalkGate = field(default_factory=UIAWalkGate)
     seen_popovers: Dict[int, Set[int]] = field(default_factory=dict)
+    held_keys: Set[str] = field(default_factory=set)
+    held_mouse_buttons: Set[str] = field(default_factory=set)

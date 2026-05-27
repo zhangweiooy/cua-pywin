@@ -1,8 +1,8 @@
 # cua-pywin
 
-Windows UI automation MCP server for AI agents — 54 tools for computer control.
+Windows UI automation MCP server for AI agents — 55 tools for computer control.
 <br>
-Windows AI Agent 桌面操控 MCP 服务 — 54 个计算机控制工具。
+Windows AI Agent 桌面操控 MCP 服务 — 55 个计算机控制工具。
 
 ---
 
@@ -14,7 +14,7 @@ Windows AI Agent 桌面操控 MCP 服务 — 54 个计算机控制工具。
 
 ### 亮点
 
-- **54 个 MCP 工具** — 截图、鼠标、键盘、剪贴板、文件系统、窗口管理、Shell 执行
+- **55 个 MCP 工具** — 截图、鼠标、键盘、剪贴板、文件系统、窗口管理、Shell 执行
 - **录制 / 回放** — 录制 MCP 工具调用序列到磁盘，完整回放（含坐标重算和过期窗口解析）
 - **学习模式** — 录制真人操作（pynput 全局钩子 + UIA 元素标注 + EasyOCR 视觉增强）
 - **SOM 视觉检测** — OmniParser YOLO + EasyOCR 中文识别，UIA 不可用时自动回退
@@ -139,7 +139,7 @@ set CUA_DISABLE_DANGEROUS_FILE_TOOLS=1
 
 ### MCP 工具
 
-**屏幕与鼠标** — `computer_screenshot` `computer_click` `computer_move` `computer_drag` `computer_scroll` `computer_mouse_down` `computer_mouse_up` `computer_get_screen_size` `computer_get_cursor_position` `computer_get_window_state` `computer_zoom`
+**屏幕与鼠标** — `computer_screenshot` `computer_click` `computer_move` `computer_drag` `computer_scroll` `computer_mouse_down` `computer_mouse_up` `computer_release_all_inputs` `computer_get_screen_size` `computer_get_cursor_position` `computer_get_window_state` `computer_zoom`
 
 **键盘** — `computer_type` `computer_press_key` `computer_hotkey` `computer_key_down` `computer_key_up` `computer_set_value`
 
@@ -343,7 +343,7 @@ set CUA_DISABLE_DANGEROUS_FILE_TOOLS=1
 
 ### MCP Tools
 
-**Screen & Mouse** — `computer_screenshot` `computer_click` `computer_move` `computer_drag` `computer_scroll` `computer_mouse_down` `computer_mouse_up` `computer_get_screen_size` `computer_get_cursor_position` `computer_get_window_state` `computer_zoom`
+**Screen & Mouse** — `computer_screenshot` `computer_click` `computer_move` `computer_drag` `computer_scroll` `computer_mouse_down` `computer_mouse_up` `computer_release_all_inputs` `computer_get_screen_size` `computer_get_cursor_position` `computer_get_window_state` `computer_zoom`
 
 **Keyboard** — `computer_type` `computer_press_key` `computer_hotkey` `computer_key_down` `computer_key_up` `computer_set_value`
 
