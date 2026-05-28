@@ -65,8 +65,12 @@ cua-pywin = "computer_server:run_cli"
 distribution = true
 
 [tool.pdm.build]
-includes = ["computer_server"]
-package-data = {"computer_server" = ["py.typed", "models/tinyclip/wkcn-TinyCLIP-ViT-8M-16-Text-3M-YFCC15M/*"]}
+includes = ["computer_server", "som"]
+excludes = ["som/.pdm-build", "som/tests"]
+
+[tool.pdm.build.package-data]
+computer_server = ["py.typed", "models/tinyclip/wkcn-TinyCLIP-ViT-8M-16-Text-3M-YFCC15M/*"]
+som = ["weights/icon_detect/model.pt"]
 
 [tool.pdm.dev-dependencies]
 test = [

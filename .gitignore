@@ -83,5 +83,9 @@ AGENTS.md
 # Windows
 Thumbs.db
 
-# SOM model weights (downloaded at runtime)
+# Ignore ad-hoc model weight directories by default, but keep the bundled
+# OmniParser v2 icon detector in the package.
 weights/
+!som/weights/
+!som/weights/icon_detect/
+!som/weights/icon_detect/model.pt

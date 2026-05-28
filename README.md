@@ -69,7 +69,7 @@ cua-pywin/
 ├─ som/                      ← SOM 视觉 (vendored)
 │  ├─ detect.py              ← OmniParser YOLOv8 检测
 │  ├─ ocr.py                 ← EasyOCR 中文识别
-│  └─ weights/               ← YOLO 模型权重
+│  └─ weights/               ← 内置 OmniParser v2 YOLO 图标检测权重
 ├─ scripts/
 │  └─ mcp_test_one.py        ← 单工具测试脚本
 ├─ pyproject.toml
@@ -273,7 +273,7 @@ cua-pywin/
 ├─ som/                      ← SOM vision (vendored)
 │  ├─ detect.py              ← OmniParser YOLOv8 detection
 │  ├─ ocr.py                 ← EasyOCR Chinese/English
-│  └─ weights/               ← YOLO model weights
+│  └─ weights/               ← Bundled OmniParser v2 YOLO icon detector
 ├─ scripts/
 │  └─ mcp_test_one.py        ← Single-tool test script
 ├─ pyproject.toml
@@ -382,6 +382,10 @@ Click coordinate pipeline: `element_index → cached element center → +window 
 **UIA integration + UIAWalkGate** — COM is called directly inside its STA thread (the previous design submitted each property call to a shared executor and leaked threads when the UIA provider hung). `UIAWalkGate` (owned by `ServerContext`) is the sole timeout boundary: 30s `wait_for + shield + done_callback`. On timeout the gate stays held and the key is marked unhealthy for 30s, so fresh requests fall straight through to SOM instead of stacking more doomed walks.
 
 **Tree quality + SOM fallback** — `rich(>50) / ok(15-50)` skip SOM; `poor(<15) / empty(0)` enable SOM vision. `uia_quality` and `vision_quality` are reported separately and do not overwrite each other.
+
+**Bundled OmniParser v2 detector** — The YOLO icon detector is bundled at
+`som/weights/icon_detect/model.pt` from `microsoft/OmniParser-v2.0`, so packaged
+installs do not need to download it at runtime.
 
 **TinyCLIP icon labels** — SOM icon crops are labeled in one TinyCLIP batch.
 The model (`wkcn/TinyCLIP-ViT-8M-16-Text-3M-YFCC15M`) is bundled under
