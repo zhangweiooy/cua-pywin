@@ -59,7 +59,7 @@ homepage = "https://github.com/zhangweiooy/cua-pywin"
 repository = "https://github.com/zhangweiooy/cua-pywin"
 
 [project.scripts]
-cua-pywin = "computer_server:run_cli"
+cua-win = "computer_server.tool_cli:main"
 
 [tool.pdm]
 distribution = true
@@ -87,4 +87,4 @@ dev = [
 ]
 
 [tool.pdm.scripts]
-api = "python -m computer_server"
+api = "cua-win serve"

@@ -5,9 +5,7 @@ This module provides an MCP interface to the Computer Server's functionality,
 enabling Claude Code and other MCP-compatible tools to directly control computers.
 
 Usage:
-    python -m computer_server --mcp
-    python -m computer_server --mcp --width 1512 --height 982
-    python -m computer_server --mcp --detect-resolution
+    python -m computer_server.mcp_server
 """
 
 import base64

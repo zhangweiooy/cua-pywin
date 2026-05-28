@@ -27,9 +27,8 @@ Windows AI Agent 桌面操控 MCP 服务 — 42 个计算机控制工具。
 cua-pywin/
 ├─ computer_server/          ← 主程序
 │  ├─ mcp_server.py          ← 42 MCP 工具入口（薄 wrapper，业务转交 services/）
-│  ├─ main.py                ← 本机 HTTP MCP 服务器（/status + /mcp）
-│  ├─ cli.py                 ← CLI（非 localhost 需 --i-know-this-exposes-my-computer）
-│  ├─ server.py              ← uvicorn 生命周期 + 优雅退出
+│  ├─ main.py                ← 本机 HTTP 服务器（/status + /mcp + cua-win JSON RPC）
+│  ├─ tool_cli.py            ← cua-win CLI / HTTP server launcher
 │  ├─ server_context.py      ← 每实例可变状态（录制会话/学习/UIA gate/popover dedup）
 │  ├─ handlers/              ← 平台原语（OS API 一对一封装）
 │  │  ├─ base.py             ← 抽象接口 (ABCs)
@@ -99,15 +98,26 @@ uv sync --index-url https://pypi.tuna.tsinghua.edu.cn/simple
 # MCP stdio 模式（Claude Code / Claude Desktop）
 python -m computer_server.mcp_server
 
-# HTTP MCP 模式（默认只监听 127.0.0.1）
-python -m computer_server --port 8000
+# 统一 HTTP 服务（默认只监听 127.0.0.1，提供 /status + /mcp + token JSON RPC）
+cua-win serve --port 8000
+
+# CLI daemon/client（默认自动启动本机 HTTP daemon，无需手动 serve）
+cua-win status
+cua-win list-tools
+cua-win computer_get_screen_size
+cua-win call computer_get_window_state '{"pid":1234,"window_id":5678}'
+cua-win stop
 
 # 若要绑定到非 localhost，必须显式确认（否则启动会被拒绝）
-python -m computer_server --host 0.0.0.0 --port 8000 \
+cua-win serve --host 0.0.0.0 --port 8000 \
     --i-know-this-exposes-my-computer
 ```
 
-HTTP 服务只暴露 `/status` 与 `/mcp`，legacy `/ws` 与 `/commands` 已删除；所有高权限工具仅通过 MCP 入口暴露。CORS 仅放行 `localhost / 127.0.0.1 / [::1]` origin。
+普通 HTTP 服务暴露 `/status` 与 `/mcp`，legacy `/ws` 与 `/commands` 已删除；`cua-win` daemon 复用同一个 app，并额外启用 token 保护的 `/tools`、`/call`、`/shutdown` JSON RPC 路由。CORS 仅放行 `localhost / 127.0.0.1 / [::1]` origin。
+
+`cua-win` 是面向人和脚本的 CLI。默认启动同一个本机 HTTP app，并通过 token 保护的 JSON RPC 路由调用 MCP 工具，因此 `computer_get_window_state` 这类高频重工具只在 daemon 启动时预热一次；`--no-daemon` 会强制单次进程内调用，适合调试但不适合高频使用。
+
+如果只需要 `/status + /mcp`，可用 `cua-win serve --no-cli-rpc` 关闭 CLI JSON RPC 路由。
 
 ### Claude Code 集成
 
@@ -212,9 +222,8 @@ python -m py_compile computer_server/learning/*.py
 cua-pywin/
 ├─ computer_server/          ← Main package
 │  ├─ mcp_server.py          ← 42 MCP tools (thin wrappers; logic in services/)
-│  ├─ main.py                ← Local HTTP MCP server (/status + /mcp only)
-│  ├─ cli.py                 ← CLI (non-localhost requires --i-know-this-exposes-my-computer)
-│  ├─ server.py              ← uvicorn lifecycle + graceful shutdown
+│  ├─ main.py                ← Local HTTP server (/status + /mcp + cua-win JSON RPC)
+│  ├─ tool_cli.py            ← cua-win CLI / HTTP server launcher
 │  ├─ server_context.py      ← Per-instance state (recording / learning /
 │  │                          UIA walk gate / popover dedup)
 │  ├─ handlers/              ← Platform primitives (1:1 OS API wrappers)
@@ -285,16 +294,35 @@ First import loads EasyOCR models (~30s). Subsequent starts are instant.
 # MCP stdio mode (Claude Code / Claude Desktop)
 python -m computer_server.mcp_server
 
-# HTTP MCP mode (binds 127.0.0.1 by default)
-python -m computer_server --port 8000
+# Unified HTTP server (binds 127.0.0.1 by default; serves /status + /mcp + token JSON RPC)
+cua-win serve --port 8000
+
+# CLI daemon/client (auto-starts a local HTTP daemon by default; no manual serve needed)
+cua-win status
+cua-win list-tools
+cua-win computer_get_screen_size
+cua-win call computer_get_window_state '{"pid":1234,"window_id":5678}'
+cua-win stop
 
 # Binding to a non-localhost host requires explicit consent — without it
 # the server refuses to start.
-python -m computer_server --host 0.0.0.0 --port 8000 \
+cua-win serve --host 0.0.0.0 --port 8000 \
     --i-know-this-exposes-my-computer
 ```
 
-The HTTP server exposes only `/status` and `/mcp`; the legacy `/ws` and `/commands` WebSocket APIs have been removed. All high-privilege control flows through the MCP tool registry. CORS only allows `localhost / 127.0.0.1 / [::1]` origins.
+The normal HTTP server exposes `/status` and `/mcp`; the legacy `/ws` and
+`/commands` WebSocket APIs have been removed. `cua-win` daemon mode reuses the
+same app and additionally enables token-protected `/tools`, `/call`, and
+`/shutdown` JSON RPC routes. CORS only allows `localhost / 127.0.0.1 / [::1]`
+origins.
+
+`cua-win` is the human/script-facing CLI. It starts the same local HTTP app by
+default and calls MCP tools through token-protected JSON RPC routes, so heavy
+high-frequency tools such as `computer_get_window_state` pay warm-up once per
+daemon process. `--no-daemon` forces a one-shot in-process call and is intended
+for debugging rather than frequent use.
+
+Use `cua-win serve --no-cli-rpc` when you only want `/status + /mcp`.
 
 ### Claude Code Integration
 
