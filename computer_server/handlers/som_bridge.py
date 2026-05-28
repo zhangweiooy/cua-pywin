@@ -16,11 +16,14 @@ from __future__ import annotations
 import asyncio
 import logging
 import threading
+import time
 import warnings
 from dataclasses import dataclass, field
+from io import BytesIO
 from typing import Any, Dict, List, Optional
 
 from computer_server.handlers.element_cache import CachedElement
+from computer_server.services.icon_label_service import IconLabel
 
 logger = logging.getLogger(__name__)
 
@@ -146,14 +149,22 @@ def warm_up() -> None:
             from concurrent.futures import ThreadPoolExecutor
 
             parser = _get_parser()
-            logger.info("SOM parser singleton created; loading YOLO + OCR in parallel...")
+            logger.info("SOM parser singleton created; loading YOLO + OCR + TinyCLIP in parallel...")
 
             with _parse_lock:
-                with ThreadPoolExecutor(max_workers=2) as ex:
+                with ThreadPoolExecutor(max_workers=3) as ex:
                     f_yolo = ex.submit(parser.detector.load_model)
                     f_ocr = ex.submit(parser.ocr._ensure_reader)
+                    try:
+                        from computer_server.services.icon_label_service import warm_up as _warm_icon_labels
+
+                        f_icon = ex.submit(_warm_icon_labels)
+                    except Exception:
+                        f_icon = None
                     f_yolo.result()
                     f_ocr.result()
+                    if f_icon is not None:
+                        f_icon.result()
 
             _set_parser_state("ready")
             logger.info("SOM OmniParser pre-warmed — YOLO + OCR ready")
@@ -175,6 +186,7 @@ def _element_to_cached(
     index: int,
     screen_width: int,
     screen_height: int,
+    icon_label: Optional[IconLabel] = None,
 ) -> CachedElement:
     """Convert a SOM UIElement to a CachedElement with pixel-space coordinates.
 
@@ -192,12 +204,20 @@ def _element_to_cached(
     elem_type = getattr(elem, "type", None) or "icon"
     is_text = elem_type == "text"
 
+    metadata: Dict[str, Any] = {}
     if is_text:
         name: Optional[str] = getattr(elem, "content", None)
         actions: List[str] = []
     else:
-        name = None
+        name = icon_label.label if icon_label is not None else None
         actions = ["click"]
+        if icon_label is not None:
+            metadata = {
+                "icon_label": icon_label.label,
+                "icon_label_score": icon_label.score,
+                "icon_label_margin": icon_label.margin,
+                "icon_label_source": "tinyclip",
+            }
 
     return CachedElement(
         element_index=index,
@@ -209,6 +229,128 @@ def _element_to_cached(
         name=name,
         actions=actions,
         platform_ref=None,
+        metadata=metadata,
+    )
+
+
+def _crop_icon_elements(
+    screenshot_bytes: bytes,
+    raw_elements: List[Any],
+    screen_width: int,
+    screen_height: int,
+) -> tuple[List[int], List[Any]]:
+    """Return raw element positions and PIL crops for icon elements."""
+    from PIL import Image
+
+    image = Image.open(BytesIO(screenshot_bytes)).convert("RGB")
+    positions: List[int] = []
+    crops: List[Any] = []
+
+    for pos, elem in enumerate(raw_elements):
+        if getattr(elem, "type", None) != "icon":
+            continue
+        try:
+            bbox = elem.bbox.coordinates
+            left = max(0, int(bbox[0] * screen_width))
+            top = max(0, int(bbox[1] * screen_height))
+            right = min(screen_width, int(bbox[2] * screen_width))
+            bottom = min(screen_height, int(bbox[3] * screen_height))
+            if right <= left or bottom <= top:
+                continue
+            width = right - left
+            height = bottom - top
+            pad_x = max(2, int(width * 0.15))
+            pad_y = max(2, int(height * 0.15))
+            crop_box = (
+                max(0, left - pad_x),
+                max(0, top - pad_y),
+                min(screen_width, right + pad_x),
+                min(screen_height, bottom + pad_y),
+            )
+            positions.append(pos)
+            crops.append(image.crop(crop_box))
+        except Exception as exc:
+            logger.debug("Skipping icon crop for TinyCLIP labeling: %s", exc)
+    return positions, crops
+
+
+def _label_icon_elements(
+    screenshot_bytes: bytes,
+    raw_elements: List[Any],
+    screen_width: int,
+    screen_height: int,
+) -> Dict[int, IconLabel]:
+    """Batch-label all icon crops and return labels keyed by raw element position."""
+    try:
+        from computer_server.services.icon_label_service import label_icons
+
+        positions, crops = _crop_icon_elements(
+            screenshot_bytes,
+            raw_elements,
+            screen_width,
+            screen_height,
+        )
+        if not crops:
+            return {}
+        labels = label_icons(crops)
+        return {
+            pos: label
+            for pos, label in zip(positions, labels)
+            if label is not None
+        }
+    except Exception as exc:
+        logger.debug("TinyCLIP icon labeling skipped: %s", exc, exc_info=True)
+        return {}
+
+
+def _convert_parse_result(
+    result: Any,
+    screenshot_bytes: bytes,
+    screen_width: int,
+    screen_height: int,
+    vision_index_start: int,
+) -> VisionResult:
+    raw_elements = list(getattr(result, "elements", []) or [])
+    stage_start = time.perf_counter()
+    icon_labels = _label_icon_elements(
+        screenshot_bytes,
+        raw_elements,
+        screen_width,
+        screen_height,
+    )
+    tinyclip_latency = time.perf_counter() - stage_start
+
+    stage_start = time.perf_counter()
+    cached: List[CachedElement] = []
+    next_index = vision_index_start
+
+    for raw_pos, elem in enumerate(raw_elements):
+        try:
+            cached.append(
+                _element_to_cached(
+                    elem,
+                    next_index,
+                    screen_width,
+                    screen_height,
+                    icon_label=icon_labels.get(raw_pos),
+                )
+            )
+            next_index += 1
+        except Exception as inner_exc:
+            logger.warning("Skipping malformed SOM element: %s", inner_exc)
+            continue
+
+    metadata = _build_metadata(result)
+    stage_timings = dict(metadata.get("stage_timings", {}) or {})
+    stage_timings["tinyclip_latency"] = tinyclip_latency
+    stage_timings["bridge_convert_latency"] = time.perf_counter() - stage_start
+    metadata["stage_timings"] = stage_timings
+    metadata["icon_label_count"] = len(icon_labels)
+    metadata["icon_labeler"] = "tinyclip" if icon_labels else None
+    return VisionResult(
+        elements=cached,
+        annotated_image_base64=getattr(result, "annotated_image_base64", None),
+        metadata=metadata,
     )
 
 
@@ -223,6 +365,7 @@ def _build_metadata(result: Any) -> Dict[str, Any]:
         "num_text": num_text,
         "latency": getattr(md, "latency", None),
         "device": getattr(md, "device", None),
+        "stage_timings": dict(getattr(md, "stage_timings", {}) or {}),
     }
 
 
@@ -291,24 +434,12 @@ async def detect(
         return None
 
     try:
-        raw_elements = list(getattr(result, "elements", []) or [])
-        cached: List[CachedElement] = []
-        next_index = vision_index_start
-
-        for elem in raw_elements:
-            try:
-                cached.append(
-                    _element_to_cached(elem, next_index, screen_width, screen_height)
-                )
-                next_index += 1
-            except Exception as inner_exc:
-                logger.warning("Skipping malformed SOM element: %s", inner_exc)
-                continue
-
-        return VisionResult(
-            elements=cached,
-            annotated_image_base64=getattr(result, "annotated_image_base64", None),
-            metadata=_build_metadata(result),
+        return _convert_parse_result(
+            result,
+            screenshot_bytes,
+            screen_width,
+            screen_height,
+            vision_index_start,
         )
     except Exception as exc:
         logger.warning("Failed to convert SOM result: %s", exc)
@@ -363,24 +494,12 @@ def detect_sync(
         return None
 
     try:
-        raw_elements = list(getattr(result, "elements", []) or [])
-        cached: List[CachedElement] = []
-        next_index = vision_index_start
-
-        for elem in raw_elements:
-            try:
-                cached.append(
-                    _element_to_cached(elem, next_index, screen_width, screen_height)
-                )
-                next_index += 1
-            except Exception as inner_exc:
-                logger.warning("Skipping malformed SOM element: %s", inner_exc)
-                continue
-
-        return VisionResult(
-            elements=cached,
-            annotated_image_base64=getattr(result, "annotated_image_base64", None),
-            metadata=_build_metadata(result),
+        return _convert_parse_result(
+            result,
+            screenshot_bytes,
+            screen_width,
+            screen_height,
+            vision_index_start,
         )
     except Exception as exc:
         logger.warning("Failed to convert SOM result: %s", exc)

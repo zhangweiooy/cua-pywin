@@ -34,6 +34,15 @@ try:
     _pre_som_avail()  # triggers from som.detect import OmniParser → torch + cv2 + ultralytics
 except Exception:
     pass
+try:
+    # Transformers/tokenizers/safetensors can import native extensions.
+    # Import them before FastMCP's anyio event loop starts; model weights are
+    # still loaded by the background warm-up thread.
+    from transformers import CLIPModel as _pre_clip_model  # noqa: F401
+    from transformers import CLIPProcessor as _pre_clip_processor  # noqa: F401
+    import safetensors.torch as _pre_safetensors_torch  # noqa: F401
+except Exception:
+    pass
 from typing import Any, Dict, List, Optional, Tuple
 
 if sys.platform != "win32":

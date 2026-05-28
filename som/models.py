@@ -68,6 +68,10 @@ class ParserMetadata(BaseModel):
     device: str = Field(..., description="Device used for detection (cpu/cuda/mps)")
     ocr_enabled: bool = Field(..., description="Whether OCR was enabled")
     latency: float = Field(..., description="Total processing time in seconds")
+    stage_timings: Dict[str, float] = Field(
+        default_factory=dict,
+        description="Per-stage latency timings in seconds",
+    )
 
     @property
     def width(self) -> int:

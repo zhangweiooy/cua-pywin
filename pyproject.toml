@@ -43,6 +43,7 @@ dependencies = [
     "ultralytics>=8.1",
     "supervision>=0.25",
     "huggingface-hub>=0.21",
+    "transformers>=4.40",
 ]
 
 [project.optional-dependencies]
@@ -65,7 +66,7 @@ distribution = true
 
 [tool.pdm.build]
 includes = ["computer_server"]
-package-data = {"computer_server" = ["py.typed"]}
+package-data = {"computer_server" = ["py.typed", "models/tinyclip/wkcn-TinyCLIP-ViT-8M-16-Text-3M-YFCC15M/*"]}
 
 [tool.pdm.dev-dependencies]
 test = [

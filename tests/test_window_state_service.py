@@ -111,6 +111,19 @@ def test_filter_nodes_by_query_can_return_all_nodes_when_requested():
     assert filtered is not nodes
 
 
+def test_node_matches_query_checks_icon_label_metadata():
+    node = {
+        "source": "vision",
+        "control_type": "icon",
+        "name": "send button",
+        "metadata": {"icon_label": "send button"},
+        "actions": ["click"],
+    }
+
+    assert node_matches_query(node, "send")
+    assert node_matches_query(node, "tinyclip") is False
+
+
 class _FakeAutomationHandler:
     async def screenshot(self, format="jpeg", quality=85):
         img = Image.new("RGB", (20, 20), "white")

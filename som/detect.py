@@ -60,6 +60,7 @@ class OmniParser:
         )
         self.ocr = OCRProcessor(languages=ocr_languages)
         self.visualizer = BoxAnnotator()
+        self._last_stage_timings: Dict[str, float] = {}
 
     def process_image(
         self,
@@ -80,12 +81,16 @@ class OmniParser:
             Tuple of (annotated image, list of detections)
         """
         try:
+            process_start = time.perf_counter()
+            stage_timings: Dict[str, float] = {}
             logger.info("Starting UI element detection...")
 
             # Detect icons
+            stage_start = time.perf_counter()
             icon_detections = self.detector.detect_icons(
                 image=image, box_threshold=box_threshold, iou_threshold=iou_threshold
             )
+            stage_timings["yolo_latency"] = time.perf_counter() - stage_start
             logger.info(f"Found {len(icon_detections)} interactive elements")
 
             # Convert icon detections to typed objects
@@ -110,12 +115,15 @@ class OmniParser:
             # Run OCR if enabled
             if use_ocr:
                 logger.info("Running OCR detection...")
+                stage_start = time.perf_counter()
                 text_detections = self.ocr.detect_text(image=image, confidence_threshold=0.5)
+                stage_timings["ocr_latency"] = time.perf_counter() - stage_start
                 if text_detections is None:
                     text_detections = []
                 logger.info(f"Found {len(text_detections)} text regions")
 
                 # Convert text detections to typed objects
+                stage_start = time.perf_counter()
                 text_elements = cast(
                     List[UIElement],
                     [
@@ -167,6 +175,10 @@ class OmniParser:
                 else:
                     # Just add text elements to the list if IOU doesn't need to be applied
                     elements.extend(text_elements)
+                stage_timings["merge_latency"] = time.perf_counter() - stage_start
+            else:
+                stage_timings["ocr_latency"] = 0.0
+                stage_timings["merge_latency"] = 0.0
 
             # Calculate drawing parameters based on image size
             box_overlay_ratio = max(image.size) / 3200
@@ -189,9 +201,13 @@ class OmniParser:
 
             # Create visualization
             logger.info("Creating visualization...")
+            stage_start = time.perf_counter()
             annotated_image = self.visualizer.draw_boxes(
                 image=image.copy(), detections=detection_dicts, draw_config=draw_config
             )
+            stage_timings["visualization_latency"] = time.perf_counter() - stage_start
+            stage_timings["omniparser_latency"] = time.perf_counter() - process_start
+            self._last_stage_timings = stage_timings
             logger.info("Visualization complete")
 
             return annotated_image, elements
@@ -222,12 +238,14 @@ class OmniParser:
             ParseResult object containing elements, annotated image, and metadata
         """
         try:
-            start_time = time.time()
+            start_time = time.perf_counter()
 
             # Convert input to PIL Image
+            stage_start = time.perf_counter()
             if isinstance(screenshot_data, str):
                 screenshot_data = base64.b64decode(screenshot_data)
             image = Image.open(io.BytesIO(screenshot_data)).convert("RGB")
+            image_decode_latency = time.perf_counter() - stage_start
 
             # Process image
             annotated_image, elements = self.process_image(
@@ -238,9 +256,11 @@ class OmniParser:
             )
 
             # Convert annotated image to base64
+            stage_start = time.perf_counter()
             buffered = io.BytesIO()
             annotated_image.save(buffered, format="PNG")
             annotated_image_base64 = base64.b64encode(buffered.getvalue()).decode("utf-8")
+            annotation_encode_latency = time.perf_counter() - stage_start
 
             # Generate screen info text
             screen_info = []
@@ -279,8 +299,14 @@ class OmniParser:
                     )
 
             # Calculate metadata
-            latency = time.time() - start_time
+            latency = time.perf_counter() - start_time
             width, height = image.size
+            stage_timings = {
+                "image_decode_latency": image_decode_latency,
+                **self._last_stage_timings,
+                "annotation_encode_latency": annotation_encode_latency,
+                "total_latency": latency,
+            }
 
             # Create ParseResult object with enhanced properties
             result = ParseResult(
@@ -295,6 +321,7 @@ class OmniParser:
                     device=self.detector.device,
                     ocr_enabled=use_ocr,
                     latency=latency,
+                    stage_timings=stage_timings,
                 ),
             )
 

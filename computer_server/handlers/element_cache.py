@@ -25,6 +25,7 @@ class CachedElement:
     actions: List[str] = field(default_factory=list)
     platform_ref: Any = None  # Deprecated: do not store COM refs across calls
     enabled: bool = True  # From UIA IsEnabledPropertyId; for disabled-element fallback
+    metadata: Dict[str, Any] = field(default_factory=dict)
 
 
 class ElementCache:

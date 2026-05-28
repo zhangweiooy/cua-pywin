@@ -17,7 +17,7 @@ Windows AI Agent 桌面操控 MCP 服务 — 55 个计算机控制工具。
 - **55 个 MCP 工具** — 截图、鼠标、键盘、剪贴板、文件系统、窗口管理、Shell 执行
 - **录制 / 回放** — 录制 MCP 工具调用序列到磁盘，完整回放（含坐标重算和过期窗口解析）
 - **学习模式** — 录制真人操作（pynput 全局钩子 + UIA 元素标注 + EasyOCR 视觉增强）
-- **SOM 视觉检测** — OmniParser YOLO + EasyOCR 中文识别，UIA 不可用时自动回退
+- **SOM 视觉检测** — OmniParser YOLO + EasyOCR 中文识别 + TinyCLIP 图标语义标签，UIA 不可用时自动回退
 - **UIA 树遍历** — 支持 Win32 / UWP / Electron / Qt 应用，非 UIA 应用自动触发 SOM
 - **Agent 光标覆盖层** — Dubins 路径飞行动画 + 弹簧过冲 + 辉光渲染
 
@@ -53,6 +53,7 @@ cua-pywin/
 │  │  ├─ replay_resolver.py        ← 回放时坐标重算 + 过期 HWND 重写
 │  │  ├─ capture_service.py        ← virtual desktop 截图（录制 + 学习共享）
 │  │  ├─ ocr_service.py            ← lazy OCRProcessor 单例
+│  │  ├─ icon_label_service.py     ← TinyCLIP 图标语义标签（batch 推理）
 │  │  └─ uia_service.py            ← UIACallGate（semaphore + daemon + timeout）
 │  ├─ recording/             ← 录制/回放（agent 视角）
 │  │  ├─ session.py          ← 有界 writer queue + 专用 writer 线程
@@ -219,7 +220,7 @@ python -m py_compile computer_server/learning/*.py
 - **54 MCP tools** — screenshots, mouse, keyboard, clipboard, file system, window management, shell
 - **Recording / Replay** — record MCP tool invocations to disk with full replay (coordinate recalculation + stale-window resolution)
 - **Learning mode** — record human actions (pynput global hooks + UIA element enrichment + EasyOCR vision)
-- **SOM vision detection** — OmniParser YOLO + EasyOCR (Chinese + English), automatic fallback when UIA is unavailable
+- **SOM vision detection** — OmniParser YOLO + EasyOCR (Chinese + English) + TinyCLIP icon labels, automatic fallback when UIA is unavailable
 - **UIA tree walking** — supports Win32 / UWP / Electron / Qt apps; auto-triggers SOM for non-UIA apps
 - **Agent cursor overlay** — Dubins-path flight animation + spring overshoot + glow rendering
 
@@ -256,6 +257,7 @@ cua-pywin/
 │  │  ├─ replay_resolver.py        ← coord rewrite + stale HWND rewrite
 │  │  ├─ capture_service.py        ← virtual-desktop mss capture
 │  │  ├─ ocr_service.py            ← lazy OCRProcessor singleton
+│  │  ├─ icon_label_service.py     ← TinyCLIP icon labels (batched inference)
 │  │  └─ uia_service.py            ← UIACallGate (semaphore + daemon + timeout)
 │  ├─ recording/             ← Agent-perspective recording / replay
 │  │  ├─ session.py          ← Bounded writer queue + dedicated writer thread
@@ -380,6 +382,15 @@ Click coordinate pipeline: `element_index → cached element center → +window 
 **UIA integration + UIAWalkGate** — COM is called directly inside its STA thread (the previous design submitted each property call to a shared executor and leaked threads when the UIA provider hung). `UIAWalkGate` (owned by `ServerContext`) is the sole timeout boundary: 30s `wait_for + shield + done_callback`. On timeout the gate stays held and the key is marked unhealthy for 30s, so fresh requests fall straight through to SOM instead of stacking more doomed walks.
 
 **Tree quality + SOM fallback** — `rich(>50) / ok(15-50)` skip SOM; `poor(<15) / empty(0)` enable SOM vision. `uia_quality` and `vision_quality` are reported separately and do not overwrite each other.
+
+**TinyCLIP icon labels** — SOM icon crops are labeled in one TinyCLIP batch.
+The model (`wkcn/TinyCLIP-ViT-8M-16-Text-3M-YFCC15M`) is bundled under
+`computer_server/models/tinyclip/` and merged into vision nodes as `name`,
+`icon_label`, and `metadata.icon_label_*`. Runtime download is disabled by
+default; use `CUA_TINYCLIP_MODEL` to override the local model path or
+`CUA_TINYCLIP_ALLOW_DOWNLOAD=1` to allow Hugging Face downloads. SOM debug
+timing is exposed under `vision_metadata.stage_timings`, including YOLO, OCR,
+TinyCLIP, merge, encode, and total latency.
 
 **Recording vs Learning** — Recording is agent-perspective (MCP tool replay); Learning is human-perspective (pynput + UIA + OCR enrichment). The two share capture / OCR / UIA-timeout / window-identity through `services/` rather than duplicating logic.
 

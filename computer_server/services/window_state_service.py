@@ -310,6 +310,7 @@ def build_cached_elements(nodes: List[Dict[str, Any]]) -> list:
             actions=node.get("actions", []),
             platform_ref=None,
             enabled=node.get("enabled", True),
+            metadata=node.get("metadata", {}),
         ))
     return cached_elements
 
@@ -327,7 +328,11 @@ def node_matches_query(node: Dict[str, Any], query: Optional[str]) -> bool:
         node.get("name"),
         node.get("title"),
         node.get("value"),
+        node.get("icon_label"),
     ]
+    metadata = node.get("metadata")
+    if isinstance(metadata, dict):
+        searchable.extend(metadata.values())
     actions = node.get("actions")
     if isinstance(actions, list):
         searchable.extend(str(action) for action in actions)
@@ -461,7 +466,8 @@ def merge_som_vision(
 
         nodes = []
         for el in vision_result.elements:
-            nodes.append({
+            metadata = getattr(el, "metadata", {}) or {}
+            node = {
                 "element_index": el.element_index,
                 "source": "vision",
                 "center_x": el.center_x,
@@ -470,12 +476,20 @@ def merge_som_vision(
                 "control_type": el.control_type,
                 "name": el.name,
                 "actions": el.actions,
-            })
+            }
+            if metadata:
+                node["metadata"] = metadata
+                if "icon_label" in metadata:
+                    node["icon_label"] = metadata["icon_label"]
+                    node["icon_label_score"] = metadata.get("icon_label_score")
+                    node["icon_label_margin"] = metadata.get("icon_label_margin")
+            nodes.append(node)
         cache.set_quality(pid, window_id, uia_quality)
         return {
             "nodes": nodes,
             "vision_node_count": len(vision_result.elements),
             "vision_quality": classify_tree_quality(len(vision_result.elements)),
+            "vision_metadata": vision_result.metadata,
         }
     except Exception as e:
         logger.warning("SOM vision detection skipped: %s", e, exc_info=True)
@@ -616,6 +630,9 @@ async def get_window_state_snapshot(
             vision_node_count = vision_data["vision_node_count"]
             total_elements += vision_node_count
             vision_quality = vision_data["vision_quality"]
+            vision_metadata = vision_data.get("vision_metadata", {})
+        else:
+            vision_metadata = {}
 
         returned_nodes = filter_nodes_by_query(nodes, query, include_all_nodes)
 
@@ -635,6 +652,7 @@ async def get_window_state_snapshot(
             "tree_quality": tree_quality,
             "uia_quality": uia_quality,
             "vision_quality": vision_quality,
+            "vision_metadata": vision_metadata,
             "merged_node_count": len(nodes),
             "unfiltered_node_count": len(nodes),
             "returned_node_count": len(returned_nodes),
