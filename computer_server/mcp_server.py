@@ -830,6 +830,386 @@ def create_mcp_server() -> FastMCP:
             return {"x": scaled_x, "y": scaled_y}
         return result
 
+    async def _click_element_raise(
+        pid: int,
+        window_id: int,
+        element_index: int,
+        recorded_element_ref: Optional[Dict[str, Any]],
+        capture_after: bool,
+    ) -> Dict[str, Any]:
+        """Handle element_index action='raise'."""
+        try:
+            automation_handler = _get_handlers().automation
+            await automation_handler.activate_window(str(window_id))
+            result: Dict[str, Any] = {
+                "success": True,
+                "action": "raise",
+                "element_index": element_index,
+                "window_id": window_id,
+            }
+            wr = _build_window_ref(pid, window_id, 0, 0)
+            await _recording_hook(_recorded_turn(
+                "computer_click",
+                {"element_index": element_index, "pid": pid, "window_id": window_id, "action": "raise"},
+                result,
+                window_ref=wr,
+                element_ref=recorded_element_ref,
+            ))
+            if capture_after:
+                result["capture_after"] = await _capture_and_detect(pid, window_id)
+            return result
+        except Exception as exc:
+            return {
+                "success": False,
+                "error": f"Raise action failed: {exc}",
+                "suggestion": "Try clicking the element instead with action='press' (the default)",
+            }
+
+    async def _click_element_uia_invoke(
+        pid: int,
+        window_id: int,
+        element_index: int,
+        el: Any,
+        recorded_element_ref: Optional[Dict[str, Any]],
+        capture_after: bool,
+    ) -> Optional[Dict[str, Any]]:
+        """Try UIA Invoke for an enabled cached element; return None to fall back."""
+        if sys.platform != "win32" or "invoke" not in (el.actions or []):
+            return None
+
+        import asyncio
+
+        try:
+            import win32gui as _wg
+            from computer_server.handlers.element_cache import get_element_cache
+
+            # Snapshot visible windows before click so cross-app side-effects can be reported.
+            snap_fg_hwnd, snap_hwnds = _window_snapshot()
+
+            try:
+                screen_pt = _resolve_element_center(pid, window_id, element_index)
+            except ValueError:
+                origin_x, origin_y = get_element_cache().get_window_origin(pid, window_id)
+                screen_pt = (origin_x + el.center_x, origin_y + el.center_y)
+            await _animate_cursor_to(int(screen_pt[0]), int(screen_pt[1]))
+
+            _invoke_via_uia_point(int(screen_pt[0]), int(screen_pt[1]))
+            result: Dict[str, Any] = {
+                "success": True,
+                "action": "invoke",
+                "element_index": element_index,
+                "method": "uia_invoke",
+            }
+
+            changes = _window_detect_changes(snap_hwnds, snap_fg_hwnd)
+            if changes:
+                result["window_changes"] = changes
+                if "focus_stolen" in changes:
+                    stolen = changes["focus_stolen"]
+                    logger.warning(
+                        "click side-effect: focus stolen by pid=%d (%s) — restoring to hwnd=%d",
+                        stolen.get("to_pid", 0),
+                        stolen.get("to_title", ""),
+                        snap_fg_hwnd,
+                    )
+                    try:
+                        _wg.SetForegroundWindow(snap_fg_hwnd)
+                        result["focus_restored"] = True
+                    except Exception:
+                        logger.debug("SetForegroundWindow restore failed", exc_info=True)
+                if "new_windows" in changes:
+                    logger.info(
+                        "click side-effect: %d new window(s) appeared — %s",
+                        len(changes["new_windows"]),
+                        [
+                            (w["title"], w["pid"], "cross_app" if w["cross_app"] else "same_app")
+                            for w in changes["new_windows"]
+                        ],
+                    )
+
+            wr = _build_window_ref(pid, window_id, screen_pt[0], screen_pt[1])
+            await _recording_hook(_recorded_turn(
+                "computer_click",
+                {"element_index": element_index, "pid": pid, "window_id": window_id},
+                result,
+                click_point=screen_pt,
+                window_ref=wr,
+                element_ref=recorded_element_ref,
+            ))
+
+            edit_types = {"Edit", "ComboBox", "Document", "RichEdit"}
+            if el.control_type in edit_types:
+                await asyncio.sleep(0.8)
+
+            if capture_after:
+                result["capture_after"] = await _capture_and_detect(pid, window_id)
+            return result
+        except Exception as exc:
+            logger.debug("UIA Invoke failed (falling back to pixel click): %s", exc)
+            return None
+
+    async def _resolve_click_element(
+        pid: Optional[int],
+        window_id: Optional[int],
+        element_index: Optional[int],
+        action: str,
+        from_zoom: bool,
+        capture_after: bool,
+    ) -> Tuple[Optional[Dict[str, Any]], Optional[int], Optional[int], Optional[Dict[str, Any]]]:
+        """Resolve element_index mode.
+
+        Returns (final_result, resolved_x, resolved_y, element_ref). If
+        final_result is not None, the caller should return it immediately.
+        Otherwise resolved_x/resolved_y are screen coordinates for pixel click.
+        """
+        if element_index is None:
+            return None, None, None, None
+        if from_zoom:
+            return {
+                "success": False,
+                "error": "element_index and from_zoom are mutually exclusive — element_index already returns screen coords",
+                "suggestion": "Remove from_zoom=True or use x/y coordinates with from_zoom instead",
+            }, None, None, None
+        if pid is None or window_id is None:
+            return {
+                "success": False,
+                "error": "pid and window_id are required with element_index",
+                "suggestion": "Provide pid and window_id from a previous get_window_state call",
+            }, None, None, None
+
+        from computer_server.handlers.element_cache import get_element_cache
+
+        el = get_element_cache().get_element(pid, window_id, element_index)
+        if el is None:
+            return {
+                "success": False,
+                "error": f"No cached element at index {element_index} for pid={pid}, window_id={window_id}",
+                "suggestion": (
+                    f"The element cache may have expired. Call get_window_state(pid={pid}, "
+                    f"window_id={window_id}) to refresh it, then use the new element_index"
+                ),
+            }, None, None, None
+
+        recorded_element_ref = _build_element_ref(pid, window_id, element_index)
+        if action == "raise":
+            return (
+                await _click_element_raise(pid, window_id, element_index, recorded_element_ref, capture_after),
+                None,
+                None,
+                recorded_element_ref,
+            )
+
+        if el.enabled is False:
+            return {
+                "success": False,
+                "error": f"Element [{element_index}] is disabled (enabled=false) — the window may not be frontmost",
+                "suggestion": (
+                    f"Call computer_click(pid={pid}, window_id={window_id}, "
+                    f"element_index={element_index}, action='raise') first to activate the window, then re-snapshot"
+                ),
+            }, None, None, recorded_element_ref
+
+        invoke_result = await _click_element_uia_invoke(
+            pid,
+            window_id,
+            element_index,
+            el,
+            recorded_element_ref,
+            capture_after,
+        )
+        if invoke_result is not None:
+            return invoke_result, None, None, recorded_element_ref
+
+        try:
+            resolved_x, resolved_y = _resolve_element_center(pid, window_id, element_index)
+        except ValueError as exc:
+            return {
+                "success": False,
+                "error": str(exc),
+                "suggestion": f"Call get_window_state(pid={pid}, window_id={window_id}) to refresh the element cache",
+            }, None, None, recorded_element_ref
+        return None, resolved_x, resolved_y, recorded_element_ref
+
+    def _resolve_click_coordinates(
+        x: Optional[int],
+        y: Optional[int],
+        pid: Optional[int],
+        window_id: Optional[int],
+        element_index: Optional[int],
+        coordinate_space: str,
+        zoom_id: Optional[str],
+    ) -> Tuple[Optional[Dict[str, Any]], Optional[int], Optional[int]]:
+        """Convert click input coordinates into absolute screen coordinates."""
+        if x is None or y is None:
+            return {
+                "success": False,
+                "error": "x and y are required (or element_index + pid + window_id)",
+                "suggestion": (
+                    "Provide (x, y) pixel coordinates or (element_index + pid + window_id) "
+                    "from a previous get_window_state call"
+                ),
+            }, None, None
+
+        if element_index is None and coordinate_space == "window_resized":
+            x, y = _window_resized_to_screen(pid, window_id, x, y)
+        elif element_index is None and coordinate_space == "window_full_res":
+            try:
+                x, y = _window_full_res_to_screen(pid, window_id, x, y)
+            except ValueError as exc:
+                return {"success": False, "error": str(exc)}, None, None
+
+        if coordinate_space == "zoom" and window_id is None:
+            return {
+                "success": False,
+                "error": "window_id is required when from_zoom=True",
+                "suggestion": "Provide the window_id used in the prior computer_zoom call",
+            }, None, None
+        try:
+            x, y = _resolve_from_zoom(
+                x,
+                y,
+                from_zoom=coordinate_space == "zoom",
+                pid=pid,
+                window_id=window_id,
+                zoom_id=zoom_id,
+            )
+        except ValueError as exc:
+            return {"success": False, "error": str(exc)}, None, None
+        return None, x, y
+
+    async def _write_click_debug_image(
+        automation_handler: Any,
+        actual_x: int,
+        actual_y: int,
+        debug_image_out: Optional[str],
+    ) -> None:
+        if not debug_image_out:
+            return
+        try:
+            screenshot_result = await automation_handler.screenshot()
+            if screenshot_result.get("success") and "image" in screenshot_result:
+                from PIL import ImageDraw
+
+                img = screenshot_result["image"]
+                draw = ImageDraw.Draw(img)
+                r = 12
+                draw.ellipse(
+                    [actual_x - r, actual_y - r, actual_x + r, actual_y + r],
+                    outline="red",
+                    width=3,
+                )
+                draw.line(
+                    [actual_x - r - 4, actual_y, actual_x + r + 4, actual_y],
+                    fill="red",
+                    width=2,
+                )
+                draw.line(
+                    [actual_x, actual_y - r - 4, actual_x, actual_y + r + 4],
+                    fill="red",
+                    width=2,
+                )
+                img.save(debug_image_out)
+            else:
+                logger.warning("debug_image_out: screenshot failed for %s", debug_image_out)
+        except Exception as exc:
+            logger.warning("debug_image_out: %s", exc)
+
+    async def _force_frontmost_click(
+        pid: Optional[int],
+        window_id: Optional[int],
+        x: int,
+        y: int,
+        actual_x: int,
+        actual_y: int,
+        button: str,
+        count: int,
+        modifier: Optional[List[str]],
+        capture_after: bool,
+        recorded_element_ref: Optional[Dict[str, Any]],
+    ) -> Optional[Dict[str, Any]]:
+        """Perform force-frontmost click when requested by the caller."""
+        if sys.platform != "win32" or pid is None or window_id is None:
+            return None
+        if modifier:
+            return {
+                "success": False,
+                "error": (
+                    "force_frontmost does not support modifier keys — use two separate calls: "
+                    "computer_press_key to hold the modifier, then force_frontmost click without modifier"
+                ),
+                "suggestion": "Split into separate key_down + click + key_up calls",
+            }
+        try:
+            import asyncio
+            import win32gui as _wg
+
+            await _animate_cursor_to(actual_x, actual_y)
+            fg_ok = _wg.SetForegroundWindow(int(window_id))
+            if not fg_ok:
+                logger.debug(
+                    "SetForegroundWindow returned 0 for window_id=%d — click may land on wrong window",
+                    window_id,
+                )
+            await asyncio.sleep(0.05)
+            _mouse_event_click(actual_x, actual_y, button, count)
+            result: Dict[str, Any] = {
+                "success": True,
+                "method": "mouse_event",
+                "x": actual_x,
+                "y": actual_y,
+                "button": button,
+                "count": count,
+                "force_frontmost": True,
+            }
+            wr = _build_window_ref(pid, window_id, actual_x, actual_y)
+            await _recording_hook(_recorded_turn(
+                "computer_click",
+                {"x": x, "y": y, "button": button, "force_frontmost": True, "count": count},
+                result,
+                click_point=(actual_x, actual_y),
+                window_ref=wr,
+                element_ref=recorded_element_ref,
+            ))
+            if capture_after:
+                result["capture_after"] = await _capture_and_detect(pid, window_id)
+            return result
+        except Exception as exc:
+            return {
+                "success": False,
+                "error": f"force_frontmost click failed: {exc}",
+                "suggestion": "Try without force_frontmost=True, or use computer_hotkey to bring the window to front first",
+            }
+
+    async def _perform_pixel_click(
+        automation_handler: Any,
+        actual_x: int,
+        actual_y: int,
+        button: str,
+        count: int,
+        modifier: Optional[List[str]],
+    ) -> Dict[str, Any]:
+        import asyncio
+
+        if modifier:
+            for mod in modifier:
+                await automation_handler.key_down(mod)
+        try:
+            click_methods = {
+                "left": automation_handler.left_click,
+                "right": automation_handler.right_click,
+                "middle": automation_handler.middle_click,
+            }
+            click_method = click_methods.get(button, automation_handler.left_click)
+            result = await click_method(actual_x, actual_y)
+            for _ in range(count - 1):
+                await asyncio.sleep(0.05)
+                await click_method(actual_x, actual_y)
+            return result
+        finally:
+            if modifier:
+                for mod in reversed(modifier):
+                    await automation_handler.key_up(mod)
+
     @mcp.tool(annotations={"readOnlyHint": False, "destructiveHint": True, "idempotentHint": False, "openWorldHint": True})
     async def computer_click(
         x: Optional[int] = None,
@@ -883,10 +1263,6 @@ def create_mcp_server() -> FastMCP:
             action: 'press' (click) or 'raise' (bring window to top). For element_index only.
             capture_after: When True, take a fresh screenshot + SOM after the action.
         """
-        import sys
-        import asyncio
-
-        from computer_server.handlers.element_cache import get_element_cache
         from computer_server.services.validation_service import (
             error_result,
             validate_click_action,
@@ -943,164 +1319,33 @@ def create_mcp_server() -> FastMCP:
         if coordinate_space == "zoom":
             from_zoom = True
 
-        recorded_element_ref = None
+        element_result, element_x, element_y, recorded_element_ref = await _resolve_click_element(
+            pid,
+            window_id,
+            element_index,
+            action,
+            from_zoom,
+            capture_after,
+        )
+        if element_result is not None:
+            return element_result
+        if element_x is not None and element_y is not None:
+            x, y = element_x, element_y
 
-        # --- Resolve element_index ---
-        if element_index is not None:
-            if from_zoom:
-                return {"success": False, "error": "element_index and from_zoom are mutually exclusive — element_index already returns screen coords", "suggestion": "Remove from_zoom=True or use x/y coordinates with from_zoom instead"}
-            if pid is None or window_id is None:
-                return {"success": False, "error": "pid and window_id are required with element_index", "suggestion": "Provide pid and window_id from a previous get_window_state call"}
-
-            # Resolve element from cache
-            el = get_element_cache().get_element(pid, window_id, element_index)
-            if el is None:
-                return {"success": False, "error": f"No cached element at index {element_index} for pid={pid}, window_id={window_id}", "suggestion": f"The element cache may have expired. Call get_window_state(pid={pid}, window_id={window_id}) to refresh it, then use the new element_index"}
-            recorded_element_ref = _build_element_ref(pid, window_id, element_index)
-
-            # Dispatch action
-            if action == "raise":
-                try:
-                    automation_handler = _get_handlers().automation
-                    await automation_handler.activate_window(str(window_id))
-                    result: Dict[str, Any] = {"success": True, "action": "raise",
-                                               "element_index": element_index,
-                                               "window_id": window_id}
-                    wr = _build_window_ref(pid, window_id, 0, 0)
-                    await _recording_hook(_recorded_turn(
-                        "computer_click",
-                        {"element_index": element_index, "pid": pid, "window_id": window_id, "action": "raise"},
-                        result,
-                        window_ref=wr,
-                        element_ref=recorded_element_ref,
-                    ))
-                    if capture_after:
-                        result["capture_after"] = await _capture_and_detect(pid, window_id)
-                    return result
-                except Exception as e:
-                    return {"success": False, "error": f"Raise action failed: {e}", "suggestion": "Try clicking the element instead with action='press' (the default)"}
-
-            if el.enabled is False:
-                return {"success": False,
-                        "error": f"Element [{element_index}] is disabled (enabled=false) — the window may not be frontmost",
-                        "suggestion": f"Call computer_click(pid={pid}, window_id={window_id}, element_index={element_index}, action='raise') first to activate the window, then re-snapshot"}
-            else:
-                # Enabled element: attempt UIA Invoke on Windows by resolving
-                # a fresh element at the cached center point.  The cache only
-                # stores geometry/metadata; COM UIA objects are apartment-bound
-                # and must not be reused across MCP calls.
-                if sys.platform == "win32" and "invoke" in (el.actions or []):
-                    try:
-                        import win32gui as _wg
-
-                        # Snapshot visible windows before click
-                        # (mirrors Swift WindowChangeDetector.snapshot()).
-                        # If the action triggers a cross-app side-effect
-                        # (URL handoff, new dialog, focus theft), we
-                        # detect it and report it to the caller.
-                        snap_fg_hwnd, snap_hwnds = _window_snapshot()
-
-                        # Agent cursor overlay: fly to element, then click
-                        try:
-                            screen_pt = _resolve_element_center(pid, window_id, element_index)
-                        except ValueError:
-                            origin_x, origin_y = get_element_cache().get_window_origin(pid, window_id)
-                            screen_pt = (origin_x + el.center_x, origin_y + el.center_y)
-                        await _animate_cursor_to(int(screen_pt[0]), int(screen_pt[1]))
-
-                        _invoke_via_uia_point(int(screen_pt[0]), int(screen_pt[1]))
-                        result = {"success": True, "action": "invoke",
-                                  "element_index": element_index, "method": "uia_invoke"}
-
-                        # Detect + report window changes caused by the click.
-                        # Restore focus if stolen by a different app.
-                        changes = _window_detect_changes(snap_hwnds, snap_fg_hwnd)
-                        if changes:
-                            result["window_changes"] = changes
-                            if "focus_stolen" in changes:
-                                stolen = changes["focus_stolen"]
-                                logger.warning(
-                                    "click side-effect: focus stolen by pid=%d (%s) — restoring to hwnd=%d",
-                                    stolen.get("to_pid", 0),
-                                    stolen.get("to_title", ""),
-                                    snap_fg_hwnd,
-                                )
-                                try:
-                                    _wg.SetForegroundWindow(snap_fg_hwnd)
-                                    result["focus_restored"] = True
-                                except Exception:
-                                    logger.debug("SetForegroundWindow restore failed", exc_info=True)
-                            if "new_windows" in changes:
-                                logger.info(
-                                    "click side-effect: %d new window(s) appeared — %s",
-                                    len(changes["new_windows"]),
-                                    [
-                                        (w["title"], w["pid"], "cross_app" if w["cross_app"] else "same_app")
-                                        for w in changes["new_windows"]
-                                    ],
-                                )
-
-                        wr = _build_window_ref(pid, window_id, screen_pt[0], screen_pt[1])
-                        await _recording_hook(_recorded_turn(
-                            "computer_click",
-                            {"element_index": element_index, "pid": pid, "window_id": window_id},
-                            result,
-                            click_point=screen_pt,
-                            window_ref=wr,
-                            element_ref=recorded_element_ref,
-                        ))
-
-                        # For editable controls (Edit, ComboBox, Document),
-                        # UIA Invoke establishes focus asynchronously —
-                        # a follow-up type_set_value/computer_type races with
-                        # the app's focus setup and silently drops input.
-                        # 800ms matches the Swift AXPress delay validated
-                        # against WebKit/Chromium async DOM focus.
-                        edit_types = {"Edit", "ComboBox", "Document", "RichEdit"}
-                        if el.control_type in edit_types:
-                            await asyncio.sleep(0.8)
-
-                        # capture_after
-                        if capture_after:
-                            cap = await _capture_and_detect(pid, window_id)
-                            result["capture_after"] = cap
-                        return result
-                    except Exception as e:
-                        logger.debug("UIA Invoke failed (falling back to pixel click): %s", e)
-
-            # Resolve center coords (screen space) for pixel click
-            try:
-                resolved_x, resolved_y = _resolve_element_center(pid, window_id, element_index)
-            except ValueError as e:
-                return {"success": False, "error": str(e), "suggestion": f"Call get_window_state(pid={pid}, window_id={window_id}) to refresh the element cache"}
-            x, y = resolved_x, resolved_y
-
+        coord_error, resolved_x, resolved_y = _resolve_click_coordinates(
+            x,
+            y,
+            pid,
+            window_id,
+            element_index,
+            coordinate_space,
+            zoom_id,
+        )
+        if coord_error is not None:
+            return coord_error
+        x, y = resolved_x, resolved_y
         if x is None or y is None:
-            return {"success": False, "error": "x and y are required (or element_index + pid + window_id)", "suggestion": "Provide (x, y) pixel coordinates or (element_index + pid + window_id) from a previous get_window_state call"}
-
-        # Convert explicit/legacy non-screen spaces to absolute screen coords.
-        if element_index is None and coordinate_space == "window_resized":
-            x, y = _window_resized_to_screen(pid, window_id, x, y)
-        elif element_index is None and coordinate_space == "window_full_res":
-            try:
-                x, y = _window_full_res_to_screen(pid, window_id, x, y)
-            except ValueError as e:
-                return {"success": False, "error": str(e)}
-
-        # Translate from_zoom coords
-        if coordinate_space == "zoom" and window_id is None:
-            return {"success": False, "error": "window_id is required when from_zoom=True", "suggestion": "Provide the window_id used in the prior computer_zoom call"}
-        try:
-            x, y = _resolve_from_zoom(
-                x,
-                y,
-                from_zoom=coordinate_space == "zoom",
-                pid=pid,
-                window_id=window_id,
-                zoom_id=zoom_id,
-            )
-        except ValueError as e:
-            return {"success": False, "error": str(e)}
+            return {"success": False, "error": "internal error: click coordinates were not resolved"}
 
         actual_x, actual_y = _scale_to_actual(x, y)
 
@@ -1109,58 +1354,24 @@ def create_mcp_server() -> FastMCP:
 
         automation_handler = _get_handlers().automation
 
-        # Write debug crosshair image if requested
-        if debug_image_out:
-            try:
-                screenshot_result = await automation_handler.screenshot()
-                if screenshot_result.get("success") and "image" in screenshot_result:
-                    from PIL import Image, ImageDraw
-                    img = screenshot_result["image"]
-                    draw = ImageDraw.Draw(img)
-                    r = 12
-                    draw.ellipse([actual_x - r, actual_y - r, actual_x + r, actual_y + r],
-                                 outline="red", width=3)
-                    draw.line([actual_x - r - 4, actual_y, actual_x + r + 4, actual_y],
-                              fill="red", width=2)
-                    draw.line([actual_x, actual_y - r - 4, actual_x, actual_y + r + 4],
-                              fill="red", width=2)
-                    img.save(debug_image_out)
-                else:
-                    logger.warning("debug_image_out: screenshot failed for %s", debug_image_out)
-            except Exception as _dbg_exc:
-                logger.warning("debug_image_out: %s", _dbg_exc)
+        await _write_click_debug_image(automation_handler, actual_x, actual_y, debug_image_out)
 
-        # force_frontmost: activate the window and send a HID-level click.
-        # Required for WebView2 / UWP targets that filter per-pid events.
-        if force_frontmost and sys.platform == "win32" and pid is not None and window_id is not None:
-            if modifier:
-                return {"success": False, "error": "force_frontmost does not support modifier keys — use two separate calls: computer_press_key to hold the modifier, then force_frontmost click without modifier", "suggestion": "Split into separate key_down + click + key_up calls"}
-            try:
-                await _animate_cursor_to(actual_x, actual_y)
-                import win32gui as _wg
-                fg_ok = _wg.SetForegroundWindow(int(window_id))
-                if not fg_ok:
-                    logger.debug("SetForegroundWindow returned 0 for window_id=%d — click may land on wrong window", window_id)
-                await asyncio.sleep(0.05)  # 50ms settle
-                _mouse_event_click(actual_x, actual_y, button, count)
-                result = {"success": True, "method": "mouse_event",
-                           "x": actual_x, "y": actual_y, "button": button,
-                           "count": count, "force_frontmost": True}
-                wr = _build_window_ref(pid, window_id, actual_x, actual_y)
-                await _recording_hook(_recorded_turn(
-                    "computer_click",
-                    {"x": x, "y": y, "button": button, "force_frontmost": True, "count": count},
-                    result,
-                    click_point=(actual_x, actual_y),
-                    window_ref=wr,
-                    element_ref=recorded_element_ref,
-                ))
-                if capture_after and pid is not None and window_id is not None:
-                    cap = await _capture_and_detect(pid, window_id)
-                    result["capture_after"] = cap
+        if force_frontmost:
+            result = await _force_frontmost_click(
+                pid,
+                window_id,
+                x,
+                y,
+                actual_x,
+                actual_y,
+                button,
+                count,
+                modifier,
+                capture_after,
+                recorded_element_ref,
+            )
+            if result is not None:
                 return result
-            except Exception as _e:
-                return {"success": False, "error": f"force_frontmost click failed: {_e}", "suggestion": "Try without force_frontmost=True, or use computer_hotkey to bring the window to front first"}
 
         # Animate cursor overlay to click point
         try:
@@ -1168,35 +1379,14 @@ def create_mcp_server() -> FastMCP:
         except Exception:
             pass
 
-        # Hold modifier keys during click if requested
-        if modifier:
-            for mod in modifier:
-                await automation_handler.key_down(mod)
-
-        if button == "left":
-            result = await automation_handler.left_click(actual_x, actual_y)
-            for _ in range(count - 1):
-                await asyncio.sleep(0.05)
-                await automation_handler.left_click(actual_x, actual_y)
-        elif button == "right":
-            result = await automation_handler.right_click(actual_x, actual_y)
-            for _ in range(count - 1):
-                await asyncio.sleep(0.05)
-                await automation_handler.right_click(actual_x, actual_y)
-        elif button == "middle":
-            result = await automation_handler.middle_click(actual_x, actual_y)
-            for _ in range(count - 1):
-                await asyncio.sleep(0.05)
-                await automation_handler.middle_click(actual_x, actual_y)
-        else:
-            result = await automation_handler.left_click(actual_x, actual_y)
-            for _ in range(count - 1):
-                await asyncio.sleep(0.05)
-                await automation_handler.left_click(actual_x, actual_y)
-
-        if modifier:
-            for mod in reversed(modifier):
-                await automation_handler.key_up(mod)
+        result = await _perform_pixel_click(
+            automation_handler,
+            actual_x,
+            actual_y,
+            button,
+            count,
+            modifier,
+        )
 
         wr = _build_window_ref(pid, window_id, actual_x, actual_y)
         await _recording_hook(_recorded_turn(

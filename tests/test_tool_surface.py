@@ -49,3 +49,30 @@ async def test_open_url_rejects_local_paths():
         "success": False,
         "error": "url must be an absolute http or https URL",
     }
+
+
+@pytest.mark.asyncio
+async def test_click_requires_coordinates_or_element():
+    result = await create_mcp_server().call_tool("computer_click", {})
+
+    assert result.structured_content == {
+        "success": False,
+        "error": "x and y are required (or element_index + pid + window_id)",
+        "suggestion": (
+            "Provide (x, y) pixel coordinates or (element_index + pid + window_id) "
+            "from a previous get_window_state call"
+        ),
+    }
+
+
+@pytest.mark.asyncio
+async def test_click_raise_requires_element_index():
+    result = await create_mcp_server().call_tool(
+        "computer_click",
+        {"action": "raise"},
+    )
+
+    assert result.structured_content == {
+        "success": False,
+        "error": "action='raise' is only supported with element_index",
+    }
