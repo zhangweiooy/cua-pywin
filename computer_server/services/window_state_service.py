@@ -189,6 +189,43 @@ class UIAWalkGate:
             self._unhealthy_until[gate_key] = time.monotonic() + self._unhealthy_cooldown_s
 
 
+def _quality_rank(quality: str) -> int:
+    return {"empty": 0, "poor": 1, "ok": 2, "rich": 3}.get(quality, 0)
+
+
+def _best_tree_quality(*qualities: str) -> str:
+    best = "empty"
+    for quality in qualities:
+        if _quality_rank(quality) > _quality_rank(best):
+            best = quality
+    return best
+
+
+def should_collect_msaa(
+    uia_data: Dict[str, Any],
+    window_state: Optional[Dict[str, Any]] = None,
+) -> bool:
+    """Return whether MSAA fallback should run for a window-state request.
+
+    MSAA is cheap enough to collect opportunistically beside UIA, and it can
+    preserve legacy roles that UIA proxies collapse. The returned tree quality
+    is still only promoted when MSAA contributes usable indexed nodes.
+    """
+    return os.getenv("CUA_DISABLE_MSAA_FALLBACK") != "1"
+
+
+def next_element_index(nodes: List[Dict[str, Any]]) -> int:
+    """Return the next available element index for merged node sources."""
+    indices = [
+        node.get("element_index")
+        for node in nodes
+        if isinstance(node.get("element_index"), int)
+    ]
+    if not indices:
+        return 0
+    return max(indices) + 1
+
+
 async def collect_uia_nodes(
     pid: int,
     window_id: int,
@@ -291,6 +328,100 @@ async def collect_uia_nodes(
             gate.release(gate_key)
 
 
+async def collect_msaa_nodes(
+    window_id: int,
+    query: Optional[str],
+    win_origin_x: int,
+    win_origin_y: int,
+    index_start: int = 0,
+) -> Dict[str, Any]:
+    """Walk the MSAA tree and return window-relative node metadata."""
+    try:
+        from computer_server.handlers.windows_msaa import walk_msaa_tree
+
+        loop = asyncio.get_running_loop()
+        msaa_future = loop.run_in_executor(
+            None,
+            lambda: walk_msaa_tree(
+                int(window_id),
+                query,
+                index_start=int(index_start),
+            ),
+        )
+        msaa_result = await asyncio.wait_for(asyncio.shield(msaa_future), timeout=10.0)
+
+        nodes: List[Dict[str, Any]] = []
+        for n in msaa_result.indexed_nodes:
+            cx = max(0, n.center_x - win_origin_x)
+            cy = max(0, n.center_y - win_origin_y)
+            bbox = n.bbox
+            w_bbox = (
+                max(0, bbox[0] - win_origin_x),
+                max(0, bbox[1] - win_origin_y),
+                max(0, bbox[2] - win_origin_x),
+                max(0, bbox[3] - win_origin_y),
+            )
+            nodes.append({
+                "element_index": n.element_index,
+                "source": "msaa",
+                "control_type": n.role,
+                "role": n.role,
+                "name": n.name,
+                "value": n.value,
+                "description": n.description,
+                "center_x": cx,
+                "center_y": cy,
+                "bbox": list(w_bbox),
+                "actions": n.actions,
+                "enabled": True,
+                "depth": n.depth,
+                "metadata": {
+                    "msaa_role": n.role,
+                    "msaa_role_id": n.role_id,
+                    "msaa_role_hex": f"0x{n.role_id:X}" if n.role_id is not None else None,
+                    "msaa_default_action": n.default_action,
+                    "msaa_state": n.state,
+                    "msaa_child_id": n.child_id,
+                    "msaa_has_location": n.bbox != (0, 0, 0, 0),
+                },
+            })
+
+        return {
+            "nodes": nodes,
+            "total_elements": msaa_result.total_elements,
+            "msaa_total_elements": msaa_result.total_elements,
+            "msaa_tree_node_count": len(msaa_result.nodes),
+            "msaa_node_count": len(msaa_result.indexed_nodes),
+            "tree_markdown": msaa_result.tree_markdown,
+            "msaa_quality": msaa_result.tree_quality,
+        }
+    except asyncio.TimeoutError:
+        logger.warning(
+            "Windows MSAA tree walk timed out after 10s (window_id=%s)",
+            window_id,
+        )
+        return {
+            "nodes": [],
+            "total_elements": 0,
+            "msaa_total_elements": 0,
+            "msaa_tree_node_count": 0,
+            "msaa_node_count": 0,
+            "tree_markdown": "",
+            "msaa_quality": "empty",
+        }
+    except Exception as e:
+        logger.warning("Windows MSAA tree walk failed: %s", e)
+        return {
+            "nodes": [],
+            "total_elements": 0,
+            "msaa_total_elements": 0,
+            "msaa_tree_node_count": 0,
+            "msaa_node_count": 0,
+            "tree_markdown": "",
+            "msaa_quality": "empty",
+        }
+
+
 def build_cached_elements(nodes: List[Dict[str, Any]]) -> list:
     """Build ElementCache entries from window-state node dictionaries."""
     from computer_server.handlers.element_cache import CachedElement
@@ -300,7 +431,7 @@ def build_cached_elements(nodes: List[Dict[str, Any]]) -> list:
         bbox = node.get("bbox") or (0, 0, 0, 0)
         cached_elements.append(CachedElement(
             element_index=node.get("element_index", i),
-            source="uia",
+            source=node.get("source", "uia"),
             center_x=node.get("center_x", (bbox[0] + bbox[2]) // 2),
             center_y=node.get("center_y", (bbox[1] + bbox[3]) // 2),
             bbox=bbox if len(bbox) == 4 else (0, 0, 0, 0),
@@ -493,7 +624,106 @@ def merge_som_vision(
         }
     except Exception as e:
         logger.warning("SOM vision detection skipped: %s", e, exc_info=True)
-        return {"nodes": [], "vision_node_count": 0, "vision_quality": "empty"}
+    return {"nodes": [], "vision_node_count": 0, "vision_quality": "empty"}
+
+
+def inspect_window_capture_state(
+    pid: int,
+    window_id: int,
+    bounds: Optional[Dict[str, Any]],
+) -> Dict[str, Any]:
+    """Return best-effort window state metadata for capture diagnostics."""
+    state: Dict[str, Any] = {
+        "pid": pid,
+        "window_id": window_id,
+        "is_minimized": None,
+        "is_visible": None,
+        "bounds": bounds,
+    }
+    try:
+        import sys
+
+        if sys.platform != "win32":
+            return state
+        import win32gui
+
+        hwnd = int(window_id)
+        state["is_minimized"] = bool(win32gui.IsIconic(hwnd))
+        state["is_visible"] = bool(win32gui.IsWindowVisible(hwnd))
+        try:
+            state["class_name"] = win32gui.GetClassName(hwnd)
+        except Exception:
+            state["class_name"] = None
+        if bounds is None and win32gui.IsWindow(hwnd):
+            rect = win32gui.GetWindowRect(hwnd)
+            state["raw_bounds"] = {
+                "x": rect[0],
+                "y": rect[1],
+                "width": rect[2] - rect[0],
+                "height": rect[3] - rect[1],
+            }
+    except Exception:
+        logger.debug("Window capture state inspection failed", exc_info=True)
+    return state
+
+
+def build_window_capture_metadata(
+    *,
+    pid: int,
+    window_id: int,
+    screenshot_result: Dict[str, Any],
+    bounds: Optional[Dict[str, Any]],
+    geometry: WindowSnapshotGeometry,
+    window_state: Dict[str, Any],
+) -> Dict[str, Any]:
+    """Build explicit provenance and risk metadata for a window snapshot."""
+    warnings: List[str] = []
+    target_cropped = bounds is not None and bounds.get("width", 0) > 0 and bounds.get("height", 0) > 0
+    if not target_cropped:
+        warnings.append("target_window_bounds_unavailable")
+    if window_state.get("is_minimized") is True:
+        warnings.append("target_window_minimized")
+
+    capture_metadata = {
+        "capture_mode": "screen_crop" if target_cropped else "screen_full_fallback",
+        "capture_source": (screenshot_result.get("capture_metadata") or {}).get(
+            "capture_source",
+            "pil_imagegrab",
+        ),
+        "target": "window",
+        "pid": pid,
+        "window_id": window_id,
+        "target_window_cropped": target_cropped,
+        "occlusion_risk": bool(target_cropped),
+        "occlusion_detection": "not_available",
+        "warnings": warnings,
+        "window_state": window_state,
+        "screenshot_origin": {
+            "x": geometry.screenshot_origin_x,
+            "y": geometry.screenshot_origin_y,
+        },
+        "full_screen": {
+            "width": geometry.full_width,
+            "height": geometry.full_height,
+        },
+        "crop": {
+            "screen_x": geometry.crop_origin_screen_x,
+            "screen_y": geometry.crop_origin_screen_y,
+            "window_x": geometry.crop_origin_window_x,
+            "window_y": geometry.crop_origin_window_y,
+            "width": geometry.original_width,
+            "height": geometry.original_height,
+        },
+        "output": {
+            "width": geometry.screen_width,
+            "height": geometry.screen_height,
+            "compression_ratio": geometry.compression_ratio,
+            "resized": geometry.compression_ratio != 1.0,
+        },
+    }
+    if "virtual_screen" in screenshot_result:
+        capture_metadata["virtual_screen"] = screenshot_result["virtual_screen"]
+    return capture_metadata
 
 
 def save_window_state_screenshot(
@@ -577,6 +807,15 @@ async def get_window_state_snapshot(
             (screenshot_origin_x, screenshot_origin_y),
             max_image_dimension,
         )
+        window_capture_state = inspect_window_capture_state(pid, window_id, bounds)
+        capture_metadata = build_window_capture_metadata(
+            pid=pid,
+            window_id=window_id,
+            screenshot_result=result,
+            bounds=bounds,
+            geometry=geometry,
+            window_state=window_capture_state,
+        )
 
         zoom_metadata = zoom_metadata if zoom_metadata is not None else {}
         zoom_metadata[(pid, window_id)] = geometry.to_zoom_metadata()
@@ -601,10 +840,38 @@ async def get_window_state_snapshot(
         tree_markdown: str = uia_data["tree_markdown"]
         uia_quality: str = uia_data["uia_quality"]
         vision_quality: str = "empty"
+        msaa_quality: str = "empty"
         tree_quality: str = uia_data["tree_quality"]
         total_elements: int = uia_data["total_elements"]
         uia_node_count: int = uia_data["uia_node_count"]
+        msaa_total_elements: int = 0
+        msaa_tree_node_count: int = 0
+        msaa_node_count: int = 0
         vision_node_count: int = 0
+
+        if should_collect_msaa(uia_data, window_capture_state):
+            msaa_data = await collect_msaa_nodes(
+                window_id,
+                query,
+                geometry.window_origin_x,
+                geometry.window_origin_y,
+                index_start=next_element_index(nodes),
+            )
+            if msaa_data["nodes"]:
+                nodes.extend(msaa_data["nodes"])
+            msaa_text = msaa_data.get("tree_markdown") or ""
+            if msaa_text:
+                if tree_markdown:
+                    tree_markdown += "\n\n## MSAA Fallback\n" + msaa_text
+                else:
+                    tree_markdown = msaa_text
+            msaa_quality = msaa_data["msaa_quality"]
+            msaa_total_elements = msaa_data.get("msaa_total_elements", msaa_data["total_elements"])
+            msaa_tree_node_count = msaa_data.get("msaa_tree_node_count", msaa_node_count)
+            msaa_node_count = msaa_data["msaa_node_count"]
+            total_elements += msaa_data["total_elements"]
+            if msaa_node_count > 0:
+                tree_quality = _best_tree_quality(uia_quality, msaa_quality)
 
         cache.update(pid, window_id, build_cached_elements(nodes))
         cache.set_quality(pid, window_id, tree_quality)
@@ -624,7 +891,7 @@ async def get_window_state_snapshot(
                 geometry.crop_origin_window_x,
                 geometry.crop_origin_window_y,
                 cache,
-                uia_quality,
+                tree_quality,
             )
             nodes.extend(vision_data["nodes"])
             vision_node_count = vision_data["vision_node_count"]
@@ -651,13 +918,19 @@ async def get_window_state_snapshot(
             "tree_markdown": tree_markdown,
             "tree_quality": tree_quality,
             "uia_quality": uia_quality,
+            "msaa_quality": msaa_quality,
             "vision_quality": vision_quality,
             "vision_metadata": vision_metadata,
+            "capture_metadata": capture_metadata,
+            "node_sources": sorted({node.get("source", "unknown") for node in nodes}),
             "merged_node_count": len(nodes),
             "unfiltered_node_count": len(nodes),
             "returned_node_count": len(returned_nodes),
             "nodes_filtered": bool(query and not include_all_nodes),
             "uia_node_count": uia_node_count,
+            "msaa_total_elements": msaa_total_elements,
+            "msaa_tree_node_count": msaa_tree_node_count,
+            "msaa_node_count": msaa_node_count,
             "vision_node_count": vision_node_count,
             "total_elements": total_elements,
             "pid": pid,

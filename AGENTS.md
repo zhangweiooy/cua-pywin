@@ -28,6 +28,8 @@ computer_server/
     windows.py              — Windows automation: ImageGrab, win32gui, pynput,
                               clipboard lock, command execution
     windows_uia.py          — UIA COM tree walker
+    windows_msaa.py         — MSAA / IAccessible fallback tree walker for
+                              classic Win32/VCL/SAL-style controls
     windows_window.py       — Windows foreground-lock bypass and activation
     generic.py              — Cross-platform desktop and window helpers
     element_cache.py        — Per-(pid, window_id) element cache with TTL,
@@ -155,10 +157,20 @@ Key invariant: `ElementCache` stores window-relative coordinates, and
 - `CachedElement.platform_ref` is deprecated. Invoke and ValuePattern actions
   resolve a fresh UIA element by point at action time.
 
-### Tree Quality And SOM
+### Tree Quality, MSAA, And SOM
 
-`get_window_state` reports UIA quality and vision quality separately. SOM vision
-is used when the UIA tree is poor or empty.
+`get_window_state` reports UIA, MSAA, and vision quality separately. A bounded
+MSAA observation pass runs alongside UIA because it is cheap and can preserve
+legacy roles that UIA proxies collapse. MSAA only promotes the combined semantic
+tree quality when it contributes usable indexed nodes. SOM vision is used when
+the combined semantic tree quality is still poor or empty.
+
+MSAA nodes carry source-specific metadata such as `msaa_role`,
+`msaa_role_id`, `msaa_role_hex`, `msaa_default_action`, `msaa_state`,
+`msaa_child_id`, and `msaa_has_location`. Dropdown-style MSAA roles
+(`BUTTONDROPDOWN`, `BUTTONMENU`, `BUTTONDROPDOWNGRID`, `SPLITBUTTON`) expose
+`actions=["invoke","expand"]`; `computer_click(action="expand")` clicks the
+right edge of the cached MSAA rect to target the dropdown half.
 
 ### Recording Vs Learning
 
@@ -201,6 +213,10 @@ coordinates.
   for HID-level clicks needed by some WebView2/UWP targets.
 - `capture_after=True` is supported by click, scroll, and type tools and returns
   a fresh snapshot with `snapshot_id`.
+- Window snapshots include `capture_metadata` with screenshot provenance,
+  crop geometry, resize metadata, and explicit occlusion-risk warnings. Current
+  window capture is screen-crop based, so covered windows are marked as
+  `occlusion_risk=True` until a WGC backend is added.
 - Disabled UIA elements return an explicit error; callers should raise/focus the
   window and re-snapshot.
 - `computer_release_all_inputs` releases tracked held keys and mouse buttons

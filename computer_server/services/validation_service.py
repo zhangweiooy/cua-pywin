@@ -74,7 +74,7 @@ def validate_mouse_button(button: str) -> str:
 
 
 def validate_click_action(action: str) -> str:
-    return validate_choice("action", action, {"press", "raise"})
+    return validate_choice("action", action, {"press", "raise", "expand"})
 
 
 def validate_click_count(count: int) -> int:

@@ -52,6 +52,7 @@ def test_validate_numeric_ranges_reject_non_finite_values():
 
 def test_validate_enum_values_are_strict():
     assert validate_click_action("PRESS") == "press"
+    assert validate_click_action("expand") == "expand"
     assert validate_shell("cmd") == "cmd"
     assert validate_scroll_direction("down") == "down"
     assert validate_page_action("get_text") == "get_text"

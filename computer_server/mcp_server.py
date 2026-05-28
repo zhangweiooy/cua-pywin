@@ -872,6 +872,8 @@ def create_mcp_server() -> FastMCP:
         capture_after: bool,
     ) -> Optional[Dict[str, Any]]:
         """Try UIA Invoke for an enabled cached element; return None to fall back."""
+        if getattr(el, "source", None) == "msaa":
+            return None
         if sys.platform != "win32" or "invoke" not in (el.actions or []):
             return None
 
@@ -946,6 +948,55 @@ def create_mcp_server() -> FastMCP:
             logger.debug("UIA Invoke failed (falling back to pixel click): %s", exc)
             return None
 
+    def _resolve_msaa_expand_point(
+        pid: int,
+        window_id: int,
+        element_index: int,
+        el: Any,
+    ) -> Tuple[Optional[Dict[str, Any]], Optional[int], Optional[int]]:
+        """Resolve action='expand' for MSAA dropdown-style elements."""
+        from computer_server.handlers.element_cache import get_element_cache
+
+        metadata = getattr(el, "metadata", {}) or {}
+        role_id = metadata.get("msaa_role_id")
+        dropdown_roles = {0x38, 0x39, 0x3A, 0x3E}
+        if getattr(el, "source", None) != "msaa":
+            return {
+                "success": False,
+                "error": "action='expand' is currently supported only for MSAA dropdown/splitbutton elements",
+                "suggestion": "Use action='press' for this element",
+            }, None, None
+        if role_id not in dropdown_roles:
+            return {
+                "success": False,
+                "error": (
+                    f"action='expand' requested for MSAA element [{element_index}], "
+                    f"but its role ({metadata.get('msaa_role') or el.control_type}) is not a dropdown button"
+                ),
+                "suggestion": "Use action='press' or pick an element whose actions include 'expand'",
+            }, None, None
+
+        bbox = el.bbox or (0, 0, 0, 0)
+        if len(bbox) != 4 or bbox == (0, 0, 0, 0):
+            return {
+                "success": False,
+                "error": f"MSAA element [{element_index}] has no usable bbox for action='expand'",
+                "suggestion": f"Call get_window_state(pid={pid}, window_id={window_id}) to refresh it",
+            }, None, None
+        origin = get_element_cache().get_window_origin_optional(pid, window_id)
+        if origin is None:
+            return {
+                "success": False,
+                "error": (
+                    f"MSAA element [{element_index}] found for pid={pid}, "
+                    f"window_id={window_id}, but window origin is missing from the cache"
+                ),
+                "suggestion": f"Call get_window_state(pid={pid}, window_id={window_id}) to refresh it",
+            }, None, None
+        target_x = int(origin[0] + bbox[2] - 4)
+        target_y = int(origin[1] + ((bbox[1] + bbox[3]) // 2))
+        return None, target_x, target_y
+
     async def _resolve_click_element(
         pid: Optional[int],
         window_id: Optional[int],
@@ -996,6 +1047,16 @@ def create_mcp_server() -> FastMCP:
                 None,
                 recorded_element_ref,
             )
+        if action == "expand":
+            expand_error, expand_x, expand_y = _resolve_msaa_expand_point(
+                pid,
+                window_id,
+                element_index,
+                el,
+            )
+            if expand_error is not None:
+                return expand_error, None, None, recorded_element_ref
+            return None, expand_x, expand_y, recorded_element_ref
 
         if el.enabled is False:
             return {
@@ -1258,7 +1319,9 @@ def create_mcp_server() -> FastMCP:
             count: Click count - 1 (single), 2 (double), 3 (triple). Default 1.
             debug_image_out: Optional path to save a debug image with click crosshair.
             force_frontmost: When True, calls SetForegroundWindow before click.
-            action: 'press' (click) or 'raise' (bring window to top). For element_index only.
+            action: 'press' (click), 'raise' (bring window to top), or
+                'expand' for MSAA dropdown/splitbutton elements. For
+                element_index only.
             capture_after: When True, take a fresh screenshot + SOM after the action.
         """
         from computer_server.services.validation_service import (
@@ -1281,7 +1344,7 @@ def create_mcp_server() -> FastMCP:
             if action != "press" and element_index is None:
                 return {
                     "success": False,
-                    "error": "action='raise' is only supported with element_index",
+                    "error": "action='raise' or action='expand' is only supported with element_index",
                 }
         except ValueError as e:
             return error_result(e)

@@ -74,5 +74,18 @@ async def test_click_raise_requires_element_index():
 
     assert result.structured_content == {
         "success": False,
-        "error": "action='raise' is only supported with element_index",
+        "error": "action='raise' or action='expand' is only supported with element_index",
+    }
+
+
+@pytest.mark.asyncio
+async def test_click_expand_requires_element_index():
+    result = await create_mcp_server().call_tool(
+        "computer_click",
+        {"action": "expand"},
+    )
+
+    assert result.structured_content == {
+        "success": False,
+        "error": "action='raise' or action='expand' is only supported with element_index",
     }

@@ -669,12 +669,27 @@ class WindowsAutomationHandler(BaseAutomationHandler):
                 encode_image(screenshot, fmt, quality)
             ).decode()
             geometry = get_virtual_screen_geometry()
+            virtual_screen = geometry.to_dict()
             return {
                 "success": True,
                 "image_data": image_data,
                 "format": fmt,
                 "origin": {"x": geometry.x, "y": geometry.y},
-                "virtual_screen": geometry.to_dict(),
+                "virtual_screen": virtual_screen,
+                "capture_metadata": {
+                    "capture_mode": "screen_full",
+                    "capture_source": "pil_imagegrab",
+                    "target": "virtual_screen",
+                    "occlusion_risk": False,
+                    "occlusion_detection": "not_applicable",
+                    "virtual_screen": virtual_screen,
+                    "output": {
+                        "width": screenshot.width,
+                        "height": screenshot.height,
+                        "format": fmt,
+                    },
+                    "warnings": [],
+                },
             }
         except Exception as e:
             return {"success": False, "error": f"Screenshot error: {str(e)}"}
