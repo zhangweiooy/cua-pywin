@@ -1,8 +1,8 @@
 # cua-pywin
 
-Windows UI automation MCP server for AI agents — 55 tools for computer control.
+Windows UI automation MCP server for AI agents — 42 tools for computer control.
 <br>
-Windows AI Agent 桌面操控 MCP 服务 — 55 个计算机控制工具。
+Windows AI Agent 桌面操控 MCP 服务 — 42 个计算机控制工具。
 
 ---
 
@@ -14,7 +14,7 @@ Windows AI Agent 桌面操控 MCP 服务 — 55 个计算机控制工具。
 
 ### 亮点
 
-- **55 个 MCP 工具** — 截图、鼠标、键盘、剪贴板、文件系统、窗口管理、Shell 执行
+- **42 个 MCP 工具** — 截图、鼠标、键盘、窗口管理
 - **录制 / 回放** — 录制 MCP 工具调用序列到磁盘，完整回放（含坐标重算和过期窗口解析）
 - **学习模式** — 录制真人操作（pynput 全局钩子 + UIA 元素标注 + EasyOCR 视觉增强）
 - **SOM 视觉检测** — OmniParser YOLO + EasyOCR 中文识别 + TinyCLIP 图标语义标签，UIA 不可用时自动回退
@@ -26,7 +26,7 @@ Windows AI Agent 桌面操控 MCP 服务 — 55 个计算机控制工具。
 ```
 cua-pywin/
 ├─ computer_server/          ← 主程序
-│  ├─ mcp_server.py          ← 54 MCP 工具入口（薄 wrapper，业务转交 services/）
+│  ├─ mcp_server.py          ← 42 MCP 工具入口（薄 wrapper，业务转交 services/）
 │  ├─ main.py                ← 本机 HTTP MCP 服务器（/status + /mcp）
 │  ├─ cli.py                 ← CLI（非 localhost 需 --i-know-this-exposes-my-computer）
 │  ├─ server.py              ← uvicorn 生命周期 + 优雅退出
@@ -37,7 +37,7 @@ cua-pywin/
 │  │  ├─ windows.py          ← Windows: ImageGrab + win32gui + pynput
 │  │  ├─ windows_uia.py      ← UIA COM 树遍历 (DFS, 缓存属性, 直接 STA 调用)
 │  │  ├─ windows_window.py   ← Windows 前台锁绕过专用 handler
-│  │  ├─ generic.py          ← 跨平台 + CUA_FILE_ROOTS 沙箱
+│  │  ├─ generic.py          ← 跨平台 desktop / window 辅助 handler
 │  │  ├─ element_cache.py    ← (pid, window_id) 元素缓存 + TTL + HWND 有效性
 │  │  ├─ zoom_registry.py    ← (pid, window_id) 坐标缩放注册表
 │  │  ├─ som_bridge.py       ← SOM OmniParser 桥接 + 解析器状态机
@@ -109,18 +109,6 @@ python -m computer_server --host 0.0.0.0 --port 8000 \
 
 HTTP 服务只暴露 `/status` 与 `/mcp`，legacy `/ws` 与 `/commands` 已删除；所有高权限工具仅通过 MCP 入口暴露。CORS 仅放行 `localhost / 127.0.0.1 / [::1]` origin。
 
-### 文件工具安全沙箱
-
-通过环境变量限制文件工具的可访问路径：
-
-```bash
-# 限制 computer_file_* / computer_*_directory 只能操作指定根目录（分号分隔）
-set CUA_FILE_ROOTS=D:\Documents\projects;C:\Users\me\Desktop
-
-# 禁用所有具破坏性的写/删工具（仍保留读 / list）
-set CUA_DISABLE_DANGEROUS_FILE_TOOLS=1
-```
-
 ### Claude Code 集成
 
 `.mcp.json`：
@@ -144,15 +132,9 @@ set CUA_DISABLE_DANGEROUS_FILE_TOOLS=1
 
 **键盘** — `computer_type` `computer_press_key` `computer_hotkey` `computer_key_down` `computer_key_up` `computer_set_value`
 
-**剪贴板** — `computer_clipboard_get` `computer_clipboard_set`
+**窗口管理** — `computer_open_url` `computer_launch_app` `computer_get_active_window` `computer_get_window_name` `computer_get_window_size` `computer_get_window_position` `computer_set_window_size` `computer_set_window_position` `computer_activate_window` `computer_minimize_window` `computer_maximize_window` `computer_close_window` `computer_get_app_windows` `computer_list_windows` `computer_list_apps`
 
-**Shell** — `computer_run_command`
-
-**文件系统** — `computer_file_read` `computer_file_write` `computer_file_exists` `computer_directory_exists` `computer_list_directory` `computer_create_directory` `computer_delete_file` `computer_delete_directory` `computer_get_file_size`
-
-**窗口管理** — `computer_open` `computer_launch_app` `computer_get_active_window` `computer_get_window_name` `computer_get_window_size` `computer_get_window_position` `computer_set_window_size` `computer_set_window_position` `computer_activate_window` `computer_minimize_window` `computer_maximize_window` `computer_close_window` `computer_get_app_windows` `computer_list_windows` `computer_list_apps`
-
-**桌面与辅助** — `computer_get_desktop_environment` `computer_set_wallpaper` `computer_get_accessibility_tree` `computer_page`
+**桌面与辅助** — `computer_get_desktop_environment` `computer_get_accessibility_tree` `computer_page`
 
 **录制回放** — `computer_set_recording` `computer_get_recording_state` `computer_replay_trajectory`
 
@@ -217,7 +199,7 @@ python -m py_compile computer_server/learning/*.py
 
 ### Highlights
 
-- **54 MCP tools** — screenshots, mouse, keyboard, clipboard, file system, window management, shell
+- **42 MCP tools** — screenshots, mouse, keyboard, window management
 - **Recording / Replay** — record MCP tool invocations to disk with full replay (coordinate recalculation + stale-window resolution)
 - **Learning mode** — record human actions (pynput global hooks + UIA element enrichment + EasyOCR vision)
 - **SOM vision detection** — OmniParser YOLO + EasyOCR (Chinese + English) + TinyCLIP icon labels, automatic fallback when UIA is unavailable
@@ -229,7 +211,7 @@ python -m py_compile computer_server/learning/*.py
 ```
 cua-pywin/
 ├─ computer_server/          ← Main package
-│  ├─ mcp_server.py          ← 54 MCP tools (thin wrappers; logic in services/)
+│  ├─ mcp_server.py          ← 42 MCP tools (thin wrappers; logic in services/)
 │  ├─ main.py                ← Local HTTP MCP server (/status + /mcp only)
 │  ├─ cli.py                 ← CLI (non-localhost requires --i-know-this-exposes-my-computer)
 │  ├─ server.py              ← uvicorn lifecycle + graceful shutdown
@@ -241,7 +223,7 @@ cua-pywin/
 │  │  ├─ windows.py          ← Windows: ImageGrab + win32gui + pynput
 │  │  ├─ windows_uia.py      ← UIA COM tree walker (DFS, direct STA calls)
 │  │  ├─ windows_window.py   ← Windows foreground-lock bypass
-│  │  ├─ generic.py          ← Cross-platform + CUA_FILE_ROOTS sandbox
+│  │  ├─ generic.py          ← Cross-platform desktop / window helper handler
 │  │  ├─ element_cache.py    ← (pid, window_id) cache + TTL + HWND validity
 │  │  ├─ zoom_registry.py    ← Per-(pid, window_id) zoom translation
 │  │  ├─ som_bridge.py       ← SOM OmniParser bridge + parser state machine
@@ -314,18 +296,6 @@ python -m computer_server --host 0.0.0.0 --port 8000 \
 
 The HTTP server exposes only `/status` and `/mcp`; the legacy `/ws` and `/commands` WebSocket APIs have been removed. All high-privilege control flows through the MCP tool registry. CORS only allows `localhost / 127.0.0.1 / [::1]` origins.
 
-### File-tool sandbox
-
-Restrict the file-system tools through environment variables:
-
-```bash
-# Limit computer_file_* / computer_*_directory to specific roots (pathsep-separated)
-set CUA_FILE_ROOTS=D:\Documents\projects;C:\Users\me\Desktop
-
-# Disable destructive write / delete tools (read / list still allowed)
-set CUA_DISABLE_DANGEROUS_FILE_TOOLS=1
-```
-
 ### Claude Code Integration
 
 `.mcp.json`:
@@ -349,15 +319,9 @@ set CUA_DISABLE_DANGEROUS_FILE_TOOLS=1
 
 **Keyboard** — `computer_type` `computer_press_key` `computer_hotkey` `computer_key_down` `computer_key_up` `computer_set_value`
 
-**Clipboard** — `computer_clipboard_get` `computer_clipboard_set`
+**Window Management** — `computer_open_url` `computer_launch_app` `computer_get_active_window` `computer_get_window_name` `computer_get_window_size` `computer_get_window_position` `computer_set_window_size` `computer_set_window_position` `computer_activate_window` `computer_minimize_window` `computer_maximize_window` `computer_close_window` `computer_get_app_windows` `computer_list_windows` `computer_list_apps`
 
-**Shell** — `computer_run_command`
-
-**File System** — `computer_file_read` `computer_file_write` `computer_file_exists` `computer_directory_exists` `computer_list_directory` `computer_create_directory` `computer_delete_file` `computer_delete_directory` `computer_get_file_size`
-
-**Window Management** — `computer_open` `computer_launch_app` `computer_get_active_window` `computer_get_window_name` `computer_get_window_size` `computer_get_window_position` `computer_set_window_size` `computer_set_window_position` `computer_activate_window` `computer_minimize_window` `computer_maximize_window` `computer_close_window` `computer_get_app_windows` `computer_list_windows` `computer_list_apps`
-
-**Desktop & Accessibility** — `computer_get_desktop_environment` `computer_set_wallpaper` `computer_get_accessibility_tree` `computer_page`
+**Desktop & Accessibility** — `computer_get_desktop_environment` `computer_get_accessibility_tree` `computer_page`
 
 **Recording & Replay** — `computer_set_recording` `computer_get_recording_state` `computer_replay_trajectory`
 

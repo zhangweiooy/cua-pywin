@@ -35,7 +35,7 @@ RECORDABLE_TOOLS = frozenset(
         "computer_key_up",
         "computer_set_value",
         "computer_page",
-        "computer_open",
+        "computer_open_url",
         "computer_scroll",
         "computer_launch_app",
         "computer_activate_window",

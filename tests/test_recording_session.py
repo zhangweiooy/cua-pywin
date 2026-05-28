@@ -40,6 +40,11 @@ def test_low_level_pointer_primitives_are_recordable():
     assert "computer_mouse_up" in RECORDABLE_TOOLS
 
 
+def test_open_url_replaces_legacy_open_recording_name():
+    assert "computer_open_url" in RECORDABLE_TOOLS
+    assert "computer_open" not in RECORDABLE_TOOLS
+
+
 def test_recorded_turn_context_groups_hook_payload():
     turn = RecordedTurnContext(
         tool_name="computer_click",

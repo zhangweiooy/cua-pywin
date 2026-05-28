@@ -2042,159 +2042,36 @@ def create_mcp_server() -> FastMCP:
         }
 
     # ============================================================
-    # CLIPBOARD ACTIONS
-    # ============================================================
-
-    @mcp.tool(annotations={"readOnlyHint": True, "destructiveHint": False, "idempotentHint": True, "openWorldHint": True})
-    async def computer_clipboard_get() -> Any:
-        """
-        Get the current clipboard content.
-
-        Returns:
-            Dictionary with clipboard content.
-        """
-        automation_handler = _get_handlers().automation
-        return await automation_handler.copy_to_clipboard()
-
-    @mcp.tool(annotations={"readOnlyHint": False, "destructiveHint": True, "idempotentHint": False, "openWorldHint": True})
-    async def computer_clipboard_set(text: str) -> Any:
-        """
-        Set the clipboard content.
-
-        Args:
-            text: Text to copy to clipboard
-        """
-        automation_handler = _get_handlers().automation
-        return await automation_handler.set_clipboard(text)
-
-    # ============================================================
-    # SHELL COMMANDS
-    # ============================================================
-
-    @mcp.tool(annotations={"readOnlyHint": False, "destructiveHint": True, "idempotentHint": False, "openWorldHint": True})
-    async def computer_run_command(
-        command: str,
-        shell: str = "powershell",
-        timeout: Optional[float] = None,
-    ) -> Any:
-        """
-        Execute a shell command and return the output.
-
-        Args:
-            command: The shell command to execute.
-            shell: "powershell" (default) or "cmd".
-            timeout: Optional timeout in seconds.
-
-        Returns:
-            Dictionary with 'stdout', 'stderr', and 'return_code' keys.
-        """
-        from computer_server.services.validation_service import (
-            error_result,
-            validate_shell,
-            validate_timeout,
-        )
-        from computer_server.services.permission_service import RuntimePermissionPolicy
-
-        try:
-            RuntimePermissionPolicy.from_env().require_run_command()
-            shell = validate_shell(shell)
-            timeout = validate_timeout(timeout)
-        except (PermissionError, ValueError) as e:
-            return error_result(e)
-
-        automation_handler = _get_handlers().automation
-        return await automation_handler.run_command(command, shell=shell, timeout=timeout)
-
-    # ============================================================
-    # FILE SYSTEM OPERATIONS
-    # ============================================================
-
-    @mcp.tool(annotations={"readOnlyHint": True, "destructiveHint": False, "idempotentHint": True, "openWorldHint": True})
-    async def computer_file_read(path: str) -> Any:
-        """Read the text content of a file."""
-        file_handler = _get_handlers().file
-        return await file_handler.read_text(path)
-
-    @mcp.tool(annotations={"readOnlyHint": False, "destructiveHint": True, "idempotentHint": False, "openWorldHint": True})
-    async def computer_file_write(path: str, content: str) -> Any:
-        """Write text content to a file."""
-        file_handler = _get_handlers().file
-        return await file_handler.write_text(path, content)
-
-    @mcp.tool(annotations={"readOnlyHint": True, "destructiveHint": False, "idempotentHint": True, "openWorldHint": True})
-    async def computer_file_exists(path: str) -> Any:
-        """Check if a file exists."""
-        file_handler = _get_handlers().file
-        return await file_handler.file_exists(path)
-
-    @mcp.tool(annotations={"readOnlyHint": True, "destructiveHint": False, "idempotentHint": True, "openWorldHint": True})
-    async def computer_directory_exists(path: str) -> Any:
-        """Check if a directory exists."""
-        file_handler = _get_handlers().file
-        return await file_handler.directory_exists(path)
-
-    @mcp.tool(annotations={"readOnlyHint": True, "destructiveHint": False, "idempotentHint": True, "openWorldHint": True})
-    async def computer_list_directory(path: str) -> Any:
-        """List the contents of a directory."""
-        file_handler = _get_handlers().file
-        return await file_handler.list_dir(path)
-
-    @mcp.tool(annotations={"readOnlyHint": False, "destructiveHint": True, "idempotentHint": False, "openWorldHint": True})
-    async def computer_create_directory(path: str) -> Any:
-        """Create a directory."""
-        file_handler = _get_handlers().file
-        return await file_handler.create_dir(path)
-
-    @mcp.tool(annotations={"readOnlyHint": False, "destructiveHint": True, "idempotentHint": False, "openWorldHint": True})
-    async def computer_delete_file(path: str) -> Any:
-        """Delete a file."""
-        file_handler = _get_handlers().file
-        return await file_handler.delete_file(path)
-
-    @mcp.tool(annotations={"readOnlyHint": False, "destructiveHint": True, "idempotentHint": False, "openWorldHint": True})
-    async def computer_delete_directory(path: str) -> Any:
-        """Delete a directory."""
-        file_handler = _get_handlers().file
-        return await file_handler.delete_dir(path)
-
-    @mcp.tool(annotations={"readOnlyHint": True, "destructiveHint": False, "idempotentHint": True, "openWorldHint": True})
-    async def computer_get_file_size(path: str) -> Any:
-        """Get the size of a file in bytes."""
-        file_handler = _get_handlers().file
-        return await file_handler.get_file_size(path)
-
-    # ============================================================
     # WINDOW MANAGEMENT
     # ============================================================
 
     @mcp.tool(annotations={"readOnlyHint": False, "destructiveHint": True, "idempotentHint": False, "openWorldHint": True})
-    async def computer_open(target: str, browser: str = "") -> Any:
-        """Open a file or URL.
+    async def computer_open_url(url: str, browser: str = "") -> Any:
+        """Open an HTTP/HTTPS URL in the desktop browser.
 
-        For URLs (http/https), uses the specified browser if given
-        (e.g. "chrome", "edge", "firefox"), falling back to the
-        system default if the browser isn't found.
+        Uses the specified browser if given (e.g. "chrome", "edge",
+        "firefox"), falling back to the system default if the browser
+        isn't found.
 
         Args:
-            target: File path or URL to open.
+            url: HTTP/HTTPS URL to open.
             browser: Preferred browser for URLs — "chrome", "edge",
-                "firefox", etc. Ignored for files.
+                "firefox", etc.
         """
         from urllib.parse import urlparse
 
-        parsed = urlparse(target)
-        has_windows_drive = len(parsed.scheme) == 1 and len(target) >= 3 and target[1:3] in {":\\", ":/"}
-        if parsed.scheme and not has_windows_drive and parsed.scheme not in {"http", "https"}:
+        parsed = urlparse(url)
+        if parsed.scheme not in {"http", "https"} or not parsed.netloc:
             return {
                 "success": False,
-                "error": "target URL scheme must be http or https; local files should be passed as filesystem paths",
+                "error": "url must be an absolute http or https URL",
             }
 
         window_handler = _get_handlers().window
-        result = await window_handler.open(target, browser=browser)
+        result = await window_handler.open(url, browser=browser)
         await _recording_hook(_recorded_turn(
-            "computer_open",
-            {"target": target, "browser": browser},
+            "computer_open_url",
+            {"url": url, "browser": browser},
             result,
         ))
         return result
@@ -2507,12 +2384,6 @@ def create_mcp_server() -> FastMCP:
         """Get information about the current desktop environment."""
         desktop_handler = _get_handlers().desktop
         return await desktop_handler.get_desktop_environment()
-
-    @mcp.tool(annotations={"readOnlyHint": False, "destructiveHint": True, "idempotentHint": False, "openWorldHint": True})
-    async def computer_set_wallpaper(path: str) -> Any:
-        """Set the desktop wallpaper."""
-        desktop_handler = _get_handlers().desktop
-        return await desktop_handler.set_wallpaper(path)
 
     # ============================================================
     # ACCESSIBILITY

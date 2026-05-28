@@ -11,7 +11,7 @@ Usage:
 
 Examples:
     uv run python scripts/mcp_test_one.py computer_get_screen_size
-    uv run python scripts/mcp_test_one.py computer_file_exists '{"path": "C:/"}'
+    uv run python scripts/mcp_test_one.py computer_get_active_window
     uv run python scripts/mcp_test_one.py computer_get_screen_size --json
     uv run python scripts/mcp_test_one.py computer_screenshot --timeout 120
 
