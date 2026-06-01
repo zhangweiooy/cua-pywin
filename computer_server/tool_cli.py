@@ -4,9 +4,12 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import importlib.metadata
+import importlib.util
 import json
 import logging
 import os
+import platform
 import secrets
 import socket
 import subprocess
@@ -38,10 +41,47 @@ COMMANDS = {
     "start",
     "status",
     "stop",
+    "doctor",
     "list-tools",
     "describe",
     "call",
 }
+
+DEPENDENCY_CHECKS = (
+    ("fastmcp", "fastmcp", "MCP server"),
+    ("fastapi", "fastapi", "HTTP server"),
+    ("uvicorn", "uvicorn", "HTTP runner"),
+    ("PIL", "pillow", "image handling"),
+    ("pynput", "pynput", "input injection"),
+    ("win32gui", "pywin32", "Windows APIs"),
+    ("comtypes", "comtypes", "COM / MSAA"),
+    ("uiautomation", "uiautomation", "UI Automation"),
+    ("mss", "mss", "screen capture"),
+    ("psutil", "psutil", "process inspection"),
+    ("cv2", "opencv-python-headless", "SOM image processing"),
+    ("torch", "torch", "vision model runtime"),
+    ("easyocr", "easyocr", "OCR"),
+    ("ultralytics", "ultralytics", "OmniParser YOLO"),
+    ("transformers", "transformers", "TinyCLIP"),
+    ("winrt.windows.graphics.capture", "winrt-windows-graphics-capture", "WGC window capture"),
+    (
+        "winrt.windows.graphics.capture.interop",
+        "winrt-windows-graphics-capture-interop",
+        "WGC HWND interop",
+    ),
+    (
+        "winrt.windows.graphics.directx.direct3d11.interop",
+        "winrt-windows-graphics-directx-direct3d11-interop",
+        "WGC D3D11 interop",
+    ),
+)
+
+TINYCLIP_REQUIRED_FILES = (
+    "config.json",
+    "model.safetensors",
+    "preprocessor_config.json",
+    "tokenizer.json",
+)
 
 
 @dataclass(frozen=True)
@@ -55,6 +95,24 @@ class DaemonInfo:
     @property
     def base_url(self) -> str:
         return f"http://{self.host}:{self.port}"
+
+
+@dataclass(frozen=True)
+class DoctorCheck:
+    name: str
+    status: str
+    message: str
+    details: dict[str, Any] | None = None
+
+    def to_json(self) -> dict[str, Any]:
+        payload: dict[str, Any] = {
+            "name": self.name,
+            "status": self.status,
+            "message": self.message,
+        }
+        if self.details:
+            payload["details"] = self.details
+        return payload
 
 
 def _state_dir() -> Path:
@@ -300,6 +358,203 @@ def _json_print(payload: Any, compact: bool = False) -> None:
         print(json.dumps(payload, ensure_ascii=False, separators=(",", ":")))
     else:
         print(json.dumps(payload, indent=2, ensure_ascii=False))
+
+
+def _project_root() -> Path:
+    return Path(__file__).resolve().parents[1]
+
+
+def _format_size(num_bytes: int) -> str:
+    size = float(num_bytes)
+    for unit in ("B", "KB", "MB", "GB"):
+        if size < 1024.0 or unit == "GB":
+            return f"{size:.1f} {unit}" if unit != "B" else f"{int(size)} B"
+        size /= 1024.0
+    return f"{num_bytes} B"
+
+
+def _check_dependency(import_name: str, distribution_name: str, purpose: str) -> DoctorCheck:
+    spec = importlib.util.find_spec(import_name)
+    if spec is None:
+        return DoctorCheck(
+            name=f"dependency:{distribution_name}",
+            status="fail",
+            message=f"{distribution_name} missing ({purpose})",
+            details={"import": import_name},
+        )
+    try:
+        version = importlib.metadata.version(distribution_name)
+    except importlib.metadata.PackageNotFoundError:
+        version = "installed"
+    return DoctorCheck(
+        name=f"dependency:{distribution_name}",
+        status="ok",
+        message=f"{distribution_name} {version}",
+        details={"import": import_name, "purpose": purpose},
+    )
+
+
+def _check_state_dir() -> DoctorCheck:
+    state_dir = _state_dir()
+    probe_dir = state_dir if state_dir.exists() else state_dir.parent
+    writable = probe_dir.exists() and os.access(probe_dir, os.W_OK)
+    status = "ok" if writable else "fail"
+    message = f"state dir {state_dir}" if writable else f"state dir is not writable: {state_dir}"
+    return DoctorCheck(
+        name="state_dir",
+        status=status,
+        message=message,
+        details={"path": str(state_dir), "exists": state_dir.exists()},
+    )
+
+
+def _check_omniparser_weight() -> DoctorCheck:
+    path = _project_root() / "som" / "weights" / "icon_detect" / "model.pt"
+    if not path.exists():
+        return DoctorCheck(
+            name="model:omniparser_yolo",
+            status="fail",
+            message=f"OmniParser YOLO weight missing: {path}",
+            details={"path": str(path)},
+        )
+    size = path.stat().st_size
+    if size <= 0:
+        return DoctorCheck(
+            name="model:omniparser_yolo",
+            status="fail",
+            message=f"OmniParser YOLO weight is empty: {path}",
+            details={"path": str(path), "size_bytes": size},
+        )
+    return DoctorCheck(
+        name="model:omniparser_yolo",
+        status="ok",
+        message=f"OmniParser YOLO weight present ({_format_size(size)})",
+        details={"path": str(path), "size_bytes": size},
+    )
+
+
+def _check_tinyclip_bundle() -> DoctorCheck:
+    model_dir = (
+        Path(__file__).resolve().parent
+        / "models"
+        / "tinyclip"
+        / "wkcn-TinyCLIP-ViT-8M-16-Text-3M-YFCC15M"
+    )
+    missing = [name for name in TINYCLIP_REQUIRED_FILES if not (model_dir / name).exists()]
+    if missing:
+        return DoctorCheck(
+            name="model:tinyclip",
+            status="fail",
+            message=f"TinyCLIP bundle incomplete: missing {', '.join(missing)}",
+            details={"path": str(model_dir), "missing": missing},
+        )
+    total_size = sum((model_dir / name).stat().st_size for name in TINYCLIP_REQUIRED_FILES)
+    return DoctorCheck(
+        name="model:tinyclip",
+        status="ok",
+        message=f"TinyCLIP bundle present ({_format_size(total_size)})",
+        details={"path": str(model_dir), "size_bytes": total_size},
+    )
+
+
+def _check_daemon(timeout: float) -> DoctorCheck:
+    info = _load_daemon_info()
+    if not info:
+        return DoctorCheck(
+            name="daemon",
+            status="warn",
+            message="daemon metadata not found; run `cua-win start` to start it",
+        )
+    status = _probe(info, timeout=timeout)
+    if not status:
+        return DoctorCheck(
+            name="daemon",
+            status="warn",
+            message=f"daemon metadata exists but service is not reachable: {info.base_url}",
+            details={
+                "host": info.host,
+                "port": info.port,
+                "pid": info.pid,
+                "metadata_file": str(info.metadata_file) if info.metadata_file else None,
+            },
+        )
+    return DoctorCheck(
+        name="daemon",
+        status="ok",
+        message=f"daemon running at {info.base_url}",
+        details={
+            "host": info.host,
+            "port": info.port,
+            "pid": info.pid,
+            "tool_count": status.get("tool_count"),
+        },
+    )
+
+
+def _doctor_summary(checks: Sequence[DoctorCheck]) -> dict[str, int]:
+    return {
+        "ok": sum(1 for check in checks if check.status == "ok"),
+        "warn": sum(1 for check in checks if check.status == "warn"),
+        "fail": sum(1 for check in checks if check.status == "fail"),
+    }
+
+
+def _collect_doctor_checks(
+    *,
+    timeout: float = 2.0,
+    dependencies: bool = True,
+    daemon: bool = True,
+) -> dict[str, Any]:
+    checks: list[DoctorCheck] = []
+
+    py_version = sys.version_info
+    py_ok = (3, 12) <= (py_version.major, py_version.minor) < (3, 14)
+    checks.append(
+        DoctorCheck(
+            name="python",
+            status="ok" if py_ok else "fail",
+            message=f"Python {platform.python_version()}",
+            details={"executable": sys.executable, "supported": py_ok},
+        )
+    )
+
+    checks.append(
+        DoctorCheck(
+            name="platform",
+            status="ok" if sys.platform == "win32" else "fail",
+            message=f"platform {sys.platform}",
+            details={"system": platform.platform()},
+        )
+    )
+
+    checks.append(_check_state_dir())
+    checks.append(_check_omniparser_weight())
+    checks.append(_check_tinyclip_bundle())
+
+    if dependencies:
+        checks.extend(
+            _check_dependency(import_name, distribution_name, purpose)
+            for import_name, distribution_name, purpose in DEPENDENCY_CHECKS
+        )
+    if daemon:
+        checks.append(_check_daemon(timeout=timeout))
+
+    summary = _doctor_summary(checks)
+    return {
+        "ok": summary["fail"] == 0,
+        "summary": summary,
+        "checks": [check.to_json() for check in checks],
+    }
+
+
+def _format_doctor(payload: dict[str, Any]) -> None:
+    for check in payload["checks"]:
+        label = check["status"].upper()
+        print(f"[{label:4s}] {check['name']}: {check['message']}")
+    summary = payload["summary"]
+    print(
+        f"\nSummary: {summary['ok']} ok, {summary['warn']} warn, {summary['fail']} fail"
+    )
 
 
 def _format_tools(payload: dict[str, Any], json_mode: bool) -> None:
@@ -550,6 +805,19 @@ def _cmd_stop(args: argparse.Namespace) -> int:
     raise SystemExit("daemon did not stop before timeout")
 
 
+def _cmd_doctor(args: argparse.Namespace) -> int:
+    payload = _collect_doctor_checks(
+        timeout=args.timeout,
+        dependencies=not args.no_dependencies,
+        daemon=not args.no_daemon,
+    )
+    if args.json:
+        _json_print(payload)
+    else:
+        _format_doctor(payload)
+    return 0 if payload["ok"] else 1
+
+
 def _cmd_list_tools(args: argparse.Namespace) -> int:
     if args.no_daemon:
         payload = asyncio.run(_inprocess_list_tools())
@@ -639,6 +907,21 @@ def build_parser() -> argparse.ArgumentParser:
     stop = subparsers.add_parser("stop", help="stop the background daemon")
     stop.add_argument("--timeout", type=float, default=10.0)
     stop.set_defaults(func=_cmd_stop)
+
+    doctor = subparsers.add_parser("doctor", help="diagnose local cua-win runtime health")
+    doctor.add_argument("--json", action="store_true")
+    doctor.add_argument("--timeout", type=float, default=2.0)
+    doctor.add_argument(
+        "--no-dependencies",
+        action="store_true",
+        help="Skip dependency import-spec checks.",
+    )
+    doctor.add_argument(
+        "--no-daemon",
+        action="store_true",
+        help="Skip probing the existing background daemon.",
+    )
+    doctor.set_defaults(func=_cmd_doctor)
 
     list_tools = subparsers.add_parser("list-tools", help="list MCP tools")
     list_tools.add_argument("--json", action="store_true")

@@ -7,7 +7,7 @@ from typing import Any, Dict, Optional, Set
 
 from computer_server.recording.session import RecordingSession
 from computer_server.services.observation_context import ObservationContextRegistry
-from computer_server.services.window_state_service import UIAWalkGate
+from computer_server.services.window_state_service import MSAAWalkGate, UIAActionGate, UIAWalkGate
 
 
 @dataclass
@@ -24,6 +24,8 @@ class ServerContext:
     learning_recorder: Optional[Any] = None
     observations: ObservationContextRegistry = field(default_factory=ObservationContextRegistry)
     uia_walk_gate: UIAWalkGate = field(default_factory=UIAWalkGate)
+    msaa_walk_gate: MSAAWalkGate = field(default_factory=MSAAWalkGate)
+    uia_action_gate: UIAActionGate = field(default_factory=UIAActionGate)
     seen_popovers: Dict[int, Set[int]] = field(default_factory=dict)
     held_keys: Set[str] = field(default_factory=set)
     held_mouse_buttons: Set[str] = field(default_factory=set)

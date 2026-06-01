@@ -20,8 +20,8 @@ computer_server/
                               daemon lifecycle, metadata, and HTTP client
   tool_rpc.py               — Shared tool schema/result JSON serialization
   server_context.py         — Per-instance mutable state: recording session,
-                              learning recorder, UIA gate, popover dedup,
-                              held input state
+                              learning recorder, UIA/MSAA/action gates,
+                              popover dedup, held input state
   handlers/                 — Platform primitives and OS-facing wrappers
     base.py                 — Abstract handler interfaces
     factory.py              — HandlerFactory + Handlers dataclass
@@ -30,6 +30,8 @@ computer_server/
     windows_uia.py          — UIA COM tree walker
     windows_msaa.py         — MSAA / IAccessible fallback tree walker for
                               classic Win32/VCL/SAL-style controls
+    windows_wgc.py          — Windows.Graphics.Capture target-window capture
+                              backend with D3D11 texture readback
     windows_window.py       — Windows foreground-lock bypass and activation
     generic.py              — Cross-platform desktop and window helpers
     element_cache.py        — Per-(pid, window_id) element cache with TTL,
@@ -102,6 +104,7 @@ cua-win serve --port 8000
 cua-win serve --port 8000 --no-cli-rpc
 
 # Background daemon/client flow
+cua-win doctor
 cua-win start
 cua-win status
 cua-win list-tools
@@ -142,10 +145,12 @@ Key invariant: `ElementCache` stores window-relative coordinates, and
 
 ## Key Design Decisions
 
-### Per-window Screenshot Via Crop
+### Per-window Screenshot Capture
 
 - `PrintWindow` fails on hardware-accelerated windows such as Chrome and GPU apps.
-- The reliable path is full virtual-desktop capture plus `GetWindowRect` crop.
+- `get_window_state` first tries Windows.Graphics.Capture for target-window
+  pixels, which avoids overlapping foreground-window pollution.
+- The fallback path is full virtual-desktop capture plus `GetWindowRect` crop.
 - Window, crop, screenshot origin, and resize ratio are tracked explicitly for
   negative-monitor and partially offscreen windows.
 
@@ -154,16 +159,23 @@ Key invariant: `ElementCache` stores window-relative coordinates, and
 - `window_state_service.collect_uia_nodes` calls `handlers.windows_uia.walk_uia_tree`.
 - `UIAWalkGate` prevents stacked UIA walks against a hung provider; timed-out
   providers are marked unhealthy briefly and can fall through to SOM.
+- `computer_get_accessibility_tree` uses the same protected UIA walk path
+  instead of calling `walk_uia_tree` synchronously in the tool handler.
+- UIA action calls (`InvokePattern.Invoke` and `ValuePattern.SetValue`) run
+  behind `UIAActionGate`; timeout or in-flight conflicts fall back to pixel/HID
+  paths rather than blocking the action tool indefinitely.
 - `CachedElement.platform_ref` is deprecated. Invoke and ValuePattern actions
   resolve a fresh UIA element by point at action time.
 
 ### Tree Quality, MSAA, And SOM
 
 `get_window_state` reports UIA, MSAA, and vision quality separately. A bounded
-MSAA observation pass runs alongside UIA because it is cheap and can preserve
-legacy roles that UIA proxies collapse. MSAA only promotes the combined semantic
-tree quality when it contributes usable indexed nodes. SOM vision is used when
-the combined semantic tree quality is still poor or empty.
+MSAA observation pass runs behind `MSAAWalkGate` alongside UIA because it is
+cheap and can preserve legacy roles that UIA proxies collapse. Timed-out MSAA
+providers are marked unhealthy by window so repeat requests do not stack leaked
+COM calls. MSAA only promotes the combined semantic tree quality when it
+contributes usable indexed nodes. SOM vision is used when the combined semantic
+tree quality is still poor or empty.
 
 MSAA nodes carry source-specific metadata such as `msaa_role`,
 `msaa_role_id`, `msaa_role_hex`, `msaa_default_action`, `msaa_state`,
@@ -211,12 +223,22 @@ coordinates.
 
 - `force_frontmost=True` activates a target window and uses `win32api.mouse_event`
   for HID-level clicks needed by some WebView2/UWP targets.
+- `computer_click` returns action-path metadata (`method`, foreground/system
+  input flags, visibility requirements, coordinate source) so callers can tell
+  whether the action used UIA Invoke, activation, force-frontmost mouse events,
+  MSAA expand-edge click, or normal pixel click.
+- `computer_click(verify_query=..., require_verification=True)` performs a
+  post-action window-state check and marks the result failed when the query is
+  not observed. `pid` and `window_id` are required for verification.
 - `capture_after=True` is supported by click, scroll, and type tools and returns
   a fresh snapshot with `snapshot_id`.
 - Window snapshots include `capture_metadata` with screenshot provenance,
-  crop geometry, resize metadata, and explicit occlusion-risk warnings. Current
-  window capture is screen-crop based, so covered windows are marked as
-  `occlusion_risk=True` until a WGC backend is added.
+  crop geometry, resize metadata, capture backend, fallback reason, and
+  explicit occlusion-risk warnings. WGC snapshots report
+  `capture_backend="wgc"` and `occlusion_safe=True`; fallback screen crops
+  report `capture_backend="screen_crop"` and `occlusion_risk=True`.
+- `computer_zoom` follows the last snapshot backend: WGC snapshots use WGC for
+  native zoom crops and fall back to screen crop only when WGC fails.
 - Disabled UIA elements return an explicit error; callers should raise/focus the
   window and re-snapshot.
 - `computer_release_all_inputs` releases tracked held keys and mouse buttons
@@ -371,6 +393,33 @@ uv run cua-win stop
 - Review overlay architecture after more Windows runs: GDI thread safety,
   animation shutdown, and pipeline modularity.
 - Add a CDP WebSocket connection pool if browser page tools become high-frequency.
+- Consider isolating UIA/MSAA COM work in disposable worker processes if leaked
+  provider calls become a real operational issue. Current gates stop tool-level
+  hangs and repeated stacking, but Python still cannot kill an individual stuck
+  cross-process COM call inside the main process.
+
+## Official Approach Follow-ups
+
+- Harden the Windows.Graphics.Capture backend with broader Windows-app testing.
+  WGC is now the preferred target-window observation path and screen crop is the
+  fallback. Continue testing latency, failure rate, occlusion safety, protected
+  content, minimized windows, GPU apps, WebView2/Electron, and multi-monitor DPI
+  behavior.
+- Keep UIA and MSAA as parallel observation passes. MSAA is cheap enough to run
+  alongside UIA, and it preserves legacy roles that UIA providers often lose.
+  Continue attaching MSAA-specific metadata to nodes instead of collapsing it
+  into generic UIA fields.
+- Explore MSAA-backed actions only where the action contract is verifiable.
+  Dropdown expand-edge click is acceptable because it is explicit and observable;
+  broader MSAA default-action dispatch needs action-path metadata and
+  post-action verification before becoming a recommended path.
+- Do not productize a broad background `dispatch` mode yet. Some apps accept
+  background clicks but fail to perform follow-up UI transitions, so background
+  dispatch can create false success. Revisit only with per-action observability,
+  app capability evidence, and verification-gated fallbacks to foreground HID
+  input.
+- Track capture-stage timing as part of backend work so WGC can be compared
+  against screen crop with concrete latency and failure-rate data.
 
 ## Future Exploration
 

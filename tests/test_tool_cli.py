@@ -3,7 +3,10 @@ from __future__ import annotations
 import pytest
 
 from computer_server.tool_cli import (
+    DoctorCheck,
     _call_result_to_json,
+    _collect_doctor_checks,
+    _doctor_summary,
     _parse_tool_arguments,
     _rewrite_implicit_call,
     _tool_to_json,
@@ -17,6 +20,7 @@ def test_rewrite_implicit_call() -> None:
         "computer_get_screen_size",
     ]
     assert _rewrite_implicit_call(["list-tools"]) == ["list-tools"]
+    assert _rewrite_implicit_call(["doctor"]) == ["doctor"]
 
 
 def test_parse_tool_arguments_requires_object() -> None:
@@ -82,3 +86,41 @@ def test_serve_accepts_http_server_options() -> None:
     assert args.ssl_certfile == "cert.pem"
     assert args.i_know_this_exposes_my_computer is True
     assert args.no_cli_rpc is True
+
+
+def test_doctor_parser_accepts_options() -> None:
+    args = build_parser().parse_args(
+        [
+            "doctor",
+            "--json",
+            "--timeout",
+            "0.5",
+            "--no-dependencies",
+            "--no-daemon",
+        ]
+    )
+
+    assert args.command == "doctor"
+    assert args.json is True
+    assert args.timeout == 0.5
+    assert args.no_dependencies is True
+    assert args.no_daemon is True
+
+
+def test_doctor_summary_counts_statuses() -> None:
+    assert _doctor_summary(
+        [
+            DoctorCheck("a", "ok", "ok"),
+            DoctorCheck("b", "warn", "warn"),
+            DoctorCheck("c", "fail", "fail"),
+        ]
+    ) == {"ok": 1, "warn": 1, "fail": 1}
+
+
+def test_collect_doctor_checks_can_skip_slow_sections() -> None:
+    payload = _collect_doctor_checks(dependencies=False, daemon=False)
+
+    names = {check["name"] for check in payload["checks"]}
+    assert {"python", "platform", "state_dir", "model:omniparser_yolo", "model:tinyclip"}.issubset(names)
+    assert "daemon" not in names
+    assert not any(name.startswith("dependency:") for name in names)

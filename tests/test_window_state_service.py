@@ -9,9 +9,14 @@ from PIL import Image
 
 import computer_server.services.window_state_service as window_state_service
 from computer_server.services.window_state_service import (
+    MSAAWalkGate,
+    UIAWalkGate,
+    create_zoom_image,
     filter_nodes_by_query,
+    get_accessibility_tree_snapshot,
     get_window_state_snapshot,
     node_matches_query,
+    prepare_direct_window_snapshot_image,
     prepare_window_snapshot_image,
 )
 
@@ -34,7 +39,26 @@ def test_prepare_window_snapshot_tracks_partially_offscreen_crop_origin():
     assert geometry.crop_origin_screen_y == 10
     assert geometry.crop_origin_window_x == 20
     assert geometry.crop_origin_window_y == 0
-    assert geometry.compression_ratio == 1.0
+
+
+def test_prepare_direct_window_snapshot_uses_window_origin():
+    img = Image.new("RGBA", (200, 100), "white")
+    bounds = {"x": -20, "y": 10, "width": 200, "height": 100}
+
+    resized, geometry = prepare_direct_window_snapshot_image(
+        img,
+        bounds,
+        max_image_dimension=100,
+    )
+
+    assert resized.size == (100, 50)
+    assert geometry.window_origin_x == -20
+    assert geometry.window_origin_y == 10
+    assert geometry.crop_origin_screen_x == -20
+    assert geometry.crop_origin_screen_y == 10
+    assert geometry.crop_origin_window_x == 0
+    assert geometry.crop_origin_window_y == 0
+    assert geometry.compression_ratio == 2.0
 
 
 def test_prepare_window_snapshot_uses_virtual_desktop_origin():
@@ -143,6 +167,124 @@ class _FakeAutomationHandler:
 
     async def get_window_bounds(self, pid, window_id):
         return {"x": 0, "y": 0, "width": 20, "height": 20}
+
+
+class _NoScreenshotAutomationHandler(_FakeAutomationHandler):
+    async def screenshot(self, format="jpeg", quality=85):
+        raise AssertionError("screen-crop fallback should not run when WGC succeeds")
+
+    async def get_window_bounds(self, pid, window_id):
+        return {"x": 5, "y": 7, "width": 30, "height": 20}
+
+
+class _ZoomNoScreenshotAutomationHandler(_FakeAutomationHandler):
+    async def screenshot(self, format="jpeg", quality=85):
+        raise AssertionError("screen-crop zoom fallback should not run when WGC succeeds")
+
+    async def get_window_bounds(self, pid, window_id):
+        return {"x": 10, "y": 20, "width": 40, "height": 30}
+
+
+@pytest.mark.asyncio
+async def test_get_window_state_snapshot_prefers_wgc_capture(monkeypatch):
+    async def fake_capture_window_with_wgc(window_id, *, timeout_s=1.0):
+        from computer_server.handlers.windows_wgc import WgcWindowCapture
+
+        return WgcWindowCapture(
+            image=Image.new("RGBA", (30, 20), "white"),
+            metadata={
+                "capture_backend": "wgc",
+                "capture_source": "windows_graphics_capture",
+                "capture_mode": "wgc_window",
+                "occlusion_safe": True,
+                "occlusion_risk": False,
+            },
+        )
+
+    async def fake_collect_uia_nodes(*args, **kwargs):
+        return {
+            "nodes": [],
+            "total_elements": 0,
+            "uia_node_count": 0,
+            "tree_markdown": "",
+            "uia_quality": "empty",
+            "tree_quality": "empty",
+        }
+
+    async def fake_collect_msaa_nodes(*args, **kwargs):
+        return {
+            "nodes": [],
+            "total_elements": 0,
+            "msaa_node_count": 0,
+            "tree_markdown": "",
+            "msaa_quality": "empty",
+        }
+
+    import computer_server.handlers.windows_wgc as windows_wgc
+
+    monkeypatch.setattr(windows_wgc, "capture_window_with_wgc", fake_capture_window_with_wgc)
+    monkeypatch.setattr(window_state_service, "collect_uia_nodes", fake_collect_uia_nodes)
+    monkeypatch.setattr(window_state_service, "collect_msaa_nodes", fake_collect_msaa_nodes)
+    monkeypatch.setattr(window_state_service, "detect_popover_candidates", lambda *args: "")
+    monkeypatch.setattr(window_state_service, "save_window_state_screenshot", lambda *args: "shot.jpg")
+
+    result = await get_window_state_snapshot(
+        _NoScreenshotAutomationHandler(),
+        pid=123,
+        window_id=456,
+    )
+
+    assert result["success"] is True
+    assert result["screen_width"] == 30
+    assert result["screen_height"] == 20
+    assert result["screenshot_origin"] == {"x": 5, "y": 7}
+    assert result["capture_metadata"]["capture_backend"] == "wgc"
+    assert result["capture_metadata"]["capture_mode"] == "wgc_window"
+    assert result["capture_metadata"]["occlusion_safe"] is True
+    assert result["capture_metadata"]["occlusion_risk"] is False
+
+
+@pytest.mark.asyncio
+async def test_create_zoom_image_uses_wgc_backend(monkeypatch):
+    async def fake_capture_window_with_wgc(window_id, *, timeout_s=1.0):
+        from computer_server.handlers.windows_wgc import WgcWindowCapture
+
+        return WgcWindowCapture(
+            image=Image.new("RGBA", (40, 30), "white"),
+            metadata={"capture_backend": "wgc", "latency_ms": 12.0},
+        )
+
+    import computer_server.handlers.windows_wgc as windows_wgc
+
+    monkeypatch.setattr(windows_wgc, "capture_window_with_wgc", fake_capture_window_with_wgc)
+    zoom_metadata = {
+        (123, 456): {
+            "compression_ratio": 2.0,
+            "original_width": 40,
+            "original_height": 30,
+            "window_origin_x": 5,
+            "window_origin_y": 7,
+            "crop_origin_screen_x": 5,
+            "crop_origin_screen_y": 7,
+            "capture_backend": "wgc",
+        }
+    }
+
+    result = await create_zoom_image(
+        _ZoomNoScreenshotAutomationHandler(),
+        pid=123,
+        window_id=456,
+        x1=5,
+        y1=5,
+        x2=10,
+        y2=10,
+        zoom_metadata=zoom_metadata,
+    )
+
+    assert result["success"] is True
+    assert result["capture_backend"] == "wgc"
+    assert result["capture_metadata"]["occlusion_safe"] is True
+    assert result["crop_rect"] == [18, 28, 32, 42]
 
 
 @pytest.mark.asyncio
@@ -492,3 +634,83 @@ async def test_collect_msaa_nodes_preserves_role_metadata(monkeypatch):
     assert node["metadata"]["msaa_role_id"] == 0x38
     assert node["metadata"]["msaa_role_hex"] == "0x38"
     assert node["metadata"]["msaa_has_location"] is True
+
+
+@pytest.mark.asyncio
+async def test_collect_msaa_nodes_uses_gate_after_timeout(monkeypatch):
+    import time
+
+    calls = {"count": 0}
+
+    def slow_walk_msaa_tree(*args, **kwargs):
+        calls["count"] += 1
+        time.sleep(0.2)
+        return SimpleNamespace(
+            indexed_nodes=[],
+            nodes=[],
+            total_elements=0,
+            tree_markdown="",
+            tree_quality="empty",
+        )
+
+    import computer_server.handlers.windows_msaa as windows_msaa
+
+    monkeypatch.setattr(windows_msaa, "walk_msaa_tree", slow_walk_msaa_tree)
+    gate = MSAAWalkGate(unhealthy_cooldown_s=5.0)
+
+    first = await window_state_service.collect_msaa_nodes(
+        window_id=123,
+        query=None,
+        win_origin_x=0,
+        win_origin_y=0,
+        gate=gate,
+        pid=456,
+        timeout_s=0.01,
+    )
+    second = await window_state_service.collect_msaa_nodes(
+        window_id=123,
+        query=None,
+        win_origin_x=0,
+        win_origin_y=0,
+        gate=gate,
+        pid=456,
+        timeout_s=0.01,
+    )
+
+    assert first["msaa_quality"] == "empty"
+    assert second["msaa_quality"] == "empty"
+    assert calls["count"] == 1
+
+
+@pytest.mark.asyncio
+async def test_get_accessibility_tree_snapshot_uses_uia_gate(monkeypatch):
+    fake_result = SimpleNamespace(
+        tree_markdown='[0] Button "确定"',
+        tree_quality="poor",
+        total_elements=1,
+    )
+
+    def fake_walk_uia_tree(hwnd):
+        assert hwnd == 123
+        return fake_result
+
+    import win32process
+    import computer_server.handlers.windows_uia as windows_uia
+
+    monkeypatch.setattr(win32process, "GetWindowThreadProcessId", lambda hwnd: (1, 456))
+    monkeypatch.setattr(windows_uia, "walk_uia_tree", fake_walk_uia_tree)
+
+    result = await get_accessibility_tree_snapshot(
+        123,
+        gate=UIAWalkGate(),
+        timeout_s=0.5,
+    )
+
+    assert result == {
+        "success": True,
+        "tree_markdown": '[0] Button "确定"',
+        "tree_quality": "poor",
+        "node_count": 1,
+        "window_id": 123,
+        "pid": 456,
+    }

@@ -77,6 +77,19 @@ def validate_click_action(action: str) -> str:
     return validate_choice("action", action, {"press", "raise", "expand"})
 
 
+def validate_optional_query(name: str, value: Optional[str], max_length: int = 256) -> Optional[str]:
+    if value is None:
+        return None
+    if not isinstance(value, str):
+        raise ValidationError(f"{name} must be a string")
+    value = value.strip()
+    if not value:
+        raise ValidationError(f"{name} must not be empty")
+    if len(value) > max_length:
+        raise ValidationError(f"{name} must be at most {max_length} characters")
+    return value
+
+
 def validate_click_count(count: int) -> int:
     return validate_int_range("count", count, 1, 3)
 

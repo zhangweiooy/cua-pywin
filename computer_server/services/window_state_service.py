@@ -12,9 +12,11 @@ import time
 import uuid
 from dataclasses import dataclass
 from io import BytesIO
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Callable, Dict, List, Optional, Tuple, TypeVar
 
 logger = logging.getLogger(__name__)
+
+T = TypeVar("T")
 
 
 @dataclass(frozen=True)
@@ -130,6 +132,53 @@ def prepare_window_snapshot_image(
     return img, geometry
 
 
+def prepare_direct_window_snapshot_image(
+    img,
+    bounds: Dict[str, Any] | None,
+    max_image_dimension: int,
+):
+    """Resize a direct target-window capture and build window-local geometry."""
+    from PIL import Image as PILImage
+
+    full_w, full_h = img.size
+    win_origin_x = int((bounds or {}).get("x", 0) or 0)
+    win_origin_y = int((bounds or {}).get("y", 0) or 0)
+    original_width, original_height = img.size
+
+    if original_width > max_image_dimension or original_height > max_image_dimension:
+        if original_width > original_height:
+            new_w = max_image_dimension
+            new_h = int(original_height * max_image_dimension / original_width)
+        else:
+            new_h = max_image_dimension
+            new_w = int(original_width * max_image_dimension / original_height)
+        compression_ratio = original_width / new_w
+        img = img.resize((new_w, new_h), PILImage.Resampling.LANCZOS)
+        screen_width, screen_height = new_w, new_h
+    else:
+        compression_ratio = 1.0
+        screen_width, screen_height = original_width, original_height
+
+    geometry = WindowSnapshotGeometry(
+        full_width=full_w,
+        full_height=full_h,
+        screenshot_origin_x=win_origin_x,
+        screenshot_origin_y=win_origin_y,
+        window_origin_x=win_origin_x,
+        window_origin_y=win_origin_y,
+        crop_origin_screen_x=win_origin_x,
+        crop_origin_screen_y=win_origin_y,
+        crop_origin_window_x=0,
+        crop_origin_window_y=0,
+        original_width=original_width,
+        original_height=original_height,
+        screen_width=screen_width,
+        screen_height=screen_height,
+        compression_ratio=compression_ratio,
+    )
+    return img, geometry
+
+
 def classify_tree_quality(count: int) -> str:
     """Classify element count as tree quality: empty/poor/ok/rich."""
     if count == 0:
@@ -141,21 +190,32 @@ def classify_tree_quality(count: int) -> str:
     return "poor"
 
 
-class UIAWalkGate:
-    """Per-window gate that prevents stacked UIA walks on hung providers."""
+class WindowOperationGate:
+    """Per-window gate that prevents stacked calls on hung accessibility providers."""
 
-    def __init__(self, unhealthy_cooldown_s: float = 30.0) -> None:
+    def __init__(
+        self,
+        unhealthy_cooldown_s: float = 30.0,
+        operation_name: str = "accessibility operation",
+        fallback_hint: str = "falling back",
+    ) -> None:
         self._lock = threading.Lock()
         self._inflight: set[Tuple[int, int]] = set()
         self._unhealthy_until: Dict[Tuple[int, int], float] = {}
         self._unhealthy_cooldown_s = unhealthy_cooldown_s
+        self._operation_name = operation_name
+        self._fallback_hint = fallback_hint
 
     @property
     def unhealthy_cooldown_s(self) -> float:
         return self._unhealthy_cooldown_s
 
+    @property
+    def operation_name(self) -> str:
+        return self._operation_name
+
     def claim(self, pid: int, window_id: int) -> tuple[Tuple[int, int], bool, Optional[str]]:
-        """Try to claim the UIA walk slot for a window."""
+        """Try to claim one operation slot for a window."""
         gate_key = (int(pid), int(window_id))
         now = time.monotonic()
         with self._lock:
@@ -164,15 +224,16 @@ class UIAWalkGate:
                 return (
                     gate_key,
                     False,
-                    "UIA walk skipped; window is in unhealthy cooldown "
-                    "(%.1fs remaining); falling back to vision." % (unhealthy_until - now),
+                    "%s skipped; window is in unhealthy cooldown "
+                    "(%.1fs remaining); %s."
+                    % (self._operation_name, unhealthy_until - now, self._fallback_hint),
                 )
             if gate_key in self._inflight:
                 return (
                     gate_key,
                     False,
-                    "UIA walk skipped; another walk is already in flight "
-                    "for this window; falling back to vision.",
+                    "%s skipped; another operation is already in flight "
+                    "for this window; %s." % (self._operation_name, self._fallback_hint),
                 )
 
             self._inflight.add(gate_key)
@@ -187,6 +248,92 @@ class UIAWalkGate:
     def mark_unhealthy(self, gate_key: Tuple[int, int]) -> None:
         with self._lock:
             self._unhealthy_until[gate_key] = time.monotonic() + self._unhealthy_cooldown_s
+
+
+class UIAWalkGate(WindowOperationGate):
+    """Per-window gate that prevents stacked UIA walks on hung providers."""
+
+    def __init__(self, unhealthy_cooldown_s: float = 30.0) -> None:
+        super().__init__(
+            unhealthy_cooldown_s=unhealthy_cooldown_s,
+            operation_name="UIA walk",
+            fallback_hint="falling back to vision",
+        )
+
+
+class MSAAWalkGate(WindowOperationGate):
+    """Per-window gate that prevents stacked MSAA walks on hung providers."""
+
+    def __init__(self, unhealthy_cooldown_s: float = 30.0) -> None:
+        super().__init__(
+            unhealthy_cooldown_s=unhealthy_cooldown_s,
+            operation_name="MSAA walk",
+            fallback_hint="skipping MSAA fallback",
+        )
+
+
+class UIAActionGate(WindowOperationGate):
+    """Per-window gate that prevents stacked UIA actions on hung providers."""
+
+    def __init__(self, unhealthy_cooldown_s: float = 10.0) -> None:
+        super().__init__(
+            unhealthy_cooldown_s=unhealthy_cooldown_s,
+            operation_name="UIA action",
+            fallback_hint="falling back to pixel input",
+        )
+
+
+async def run_window_operation_with_gate(
+    *,
+    pid: int,
+    window_id: int,
+    gate: WindowOperationGate,
+    func: Callable[[], T],
+    timeout_s: float,
+) -> tuple[Optional[T], Optional[str]]:
+    """Run a blocking window operation with timeout and per-window gating.
+
+    The underlying thread cannot be force-killed if COM hangs. The gate prevents
+    repeated calls from stacking on the same provider and marks timeouts
+    unhealthy so callers can take a fallback path.
+    """
+    gate_key, claimed_gate, skip_reason = gate.claim(pid, window_id)
+    if skip_reason is not None:
+        logger.info(skip_reason)
+        return None, skip_reason
+
+    try:
+        loop = asyncio.get_running_loop()
+        future = loop.run_in_executor(None, func)
+        if claimed_gate:
+            try:
+                future.add_done_callback(lambda _f, _k=gate_key: gate.release(_k))
+                claimed_gate = False
+            except Exception as exc:
+                claimed_gate = False
+                gate.mark_unhealthy(gate_key)
+                raise exc
+        result = await asyncio.wait_for(asyncio.shield(future), timeout=timeout_s)
+        return result, None
+    except asyncio.TimeoutError:
+        gate.mark_unhealthy(gate_key)
+        message = (
+            f"{gate.operation_name} timed out after {timeout_s:.1f}s "
+            f"(pid={pid}, window_id={window_id})"
+        )
+        logger.warning(
+            "%s; keeping this window gated until the leaked operation thread returns; "
+            "marking unhealthy for %.0fs as a secondary guard",
+            message,
+            gate.unhealthy_cooldown_s,
+        )
+        return None, message
+    except Exception as exc:
+        logger.warning("%s failed: %s", gate.operation_name, exc)
+        return None, str(exc)
+    finally:
+        if claimed_gate:
+            gate.release(gate_key)
 
 
 def _quality_rank(quality: str) -> int:
@@ -328,27 +475,102 @@ async def collect_uia_nodes(
             gate.release(gate_key)
 
 
+async def get_accessibility_tree_snapshot(
+    window_id: int = 0,
+    *,
+    gate: Optional[UIAWalkGate] = None,
+    timeout_s: float = 30.0,
+) -> Dict[str, Any]:
+    """Return a protected UIA tree for the standalone accessibility tool."""
+    import sys
+
+    if sys.platform != "win32":
+        return {"success": False, "error": "UIA is only available on Windows"}
+
+    try:
+        import win32gui
+        import win32process
+        from computer_server.handlers.windows_uia import walk_uia_tree
+
+        hwnd = int(window_id) if window_id else int(win32gui.GetForegroundWindow())
+        if not hwnd:
+            return {"success": False, "error": "No foreground window found"}
+        try:
+            _, pid = win32process.GetWindowThreadProcessId(hwnd)
+        except Exception:
+            pid = 0
+
+        gate = gate if gate is not None else UIAWalkGate()
+        result, gate_error = await run_window_operation_with_gate(
+            pid=int(pid),
+            window_id=hwnd,
+            gate=gate,
+            timeout_s=timeout_s,
+            func=lambda: walk_uia_tree(hwnd),
+        )
+        if result is None:
+            return {
+                "success": False,
+                "error": gate_error or "UIA tree walk failed",
+                "tree_markdown": "",
+                "tree_quality": "empty",
+                "node_count": 0,
+                "window_id": hwnd,
+                "pid": int(pid),
+            }
+
+        return {
+            "success": True,
+            "tree_markdown": result.tree_markdown,
+            "tree_quality": result.tree_quality,
+            "node_count": result.total_elements,
+            "window_id": hwnd,
+            "pid": int(pid),
+        }
+    except Exception as exc:
+        logger.error("Error getting accessibility tree: %s", exc)
+        return {"success": False, "error": str(exc)}
+
+
 async def collect_msaa_nodes(
     window_id: int,
     query: Optional[str],
     win_origin_x: int,
     win_origin_y: int,
     index_start: int = 0,
+    gate: Optional[MSAAWalkGate] = None,
+    pid: Optional[int] = None,
+    timeout_s: float = 10.0,
 ) -> Dict[str, Any]:
     """Walk the MSAA tree and return window-relative node metadata."""
     try:
         from computer_server.handlers.windows_msaa import walk_msaa_tree
 
-        loop = asyncio.get_running_loop()
-        msaa_future = loop.run_in_executor(
-            None,
-            lambda: walk_msaa_tree(
+        gate = gate if gate is not None else MSAAWalkGate()
+        gate_pid = int(pid if pid is not None else 0)
+        msaa_result, gate_error = await run_window_operation_with_gate(
+            pid=gate_pid,
+            window_id=int(window_id),
+            gate=gate,
+            timeout_s=timeout_s,
+            func=lambda: walk_msaa_tree(
                 int(window_id),
                 query,
                 index_start=int(index_start),
             ),
         )
-        msaa_result = await asyncio.wait_for(asyncio.shield(msaa_future), timeout=10.0)
+        if msaa_result is None:
+            if gate_error:
+                logger.info("Windows MSAA tree walk skipped: %s", gate_error)
+            return {
+                "nodes": [],
+                "total_elements": 0,
+                "msaa_total_elements": 0,
+                "msaa_tree_node_count": 0,
+                "msaa_node_count": 0,
+                "tree_markdown": "",
+                "msaa_quality": "empty",
+            }
 
         nodes: List[Dict[str, Any]] = []
         for n in msaa_result.indexed_nodes:
@@ -394,20 +616,6 @@ async def collect_msaa_nodes(
             "msaa_node_count": len(msaa_result.indexed_nodes),
             "tree_markdown": msaa_result.tree_markdown,
             "msaa_quality": msaa_result.tree_quality,
-        }
-    except asyncio.TimeoutError:
-        logger.warning(
-            "Windows MSAA tree walk timed out after 10s (window_id=%s)",
-            window_id,
-        )
-        return {
-            "nodes": [],
-            "total_elements": 0,
-            "msaa_total_elements": 0,
-            "msaa_tree_node_count": 0,
-            "msaa_node_count": 0,
-            "tree_markdown": "",
-            "msaa_quality": "empty",
         }
     except Exception as e:
         logger.warning("Windows MSAA tree walk failed: %s", e)
@@ -675,6 +883,8 @@ def build_window_capture_metadata(
     bounds: Optional[Dict[str, Any]],
     geometry: WindowSnapshotGeometry,
     window_state: Dict[str, Any],
+    fallback_reason: Optional[str] = None,
+    fallback_backend: Optional[str] = None,
 ) -> Dict[str, Any]:
     """Build explicit provenance and risk metadata for a window snapshot."""
     warnings: List[str] = []
@@ -683,8 +893,11 @@ def build_window_capture_metadata(
         warnings.append("target_window_bounds_unavailable")
     if window_state.get("is_minimized") is True:
         warnings.append("target_window_minimized")
+    if fallback_reason:
+        warnings.append("preferred_capture_backend_failed")
 
     capture_metadata = {
+        "capture_backend": "screen_crop" if target_cropped else "screen_full_fallback",
         "capture_mode": "screen_crop" if target_cropped else "screen_full_fallback",
         "capture_source": (screenshot_result.get("capture_metadata") or {}).get(
             "capture_source",
@@ -695,6 +908,7 @@ def build_window_capture_metadata(
         "window_id": window_id,
         "target_window_cropped": target_cropped,
         "occlusion_risk": bool(target_cropped),
+        "occlusion_safe": False,
         "occlusion_detection": "not_available",
         "warnings": warnings,
         "window_state": window_state,
@@ -721,9 +935,69 @@ def build_window_capture_metadata(
             "resized": geometry.compression_ratio != 1.0,
         },
     }
+    if fallback_reason:
+        capture_metadata["fallback"] = {
+            "from_backend": fallback_backend or "unknown",
+            "reason": fallback_reason,
+        }
     if "virtual_screen" in screenshot_result:
         capture_metadata["virtual_screen"] = screenshot_result["virtual_screen"]
     return capture_metadata
+
+
+def build_wgc_window_capture_metadata(
+    *,
+    pid: int,
+    window_id: int,
+    bounds: Optional[Dict[str, Any]],
+    geometry: WindowSnapshotGeometry,
+    window_state: Dict[str, Any],
+    wgc_metadata: Dict[str, Any],
+) -> Dict[str, Any]:
+    """Build provenance metadata for a direct WGC window capture."""
+    warnings: List[str] = []
+    if window_state.get("is_minimized") is True:
+        warnings.append("target_window_minimized")
+    if bounds is None:
+        warnings.append("target_window_bounds_unavailable")
+
+    return {
+        **wgc_metadata,
+        "capture_backend": "wgc",
+        "capture_mode": "wgc_window",
+        "capture_source": "windows_graphics_capture",
+        "target": "window",
+        "pid": pid,
+        "window_id": window_id,
+        "target_window_cropped": False,
+        "occlusion_risk": False,
+        "occlusion_safe": True,
+        "occlusion_detection": "backend_guaranteed_by_dwm_composition",
+        "warnings": warnings,
+        "window_state": window_state,
+        "screenshot_origin": {
+            "x": geometry.screenshot_origin_x,
+            "y": geometry.screenshot_origin_y,
+        },
+        "full_screen": {
+            "width": geometry.full_width,
+            "height": geometry.full_height,
+        },
+        "crop": {
+            "screen_x": geometry.crop_origin_screen_x,
+            "screen_y": geometry.crop_origin_screen_y,
+            "window_x": geometry.crop_origin_window_x,
+            "window_y": geometry.crop_origin_window_y,
+            "width": geometry.original_width,
+            "height": geometry.original_height,
+        },
+        "output": {
+            "width": geometry.screen_width,
+            "height": geometry.screen_height,
+            "compression_ratio": geometry.compression_ratio,
+            "resized": geometry.compression_ratio != 1.0,
+        },
+    }
 
 
 def save_window_state_screenshot(
@@ -758,6 +1032,7 @@ async def get_window_state_snapshot(
     include_all_nodes: bool = False,
     zoom_metadata: Optional[Dict[Tuple[int, int], Dict[str, Any]]] = None,
     walk_gate: Optional[UIAWalkGate] = None,
+    msaa_gate: Optional[MSAAWalkGate] = None,
     seen_popovers: Optional[Dict[int, set[int]]] = None,
 ) -> Dict[str, Any]:
     """Capture screenshot, UIA nodes, optional SOM nodes, and cache metadata.
@@ -772,53 +1047,82 @@ async def get_window_state_snapshot(
 
     if walk_gate is None:
         walk_gate = UIAWalkGate()
+    if msaa_gate is None:
+        msaa_gate = MSAAWalkGate()
     if seen_popovers is None:
         seen_popovers = {}
 
     try:
-        import sys
-
-        if sys.platform == "win32":
-            try:
-                import win32gui as _wg
-
-                _wg.SetForegroundWindow(int(window_id))
-                await asyncio.sleep(0.05)
-            except Exception:
-                pass
-
-        result = await automation_handler.screenshot(format="jpeg", quality=85)
-        if not result.get("success"):
-            return {
-                "success": False,
-                "error": "Screenshot failed: " + result.get("error", "unknown"),
-            }
-
-        img_bytes = base64.b64decode(result["image_data"])
-        img = PILImage.open(BytesIO(img_bytes))
-        screenshot_origin = result.get("origin") or {}
-        screenshot_origin_x = int(screenshot_origin.get("x", 0) or 0)
-        screenshot_origin_y = int(screenshot_origin.get("y", 0) or 0)
-
         bounds = await automation_handler.get_window_bounds(pid, window_id)
-        img, geometry = prepare_window_snapshot_image(
-            img,
-            bounds,
-            (screenshot_origin_x, screenshot_origin_y),
-            max_image_dimension,
-        )
         window_capture_state = inspect_window_capture_state(pid, window_id, bounds)
-        capture_metadata = build_window_capture_metadata(
-            pid=pid,
-            window_id=window_id,
-            screenshot_result=result,
-            bounds=bounds,
-            geometry=geometry,
-            window_state=window_capture_state,
-        )
+        wgc_failure_reason: Optional[str] = None
+        result: Dict[str, Any] = {}
+
+        try:
+            from computer_server.handlers.windows_wgc import capture_window_with_wgc
+
+            wgc_capture = await capture_window_with_wgc(int(window_id))
+            img, geometry = prepare_direct_window_snapshot_image(
+                wgc_capture.image,
+                bounds or window_capture_state.get("raw_bounds"),
+                max_image_dimension,
+            )
+            capture_metadata = build_wgc_window_capture_metadata(
+                pid=pid,
+                window_id=window_id,
+                bounds=bounds,
+                geometry=geometry,
+                window_state=window_capture_state,
+                wgc_metadata=wgc_capture.metadata,
+            )
+        except Exception as wgc_error:
+            wgc_failure_reason = str(wgc_error)
+            logger.debug("WGC capture unavailable; falling back to screen crop: %s", wgc_error)
+
+            import sys
+
+            if sys.platform == "win32":
+                try:
+                    import win32gui as _wg
+
+                    _wg.SetForegroundWindow(int(window_id))
+                    await asyncio.sleep(0.05)
+                except Exception:
+                    pass
+
+            result = await automation_handler.screenshot(format="jpeg", quality=85)
+            if not result.get("success"):
+                return {
+                    "success": False,
+                    "error": "Screenshot failed: " + result.get("error", "unknown"),
+                }
+
+            img_bytes = base64.b64decode(result["image_data"])
+            img = PILImage.open(BytesIO(img_bytes))
+            screenshot_origin = result.get("origin") or {}
+            screenshot_origin_x = int(screenshot_origin.get("x", 0) or 0)
+            screenshot_origin_y = int(screenshot_origin.get("y", 0) or 0)
+            img, geometry = prepare_window_snapshot_image(
+                img,
+                bounds,
+                (screenshot_origin_x, screenshot_origin_y),
+                max_image_dimension,
+            )
+            capture_metadata = build_window_capture_metadata(
+                pid=pid,
+                window_id=window_id,
+                screenshot_result=result,
+                bounds=bounds,
+                geometry=geometry,
+                window_state=window_capture_state,
+                fallback_reason=wgc_failure_reason,
+                fallback_backend="wgc",
+            )
 
         zoom_metadata = zoom_metadata if zoom_metadata is not None else {}
-        zoom_metadata[(pid, window_id)] = geometry.to_zoom_metadata()
+        zoom_entry = geometry.to_zoom_metadata()
+        zoom_entry["capture_backend"] = capture_metadata.get("capture_backend")
+        zoom_metadata[(pid, window_id)] = zoom_entry
 
         cache = get_element_cache()
         cache.set_window_origin(
@@ -856,6 +1160,8 @@ async def get_window_state_snapshot(
                 geometry.window_origin_x,
                 geometry.window_origin_y,
                 index_start=next_element_index(nodes),
+                gate=msaa_gate,
+                pid=pid,
             )
             if msaa_data["nodes"]:
                 nodes.extend(msaa_data["nodes"])
@@ -938,8 +1244,8 @@ async def get_window_state_snapshot(
             "screen_width": geometry.screen_width,
             "screen_height": geometry.screen_height,
             "screenshot_origin": {
-                "x": screenshot_origin_x,
-                "y": screenshot_origin_y,
+                "x": geometry.screenshot_origin_x,
+                "y": geometry.screenshot_origin_y,
             },
         }
         if popover_candidates_text:
@@ -1008,30 +1314,81 @@ async def create_zoom_image(
     screen_x2 = csx + padded_x2
     screen_y2 = csy + padded_y2
 
-    result = await automation_handler.screenshot(format="png", quality=95)
-    if not result.get("success"):
-        return {"success": False, "error": result.get("error", "Screenshot failed")}
+    cropped = None
+    capture_backend = "screen_crop"
+    capture_metadata: Dict[str, Any] = {"capture_backend": "screen_crop"}
+    wgc_failure_reason: Optional[str] = None
 
-    img_bytes = base64.b64decode(result["image_data"])
-    img = PILImage.open(BytesIO(img_bytes))
-    screenshot_origin = result.get("origin") or {}
-    screenshot_origin_x = int(screenshot_origin.get("x", 0) or 0)
-    screenshot_origin_y = int(screenshot_origin.get("y", 0) or 0)
+    if meta.get("capture_backend") == "wgc":
+        try:
+            from computer_server.handlers.windows_wgc import capture_window_with_wgc
 
-    image_x1 = screen_x1 - screenshot_origin_x
-    image_y1 = screen_y1 - screenshot_origin_y
-    image_x2 = screen_x2 - screenshot_origin_x
-    image_y2 = screen_y2 - screenshot_origin_y
-    image_x1 = max(0, min(image_x1, img.width - 1))
-    image_y1 = max(0, min(image_y1, img.height - 1))
-    image_x2 = max(image_x1 + 1, min(image_x2, img.width))
-    image_y2 = max(image_y1 + 1, min(image_y2, img.height))
-    screen_x1 = image_x1 + screenshot_origin_x
-    screen_y1 = image_y1 + screenshot_origin_y
-    screen_x2 = image_x2 + screenshot_origin_x
-    screen_y2 = image_y2 + screenshot_origin_y
+            wgc_capture = await capture_window_with_wgc(int(window_id))
+            img = wgc_capture.image
+            current_wx = wx
+            current_wy = wy
+            try:
+                current_bounds = await automation_handler.get_window_bounds(pid, window_id)
+                current_wx = int((current_bounds or {}).get("x", wx) or wx)
+                current_wy = int((current_bounds or {}).get("y", wy) or wy)
+            except Exception:
+                pass
 
-    cropped = img.crop((image_x1, image_y1, image_x2, image_y2))
+            image_x1 = max(0, min(padded_x1, img.width - 1))
+            image_y1 = max(0, min(padded_y1, img.height - 1))
+            image_x2 = max(image_x1 + 1, min(padded_x2, img.width))
+            image_y2 = max(image_y1 + 1, min(padded_y2, img.height))
+            screen_x1 = current_wx + image_x1
+            screen_y1 = current_wy + image_y1
+            screen_x2 = current_wx + image_x2
+            screen_y2 = current_wy + image_y2
+            cropped = img.crop((image_x1, image_y1, image_x2, image_y2))
+            capture_backend = "wgc"
+            capture_metadata = {
+                **wgc_capture.metadata,
+                "capture_backend": "wgc",
+                "occlusion_safe": True,
+                "occlusion_risk": False,
+            }
+        except Exception as wgc_error:
+            wgc_failure_reason = str(wgc_error)
+            logger.debug("WGC zoom capture unavailable; falling back to screen crop: %s", wgc_error)
+
+    if cropped is None:
+        result = await automation_handler.screenshot(format="png", quality=95)
+        if not result.get("success"):
+            return {"success": False, "error": result.get("error", "Screenshot failed")}
+
+        img_bytes = base64.b64decode(result["image_data"])
+        img = PILImage.open(BytesIO(img_bytes))
+        screenshot_origin = result.get("origin") or {}
+        screenshot_origin_x = int(screenshot_origin.get("x", 0) or 0)
+        screenshot_origin_y = int(screenshot_origin.get("y", 0) or 0)
+
+        image_x1 = screen_x1 - screenshot_origin_x
+        image_y1 = screen_y1 - screenshot_origin_y
+        image_x2 = screen_x2 - screenshot_origin_x
+        image_y2 = screen_y2 - screenshot_origin_y
+        image_x1 = max(0, min(image_x1, img.width - 1))
+        image_y1 = max(0, min(image_y1, img.height - 1))
+        image_x2 = max(image_x1 + 1, min(image_x2, img.width))
+        image_y2 = max(image_y1 + 1, min(image_y2, img.height))
+        screen_x1 = image_x1 + screenshot_origin_x
+        screen_y1 = image_y1 + screenshot_origin_y
+        screen_x2 = image_x2 + screenshot_origin_x
+        screen_y2 = image_y2 + screenshot_origin_y
+        cropped = img.crop((image_x1, image_y1, image_x2, image_y2))
+        capture_metadata = {
+            "capture_backend": "screen_crop",
+            "occlusion_safe": False,
+            "occlusion_risk": True,
+        }
+        if wgc_failure_reason:
+            capture_metadata["fallback"] = {
+                "from_backend": "wgc",
+                "reason": wgc_failure_reason,
+            }
+
     padded_w = screen_x2 - screen_x1
     padded_h = screen_y2 - screen_y1
 
@@ -1063,4 +1420,6 @@ async def create_zoom_image(
         "pid": pid,
         "window_id": window_id,
         "zoom_id": zoom_id,
+        "capture_backend": capture_backend,
+        "capture_metadata": capture_metadata,
     }

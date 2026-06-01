@@ -35,6 +35,7 @@ cua-pywin/
 │  │  ├─ factory.py          ← HandlerFactory + Handlers dataclass
 │  │  ├─ windows.py          ← Windows: ImageGrab + win32gui + pynput
 │  │  ├─ windows_uia.py      ← UIA COM 树遍历 (DFS, 缓存属性, 直接 STA 调用)
+│  │  ├─ windows_wgc.py      ← Windows.Graphics.Capture 目标窗口捕获
 │  │  ├─ windows_window.py   ← Windows 前台锁绕过专用 handler
 │  │  ├─ generic.py          ← 跨平台 desktop / window 辅助 handler
 │  │  ├─ element_cache.py    ← (pid, window_id) 元素缓存 + TTL + HWND 有效性
@@ -102,6 +103,7 @@ python -m computer_server.mcp_server
 cua-win serve --port 8000
 
 # CLI daemon/client（默认自动启动本机 HTTP daemon，无需手动 serve）
+cua-win doctor
 cua-win status
 cua-win list-tools
 cua-win computer_get_screen_size
@@ -116,6 +118,8 @@ cua-win serve --host 0.0.0.0 --port 8000 \
 普通 HTTP 服务暴露 `/status` 与 `/mcp`，legacy `/ws` 与 `/commands` 已删除；`cua-win` daemon 复用同一个 app，并额外启用 token 保护的 `/tools`、`/call`、`/shutdown` JSON RPC 路由。CORS 仅放行 `localhost / 127.0.0.1 / [::1]` origin。
 
 `cua-win` 是面向人和脚本的 CLI。默认启动同一个本机 HTTP app，并通过 token 保护的 JSON RPC 路由调用 MCP 工具，因此 `computer_get_window_state` 这类高频重工具只在 daemon 启动时预热一次；`--no-daemon` 会强制单次进程内调用，适合调试但不适合高频使用。
+
+`cua-win doctor` 执行只读本机诊断：平台、Python 版本、依赖可发现性、打包模型文件、状态目录和现有 daemon 可达性。它不会启动 daemon 或调用桌面控制工具。
 
 如果只需要 `/status + /mcp`，可用 `cua-win serve --no-cli-rpc` 关闭 CLI JSON RPC 路由。
 
@@ -164,9 +168,9 @@ cua-win serve --host 0.0.0.0 --port 8000 \
 
 ### 关键设计
 
-**Per-window 截图（crop，非直接捕获）** — Windows `PrintWindow` 对硬件加速窗口失效。`ImageGrab.grab()` + `GetWindowRect` + PIL `crop()` 是唯一可靠路径。多显示器负坐标 + 部分屏外通过 `WindowSnapshotGeometry` 显式区分「真实窗口原点」与「可见裁剪原点」。
+**Per-window 截图** — Windows `PrintWindow` 对硬件加速窗口失效。`get_window_state` 优先使用 Windows.Graphics.Capture 捕获目标窗口自身的 DWM 合成帧，避免被前景遮挡窗口污染；失败时回退到 `ImageGrab.grab()` + `GetWindowRect` + PIL `crop()`。`computer_zoom` 会沿用上一次 snapshot backend：WGC snapshot 使用 WGC 做原生 zoom crop，失败才退回 screen crop。多显示器负坐标 + 部分屏外通过 `WindowSnapshotGeometry` 显式区分「真实窗口原点」与「可见裁剪原点」。
 
-**UIA 集成 + UIAWalkGate** — 直接在 STA 线程内调用 COM（不再 per-property 提交到全局线程池——那会在 UIA provider 挂死时永久泄漏线程）。`UIAWalkGate`（挂在 `ServerContext`）提供唯一超时边界：30s `wait_for + shield + done_callback`，超时时 gate 保持占用并标记 30s 不健康冷却，后续请求直接走 SOM，不再叠加 doomed walks。
+**UIA/MSAA 集成 + Gate** — 直接在 STA 线程内调用 COM（不再 per-property 提交到全局线程池——那会在 UIA provider 挂死时永久泄漏线程）。`UIAWalkGate` / `MSAAWalkGate` / `UIAActionGate`（挂在 `ServerContext`）提供窗口级超时边界：`wait_for + shield + done_callback`，超时时 gate 保持占用并标记不健康冷却，后续请求走 SOM、跳过 MSAA 或回退 pixel/HID，不再叠加 doomed calls。
 
 **树质量 + SOM 回退** — `tree_quality: rich(>50) / ok(15-50)` 跳过 SOM，`poor(<15) / empty(0)` 启用 SOM 视觉检测。`uia_quality` 与 `vision_quality` 单独报告，不互相覆盖。
 
@@ -184,7 +188,7 @@ cua-win serve --host 0.0.0.0 --port 8000 \
 
 - **SOM 检测同步运行于事件循环线程**：anyio 任务组持有 GIL。warm_up() 启动时预加载（~30s），后续调用 < 3s
 - **录制截图必须同步**：`ImageGrab.grab()` 不能卸到线程——anyio 事件循环阻止 `run_in_executor` 任务执行。50 步录制总计 ~5-10s 阻塞
-- **SOM OCR 遮挡噪音**：目标窗口被遮挡时拾取重叠内容。`SetForegroundWindow` + 50ms 延迟缓解
+- **SOM OCR 遮挡噪音**：WGC window capture 可避免大多数重叠窗口污染；screen crop 回退会在 `capture_metadata.occlusion_risk=true` 中显式标记
 - **学习 IME 对终端无效**：PowerShell/CMD 无 UIA ValuePattern，回退拼音 + OCR
 - **录制坐标绝对化**：回放时窗口位置变化导致错位。`window_ref` 机制在窗口存活时可重算坐标，窗口过期则按进程名/标题重新搜索
 - **GBK 编码**：子进程必须设置 `PYTHONIOENCODING=utf-8`
@@ -231,6 +235,7 @@ cua-pywin/
 │  │  ├─ factory.py          ← HandlerFactory + Handlers dataclass
 │  │  ├─ windows.py          ← Windows: ImageGrab + win32gui + pynput
 │  │  ├─ windows_uia.py      ← UIA COM tree walker (DFS, direct STA calls)
+│  │  ├─ windows_wgc.py      ← Windows.Graphics.Capture target-window capture
 │  │  ├─ windows_window.py   ← Windows foreground-lock bypass
 │  │  ├─ generic.py          ← Cross-platform desktop / window helper handler
 │  │  ├─ element_cache.py    ← (pid, window_id) cache + TTL + HWND validity
@@ -298,6 +303,7 @@ python -m computer_server.mcp_server
 cua-win serve --port 8000
 
 # CLI daemon/client (auto-starts a local HTTP daemon by default; no manual serve needed)
+cua-win doctor
 cua-win status
 cua-win list-tools
 cua-win computer_get_screen_size
@@ -321,6 +327,11 @@ default and calls MCP tools through token-protected JSON RPC routes, so heavy
 high-frequency tools such as `computer_get_window_state` pay warm-up once per
 daemon process. `--no-daemon` forces a one-shot in-process call and is intended
 for debugging rather than frequent use.
+
+`cua-win doctor` performs read-only local diagnostics for platform, Python
+version, dependency availability, bundled model files, state directory, and
+existing daemon reachability. It does not start the daemon or call desktop
+control tools.
 
 Use `cua-win serve --no-cli-rpc` when you only want `/status + /mcp`.
 
@@ -369,9 +380,9 @@ Click coordinate pipeline: `element_index → cached element center → +window 
 
 ### Key Design Decisions
 
-**Per-window screenshot via crop** — `PrintWindow` fails on hardware-accelerated windows. `ImageGrab.grab()` + `GetWindowRect` + PIL `crop()` is the only reliable path. Multi-monitor negative coordinates and partially-offscreen windows are handled by `WindowSnapshotGeometry`, which explicitly separates the real window origin from the visible crop origin.
+**Per-window screenshot capture** — `PrintWindow` fails on hardware-accelerated windows. `get_window_state` now prefers Windows.Graphics.Capture for the target window's own DWM-composited frame, avoiding overlapping foreground-window pollution. If WGC fails, it falls back to `ImageGrab.grab()` + `GetWindowRect` + PIL `crop()`. `computer_zoom` follows the last snapshot backend: WGC snapshots use WGC for native zoom crops and fall back to screen crop only when WGC fails. Multi-monitor negative coordinates and partially-offscreen windows are handled by `WindowSnapshotGeometry`, which explicitly separates the real window origin from the visible crop origin.
 
-**UIA integration + UIAWalkGate** — COM is called directly inside its STA thread (the previous design submitted each property call to a shared executor and leaked threads when the UIA provider hung). `UIAWalkGate` (owned by `ServerContext`) is the sole timeout boundary: 30s `wait_for + shield + done_callback`. On timeout the gate stays held and the key is marked unhealthy for 30s, so fresh requests fall straight through to SOM instead of stacking more doomed walks.
+**UIA/MSAA integration + gates** — COM is called directly inside its STA thread (the previous design submitted each property call to a shared executor and leaked threads when the UIA provider hung). `UIAWalkGate` / `MSAAWalkGate` / `UIAActionGate` (owned by `ServerContext`) provide per-window timeout boundaries with `wait_for + shield + done_callback`. On timeout the gate stays held and the key is marked unhealthy, so fresh requests fall through to SOM, skip MSAA, or use pixel/HID fallback instead of stacking more doomed calls.
 
 **Tree quality + SOM fallback** — `rich(>50) / ok(15-50)` skip SOM; `poor(<15) / empty(0)` enable SOM vision. `uia_quality` and `vision_quality` are reported separately and do not overwrite each other.
 
@@ -402,7 +413,7 @@ TinyCLIP, merge, encode, and total latency.
 
 - **SOM detection runs synchronously on the event loop**: anyio task group holds the GIL. warm_up() pre-loads at startup (~30s); subsequent calls <3s
 - **Recording screenshots cannot be offloaded**: `ImageGrab.grab()` must stay synchronous — anyio blocks `run_in_executor`. ~5-10s total for 50-action recordings
-- **SOM OCR occlusion noise**: occluded windows pick up overlapping content. Mitigated by `SetForegroundWindow` + 50ms delay
+- **SOM OCR occlusion noise**: WGC window capture avoids most overlapping-window pollution; screen-crop fallback marks `capture_metadata.occlusion_risk=true`
 - **Learning IME not supported in terminals**: PowerShell/CMD lack UIA ValuePattern. Falls back to pinyin + OCR
 - **Recording coordinates are absolute**: window position changes break replay. `window_ref` recalculates if window is alive; falls back to process-name/title search for stale IDs
 - **GBK encoding**: set `PYTHONIOENCODING=utf-8` in subprocess environments

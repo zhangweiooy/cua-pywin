@@ -41,6 +41,14 @@ try:
     import safetensors.torch as _pre_safetensors_torch  # noqa: F401
 except Exception:
     pass
+try:
+    # PyWinRT loads native extensions. Import before the anyio loop so WGC can
+    # be used safely from get_window_state without first-time DLL loading there.
+    from computer_server.handlers.windows_wgc import is_available as _pre_wgc_avail
+
+    _pre_wgc_avail()
+except Exception:
+    pass
 from typing import Any, Dict, List, Optional, Tuple
 
 if sys.platform != "win32":
@@ -57,6 +65,14 @@ except Exception:
 from fastmcp.utilities.types import Image
 
 logger = logging.getLogger(__name__)
+
+
+def _uia_action_timeout_s() -> float:
+    """Return the per-action UIA COM timeout."""
+    try:
+        return max(0.1, float(os.getenv("CUA_UIA_ACTION_TIMEOUT", "2.0")))
+    except Exception:
+        return 2.0
 
 
 async def _animate_cursor_to(x: int, y: int) -> None:
@@ -451,6 +467,36 @@ def create_mcp_server() -> FastMCP:
 
     context = ServerContext()
 
+    async def _run_uia_action_with_timeout(
+        pid: int,
+        window_id: int,
+        action_name: str,
+        func: Any,
+    ) -> Tuple[bool, Optional[str]]:
+        """Run a UIA action behind the per-window action gate."""
+        from computer_server.services.window_state_service import run_window_operation_with_gate
+
+        def _wrapped() -> bool:
+            func()
+            return True
+
+        result, error = await run_window_operation_with_gate(
+            pid=pid,
+            window_id=window_id,
+            gate=context.uia_action_gate,
+            func=_wrapped,
+            timeout_s=_uia_action_timeout_s(),
+        )
+        if error is not None:
+            logger.info(
+                "UIA %s skipped/failed for pid=%s window_id=%s: %s",
+                action_name,
+                pid,
+                window_id,
+                error,
+            )
+        return bool(result), error
+
     def _resolve_snapshot_ref(
         snapshot_id: Optional[str],
         pid: Optional[int],
@@ -708,6 +754,8 @@ def create_mcp_server() -> FastMCP:
         pid: int,
         window_id: int,
         max_image_dimension: int = 1280,
+        query: Optional[str] = None,
+        include_all_nodes: bool = False,
     ) -> Any:
         """Thin wrapper around computer_get_window_state for capture_after use.
 
@@ -717,7 +765,11 @@ def create_mcp_server() -> FastMCP:
         """
         try:
             fresh = await computer_get_window_state(
-                pid=pid, window_id=window_id, max_image_dimension=max_image_dimension,
+                pid=pid,
+                window_id=window_id,
+                max_image_dimension=max_image_dimension,
+                query=query,
+                include_all_nodes=include_all_nodes,
             )
             if fresh.get("success") is False:
                 return {"success": False, "error": fresh.get("error", "get_window_state returned success=False")}
@@ -725,14 +777,117 @@ def create_mcp_server() -> FastMCP:
                 "screenshot": fresh.get("screenshot"),
                 "nodes": fresh.get("nodes", []),
                 "node_count": fresh.get("node_count", 0),
+                "returned_node_count": fresh.get("returned_node_count", fresh.get("node_count", 0)),
+                "unfiltered_node_count": fresh.get("unfiltered_node_count"),
+                "nodes_filtered": fresh.get("nodes_filtered", False),
+                "tree_markdown": fresh.get("tree_markdown", ""),
                 "tree_quality": fresh.get("tree_quality", "empty"),
+                "uia_quality": fresh.get("uia_quality"),
+                "msaa_quality": fresh.get("msaa_quality"),
+                "vision_quality": fresh.get("vision_quality"),
+                "node_sources": fresh.get("node_sources", []),
                 "snapshot_id": fresh.get("snapshot_id"),
                 "snapshot_latest": fresh.get("snapshot_latest", True),
+                "query": query,
                 "success": True,
             }
         except Exception as _cap_err:
             logger.warning("capture_after failed: %s", _cap_err)
             return {"success": False, "error": str(_cap_err)}
+
+    def _annotate_action_path(
+        result: Dict[str, Any],
+        *,
+        method: str,
+        used_foreground: bool,
+        uses_system_input: bool,
+        requires_visible_target: bool,
+        coordinate_source: Optional[str] = None,
+    ) -> None:
+        """Attach transparent action-path metadata to a tool result."""
+        result.setdefault("method", method)
+        result["used_foreground"] = used_foreground
+        result["uses_system_input"] = uses_system_input
+        result["requires_visible_target"] = requires_visible_target
+        result["action_path"] = {
+            "method": method,
+            "used_foreground": used_foreground,
+            "uses_system_input": uses_system_input,
+            "requires_visible_target": requires_visible_target,
+        }
+        if coordinate_source:
+            result["action_path"]["coordinate_source"] = coordinate_source
+
+    def _verification_from_capture(
+        verify_query: str,
+        capture: Dict[str, Any],
+    ) -> Dict[str, Any]:
+        if not capture.get("success"):
+            return {
+                "success": False,
+                "query": verify_query,
+                "matched": False,
+                "error": capture.get("error", "post-action capture failed"),
+            }
+
+        matched_node_count = int(capture.get("returned_node_count", capture.get("node_count", 0)) or 0)
+        tree_markdown = str(capture.get("tree_markdown") or "")
+        matched_tree = verify_query.lower() in tree_markdown.lower()
+        matched = matched_node_count > 0 or matched_tree
+        return {
+            "success": True,
+            "query": verify_query,
+            "matched": matched,
+            "matched_node_count": matched_node_count,
+            "matched_tree": matched_tree,
+            "snapshot_id": capture.get("snapshot_id"),
+            "tree_quality": capture.get("tree_quality"),
+            "node_sources": capture.get("node_sources", []),
+        }
+
+    async def _attach_post_action_observation(
+        result: Dict[str, Any],
+        pid: Optional[int],
+        window_id: Optional[int],
+        *,
+        capture_after: bool,
+        verify_query: Optional[str],
+        require_verification: bool,
+    ) -> Dict[str, Any]:
+        """Attach capture_after and optional post-action verification."""
+        if pid is None or window_id is None:
+            if verify_query:
+                result["post_action_verification"] = {
+                    "success": False,
+                    "query": verify_query,
+                    "matched": False,
+                    "error": "pid and window_id are required for post-action verification",
+                }
+                if require_verification:
+                    result["action_success"] = bool(result.get("success"))
+                    result["success"] = False
+                    result["error_code"] = "post_action_verification_failed"
+                    result["error"] = "pid and window_id are required for post-action verification"
+            return result
+
+        if capture_after:
+            result["capture_after"] = await _capture_and_detect(pid, window_id)
+
+        if verify_query:
+            verification_capture = await _capture_and_detect(
+                pid,
+                window_id,
+                query=verify_query,
+                include_all_nodes=False,
+            )
+            verification = _verification_from_capture(verify_query, verification_capture)
+            result["post_action_verification"] = verification
+            if require_verification and not verification.get("matched", False):
+                result["action_success"] = bool(result.get("success"))
+                result["success"] = False
+                result["error_code"] = "post_action_verification_failed"
+                result["error"] = f"Post-action verification failed for query: {verify_query}"
+        return result
 
     # ============================================================
     # SCREEN & MOUSE ACTIONS
@@ -834,6 +989,8 @@ def create_mcp_server() -> FastMCP:
         element_index: int,
         recorded_element_ref: Optional[Dict[str, Any]],
         capture_after: bool,
+        verify_query: Optional[str],
+        require_verification: bool,
     ) -> Dict[str, Any]:
         """Handle element_index action='raise'."""
         try:
@@ -845,16 +1002,37 @@ def create_mcp_server() -> FastMCP:
                 "element_index": element_index,
                 "window_id": window_id,
             }
+            _annotate_action_path(
+                result,
+                method="activate_window",
+                used_foreground=True,
+                uses_system_input=False,
+                requires_visible_target=False,
+                coordinate_source="element",
+            )
+            await _attach_post_action_observation(
+                result,
+                pid,
+                window_id,
+                capture_after=capture_after,
+                verify_query=verify_query,
+                require_verification=require_verification,
+            )
             wr = _build_window_ref(pid, window_id, 0, 0)
             await _recording_hook(_recorded_turn(
                 "computer_click",
-                {"element_index": element_index, "pid": pid, "window_id": window_id, "action": "raise"},
+                {
+                    "element_index": element_index,
+                    "pid": pid,
+                    "window_id": window_id,
+                    "action": "raise",
+                    "verify_query": verify_query,
+                    "require_verification": require_verification,
+                },
                 result,
                 window_ref=wr,
                 element_ref=recorded_element_ref,
             ))
-            if capture_after:
-                result["capture_after"] = await _capture_and_detect(pid, window_id)
             return result
         except Exception as exc:
             return {
@@ -870,6 +1048,8 @@ def create_mcp_server() -> FastMCP:
         el: Any,
         recorded_element_ref: Optional[Dict[str, Any]],
         capture_after: bool,
+        verify_query: Optional[str],
+        require_verification: bool,
     ) -> Optional[Dict[str, Any]]:
         """Try UIA Invoke for an enabled cached element; return None to fall back."""
         if getattr(el, "source", None) == "msaa":
@@ -893,13 +1073,29 @@ def create_mcp_server() -> FastMCP:
                 screen_pt = (origin_x + el.center_x, origin_y + el.center_y)
             await _animate_cursor_to(int(screen_pt[0]), int(screen_pt[1]))
 
-            _invoke_via_uia_point(int(screen_pt[0]), int(screen_pt[1]))
+            invoked, invoke_error = await _run_uia_action_with_timeout(
+                pid,
+                window_id,
+                "invoke",
+                lambda: _invoke_via_uia_point(int(screen_pt[0]), int(screen_pt[1])),
+            )
+            if not invoked:
+                logger.debug("UIA Invoke unavailable; falling back to pixel click: %s", invoke_error)
+                return None
             result: Dict[str, Any] = {
                 "success": True,
                 "action": "invoke",
                 "element_index": element_index,
                 "method": "uia_invoke",
             }
+            _annotate_action_path(
+                result,
+                method="uia_invoke",
+                used_foreground=False,
+                uses_system_input=False,
+                requires_visible_target=False,
+                coordinate_source="element",
+            )
 
             changes = _window_detect_changes(snap_hwnds, snap_fg_hwnd)
             if changes:
@@ -927,22 +1123,33 @@ def create_mcp_server() -> FastMCP:
                         ],
                     )
 
+            edit_types = {"Edit", "ComboBox", "Document", "RichEdit"}
+            if el.control_type in edit_types:
+                await asyncio.sleep(0.8)
+
+            await _attach_post_action_observation(
+                result,
+                pid,
+                window_id,
+                capture_after=capture_after,
+                verify_query=verify_query,
+                require_verification=require_verification,
+            )
             wr = _build_window_ref(pid, window_id, screen_pt[0], screen_pt[1])
             await _recording_hook(_recorded_turn(
                 "computer_click",
-                {"element_index": element_index, "pid": pid, "window_id": window_id},
+                {
+                    "element_index": element_index,
+                    "pid": pid,
+                    "window_id": window_id,
+                    "verify_query": verify_query,
+                    "require_verification": require_verification,
+                },
                 result,
                 click_point=screen_pt,
                 window_ref=wr,
                 element_ref=recorded_element_ref,
             ))
-
-            edit_types = {"Edit", "ComboBox", "Document", "RichEdit"}
-            if el.control_type in edit_types:
-                await asyncio.sleep(0.8)
-
-            if capture_after:
-                result["capture_after"] = await _capture_and_detect(pid, window_id)
             return result
         except Exception as exc:
             logger.debug("UIA Invoke failed (falling back to pixel click): %s", exc)
@@ -1004,6 +1211,8 @@ def create_mcp_server() -> FastMCP:
         action: str,
         from_zoom: bool,
         capture_after: bool,
+        verify_query: Optional[str],
+        require_verification: bool,
     ) -> Tuple[Optional[Dict[str, Any]], Optional[int], Optional[int], Optional[Dict[str, Any]]]:
         """Resolve element_index mode.
 
@@ -1042,7 +1251,15 @@ def create_mcp_server() -> FastMCP:
         recorded_element_ref = _build_element_ref(pid, window_id, element_index)
         if action == "raise":
             return (
-                await _click_element_raise(pid, window_id, element_index, recorded_element_ref, capture_after),
+                await _click_element_raise(
+                    pid,
+                    window_id,
+                    element_index,
+                    recorded_element_ref,
+                    capture_after,
+                    verify_query,
+                    require_verification,
+                ),
                 None,
                 None,
                 recorded_element_ref,
@@ -1075,6 +1292,8 @@ def create_mcp_server() -> FastMCP:
             el,
             recorded_element_ref,
             capture_after,
+            verify_query,
+            require_verification,
         )
         if invoke_result is not None:
             return invoke_result, None, None, recorded_element_ref
@@ -1184,6 +1403,9 @@ def create_mcp_server() -> FastMCP:
         count: int,
         modifier: Optional[List[str]],
         capture_after: bool,
+        verify_query: Optional[str],
+        require_verification: bool,
+        coordinate_source: str,
         recorded_element_ref: Optional[Dict[str, Any]],
     ) -> Optional[Dict[str, Any]]:
         """Perform force-frontmost click when requested by the caller."""
@@ -1220,17 +1442,39 @@ def create_mcp_server() -> FastMCP:
                 "count": count,
                 "force_frontmost": True,
             }
+            _annotate_action_path(
+                result,
+                method="mouse_event",
+                used_foreground=True,
+                uses_system_input=True,
+                requires_visible_target=True,
+                coordinate_source=coordinate_source,
+            )
+            await _attach_post_action_observation(
+                result,
+                pid,
+                window_id,
+                capture_after=capture_after,
+                verify_query=verify_query,
+                require_verification=require_verification,
+            )
             wr = _build_window_ref(pid, window_id, actual_x, actual_y)
             await _recording_hook(_recorded_turn(
                 "computer_click",
-                {"x": x, "y": y, "button": button, "force_frontmost": True, "count": count},
+                {
+                    "x": x,
+                    "y": y,
+                    "button": button,
+                    "force_frontmost": True,
+                    "count": count,
+                    "verify_query": verify_query,
+                    "require_verification": require_verification,
+                },
                 result,
                 click_point=(actual_x, actual_y),
                 window_ref=wr,
                 element_ref=recorded_element_ref,
             ))
-            if capture_after:
-                result["capture_after"] = await _capture_and_detect(pid, window_id)
             return result
         except Exception as exc:
             return {
@@ -1287,6 +1531,8 @@ def create_mcp_server() -> FastMCP:
         force_frontmost: bool = False,
         action: str = "press",
         capture_after: bool = False,
+        verify_query: Optional[str] = None,
+        require_verification: bool = False,
     ) -> Any:
         """
         Click at the specified screen coordinates or on a cached element.
@@ -1323,6 +1569,8 @@ def create_mcp_server() -> FastMCP:
                 'expand' for MSAA dropdown/splitbutton elements. For
                 element_index only.
             capture_after: When True, take a fresh screenshot + SOM after the action.
+            verify_query: Optional query to search in a fresh window snapshot after the action.
+            require_verification: When True, return success=False if verify_query is not found.
         """
         from computer_server.services.validation_service import (
             error_result,
@@ -1331,6 +1579,7 @@ def create_mcp_server() -> FastMCP:
             validate_mouse_button,
             validate_modifiers,
             validate_optional_coordinate,
+            validate_optional_query,
             resolve_coordinate_space,
         )
 
@@ -1341,6 +1590,11 @@ def create_mcp_server() -> FastMCP:
             x = validate_optional_coordinate("x", x)
             y = validate_optional_coordinate("y", y)
             modifier = validate_modifiers(modifier)
+            verify_query = validate_optional_query("verify_query", verify_query)
+            if not isinstance(require_verification, bool):
+                raise ValueError("require_verification must be a boolean")
+            if require_verification and verify_query is None:
+                raise ValueError("require_verification=True requires verify_query")
             if action != "press" and element_index is None:
                 return {
                     "success": False,
@@ -1387,6 +1641,8 @@ def create_mcp_server() -> FastMCP:
             action,
             from_zoom,
             capture_after,
+            verify_query,
+            require_verification,
         )
         if element_result is not None:
             return element_result
@@ -1429,6 +1685,9 @@ def create_mcp_server() -> FastMCP:
                 count,
                 modifier,
                 capture_after,
+                verify_query,
+                require_verification,
+                "element" if element_index is not None else coordinate_space,
                 recorded_element_ref,
             )
             if result is not None:
@@ -1448,21 +1707,45 @@ def create_mcp_server() -> FastMCP:
             count,
             modifier,
         )
+        if action == "expand":
+            method = "msaa_expand_edge_click"
+        elif element_index is not None:
+            method = "element_center_pixel_click"
+        else:
+            method = "pixel_click"
+        _annotate_action_path(
+            result,
+            method=method,
+            used_foreground=True,
+            uses_system_input=True,
+            requires_visible_target=True,
+            coordinate_source="element" if element_index is not None else coordinate_space,
+        )
+        await _attach_post_action_observation(
+            result,
+            pid,
+            window_id,
+            capture_after=capture_after,
+            verify_query=verify_query,
+            require_verification=require_verification,
+        )
 
         wr = _build_window_ref(pid, window_id, actual_x, actual_y)
         await _recording_hook(_recorded_turn(
             "computer_click",
-            {"x": x, "y": y, "button": button, "count": count},
+            {
+                "x": x,
+                "y": y,
+                "button": button,
+                "count": count,
+                "verify_query": verify_query,
+                "require_verification": require_verification,
+            },
             result,
             click_point=(actual_x, actual_y),
             window_ref=wr,
             element_ref=recorded_element_ref,
         ))
-
-        # capture_after
-        if capture_after and pid is not None and window_id is not None:
-            cap = await _capture_and_detect(pid, window_id)
-            result["capture_after"] = cap
 
         return result
 
@@ -2230,15 +2513,27 @@ def create_mcp_server() -> FastMCP:
         # are intentionally not reused across calls / apartments.
         if sys.platform == "win32" and is_text_like:
             try:
-                _set_value_via_uia_point(screen_cx, screen_cy, value)
-                result = {"success": True, "element_index": element_index, "value": response_value, "method": "uia"}
-                await _recording_hook(_recorded_turn(
-                    "computer_set_value",
-                    record_args,
-                    result,
-                    element_ref=recorded_element_ref,
-                ))
-                return result
+                value_set, value_error = await _run_uia_action_with_timeout(
+                    pid,
+                    window_id,
+                    "set_value",
+                    lambda: _set_value_via_uia_point(screen_cx, screen_cy, value),
+                )
+                if value_set:
+                    result = {
+                        "success": True,
+                        "element_index": element_index,
+                        "value": response_value,
+                        "method": "uia",
+                    }
+                    await _recording_hook(_recorded_turn(
+                        "computer_set_value",
+                        record_args,
+                        result,
+                        element_ref=recorded_element_ref,
+                    ))
+                    return result
+                logger.debug("UIA ValuePattern set skipped (will fall back): %s", value_error)
             except Exception as e:
                 logger.debug("UIA ValuePattern set failed (will fall back): %s", e)
 
@@ -2656,9 +2951,12 @@ def create_mcp_server() -> FastMCP:
         Returns:
             Dictionary with 'tree_markdown', 'node_count', 'tree_quality'.
         """
-        accessibility_handler = _get_handlers().accessibility
-        target = window_id if window_id else None
-        return await accessibility_handler.get_accessibility_tree(target)
+        from computer_server.services.window_state_service import get_accessibility_tree_snapshot
+
+        return await get_accessibility_tree_snapshot(
+            window_id,
+            gate=context.uia_walk_gate,
+        )
 
     # ============================================================
     # RICH WINDOW STATE OBSERVATION (Element Cache + UIA + Vision)
@@ -2722,6 +3020,7 @@ def create_mcp_server() -> FastMCP:
             include_all_nodes=include_all_nodes,
             zoom_metadata=_zoom_metadata,
             walk_gate=context.uia_walk_gate,
+            msaa_gate=context.msaa_walk_gate,
             seen_popovers=context.seen_popovers,
         )
         if result.get("success"):

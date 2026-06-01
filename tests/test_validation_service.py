@@ -12,6 +12,7 @@ from computer_server.services.validation_service import (
     validate_drag_duration,
     validate_dom_attributes,
     validate_javascript,
+    validate_optional_query,
     validate_page_action,
     validate_port,
     validate_screenshot_request,
@@ -43,6 +44,18 @@ def test_validate_click_count_is_one_to_three():
         validate_click_count(0)
     with pytest.raises(ValidationError):
         validate_click_count(4)
+
+
+def test_validate_optional_query_trims_and_rejects_empty_values():
+    assert validate_optional_query("verify_query", None) is None
+    assert validate_optional_query("verify_query", " 搜索 ") == "搜索"
+
+    with pytest.raises(ValidationError):
+        validate_optional_query("verify_query", "")
+    with pytest.raises(ValidationError):
+        validate_optional_query("verify_query", "   ")
+    with pytest.raises(ValidationError):
+        validate_optional_query("verify_query", 1)  # type: ignore[arg-type]
 
 
 def test_validate_numeric_ranges_reject_non_finite_values():
