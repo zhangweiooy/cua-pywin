@@ -189,6 +189,7 @@ cua-win serve --host 0.0.0.0 --port 8000 \
 - **SOM 检测同步运行于事件循环线程**：anyio 任务组持有 GIL。warm_up() 启动时预加载（~30s），后续调用 < 3s
 - **录制截图必须同步**：`ImageGrab.grab()` 不能卸到线程——anyio 事件循环阻止 `run_in_executor` 任务执行。50 步录制总计 ~5-10s 阻塞
 - **SOM OCR 遮挡噪音**：WGC window capture 可避免大多数重叠窗口污染；screen crop 回退会在 `capture_metadata.occlusion_risk=true` 中显式标记
+- **SOM YOLO/OCR 并行收益有限**：2026-06-01 CPU 基准（1280x830 WGC screenshot）串行 3.31s、`ThreadPoolExecutor` 并行 3.07s，仅约 8% 提升；默认保持串行，等真实慢样本或 GPU 基准再重评
 - **学习 IME 对终端无效**：PowerShell/CMD 无 UIA ValuePattern，回退拼音 + OCR
 - **录制坐标绝对化**：回放时窗口位置变化导致错位。`window_ref` 机制在窗口存活时可重算坐标，窗口过期则按进程名/标题重新搜索
 - **GBK 编码**：子进程必须设置 `PYTHONIOENCODING=utf-8`
@@ -414,6 +415,7 @@ TinyCLIP, merge, encode, and total latency.
 - **SOM detection runs synchronously on the event loop**: anyio task group holds the GIL. warm_up() pre-loads at startup (~30s); subsequent calls <3s
 - **Recording screenshots cannot be offloaded**: `ImageGrab.grab()` must stay synchronous — anyio blocks `run_in_executor`. ~5-10s total for 50-action recordings
 - **SOM OCR occlusion noise**: WGC window capture avoids most overlapping-window pollution; screen-crop fallback marks `capture_metadata.occlusion_risk=true`
+- **Limited SOM YOLO/OCR parallelism gain**: 2026-06-01 CPU benchmark on a 1280x830 WGC screenshot measured 3.31s serial vs 3.07s with `ThreadPoolExecutor` parallelism, about 8% faster; keep serial by default until real slow samples or GPU benchmarks justify it
 - **Learning IME not supported in terminals**: PowerShell/CMD lack UIA ValuePattern. Falls back to pinyin + OCR
 - **Recording coordinates are absolute**: window position changes break replay. `window_ref` recalculates if window is alive; falls back to process-name/title search for stale IDs
 - **GBK encoding**: set `PYTHONIOENCODING=utf-8` in subprocess environments

@@ -428,5 +428,7 @@ uv run cua-win stop
   The CoreML export is primarily for Apple runtimes and should not be the main
   integration path here. Revisit MobileCLIP-S0 if TinyCLIP label quality is
   insufficient.
-- Optional later optimization: run YOLO and EasyOCR via `ThreadPoolExecutor` in
-  parallel if profiling shows it is worthwhile. Do not add this yet.
+- YOLO + EasyOCR `ThreadPoolExecutor` parallelism was evaluated on 2026-06-01
+  with a 1280x830 WGC screenshot on CPU: serial averaged 3.31s, parallel
+  averaged 3.07s, about 8% faster. Do not enable by default; revisit only with
+  representative slow samples or GPU benchmarks.
