@@ -296,8 +296,17 @@ def add_window_field(record: Dict[str, Any]) -> Dict[str, Any]:
     window = build_window(window_id, pid=pid, title=title, app=app)
     if window is not None:
         record["window"] = window
-        if "pid" in window and "pid" not in record:
-            record["pid"] = window["pid"]
+        for key in (
+            "pid",
+            "app",
+            "process_name",
+            "title",
+            "class_name",
+            "bounds",
+            "state",
+        ):
+            if key in window and key not in record:
+                record[key] = window[key]
     return record
 
 

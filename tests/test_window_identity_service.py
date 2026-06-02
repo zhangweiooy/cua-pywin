@@ -90,6 +90,57 @@ def test_add_window_field_preserves_legacy_record():
     assert record["window"]["title"] == "Target"
 
 
+def test_add_window_field_mirrors_canonical_window_fields(monkeypatch):
+    import computer_server.services.window_identity_service as identity
+
+    monkeypatch.setattr(identity, "_get_process_name", lambda _pid: "Weixin.exe")
+    monkeypatch.setattr(identity, "_get_window_title", lambda _window_id: "微信")
+    monkeypatch.setattr(identity, "_get_window_class", lambda _window_id: "Qt51514QWindowIcon")
+    monkeypatch.setattr(identity, "_get_window_rect", lambda _window_id: (10, 20, 110, 220))
+    monkeypatch.setattr(identity, "_is_window_visible", lambda _window_id: True)
+    monkeypatch.setattr(identity, "_foreground_window_id", lambda: 999)
+
+    record = {"id": 123, "window_id": 123, "pid": 456}
+
+    add_window_field(record)
+
+    assert record["app"] == "Weixin.exe"
+    assert record["process_name"] == "Weixin.exe"
+    assert record["title"] == "微信"
+    assert record["class_name"] == "Qt51514QWindowIcon"
+    assert record["bounds"] == {"x": 10, "y": 20, "width": 100, "height": 200}
+    assert record["state"] == {
+        "visible": True,
+        "minimized": False,
+        "foreground": False,
+    }
+    assert record["window"]["process_name"] == record["process_name"]
+    assert record["window"]["class_name"] == record["class_name"]
+
+
+def test_add_window_field_does_not_overwrite_legacy_values(monkeypatch):
+    import computer_server.services.window_identity_service as identity
+
+    monkeypatch.setattr(identity, "_get_process_name", lambda _pid: "Actual.exe")
+    monkeypatch.setattr(identity, "_get_window_class", lambda _window_id: "ActualClass")
+
+    record = {
+        "id": 123,
+        "window_id": 123,
+        "pid": 456,
+        "app": "Hint.exe",
+        "process_name": "Hint.exe",
+        "class_name": "HintClass",
+    }
+
+    add_window_field(record)
+
+    assert record["app"] == "Hint.exe"
+    assert record["process_name"] == "Hint.exe"
+    assert record["class_name"] == "HintClass"
+    assert record["window"]["app"] == "Hint.exe"
+
+
 def test_rehydrate_window_returns_canonical_window(monkeypatch):
     import computer_server.services.window_identity_service as identity
 
