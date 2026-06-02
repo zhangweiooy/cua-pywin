@@ -567,6 +567,38 @@ def create_mcp_server() -> FastMCP:
             }
         return zoom_ctx.pid, zoom_ctx.window_id, None
 
+    def _resolve_window_arg(
+        window: Optional[Dict[str, Any]],
+        pid: Optional[int],
+        window_id: Optional[int],
+    ) -> Tuple[Optional[int], Optional[int], Optional[Dict[str, Any]]]:
+        """Resolve the public window object plus legacy pid/window_id args."""
+        from computer_server.services.validation_service import error_result
+        from computer_server.services.window_identity_service import resolve_window_input
+
+        try:
+            resolved = resolve_window_input(
+                window=window,
+                pid=pid,
+                window_id=window_id,
+            )
+            return resolved.pid, resolved.window_id, None
+        except ValueError as e:
+            return pid, window_id, error_result(e)
+
+    def _add_window_field(record: Dict[str, Any]) -> Dict[str, Any]:
+        from computer_server.services.window_identity_service import add_window_field
+
+        return add_window_field(record)
+
+    def _build_public_window(
+        pid: Optional[int],
+        window_id: Optional[int],
+    ) -> Optional[Dict[str, Any]]:
+        from computer_server.services.window_identity_service import build_window
+
+        return build_window(window_id, pid=pid)
+
     def _build_element_ref(
         pid: Optional[int],
         window_id: Optional[int],
@@ -1521,6 +1553,7 @@ def create_mcp_server() -> FastMCP:
         element_index: Optional[int] = None,
         window_id: Optional[int] = None,
         pid: Optional[int] = None,
+        window: Optional[Dict[str, Any]] = None,
         snapshot_id: Optional[str] = None,
         from_zoom: bool = False,
         zoom_id: Optional[str] = None,
@@ -1555,8 +1588,9 @@ def create_mcp_server() -> FastMCP:
             y: Y coordinate in pixels (ignored when element_index is set)
             button: Mouse button - 'left', 'right', or 'middle' (default: 'left')
             element_index: Index from get_window_state nodes to click via element cache
-            window_id: Window ID (required with element_index)
-            pid: Process ID (required with element_index)
+            window_id: Legacy window ID (required with element_index)
+            pid: Legacy process ID (required with element_index)
+            window: Canonical window object from list/get_window_state output.
             snapshot_id: Snapshot id returned by computer_get_window_state.
             from_zoom: When True, x/y are zoomed-image coords and get translated back
             zoom_id: Zoom id returned by computer_zoom.
@@ -1605,6 +1639,9 @@ def create_mcp_server() -> FastMCP:
 
         _suppress_learning_input(3.0)
 
+        pid, window_id, ref_error = _resolve_window_arg(window, pid, window_id)
+        if ref_error is not None:
+            return ref_error
         pid, window_id, ref_error = _resolve_snapshot_ref(snapshot_id, pid, window_id)
         if ref_error is not None:
             return ref_error
@@ -1796,6 +1833,7 @@ def create_mcp_server() -> FastMCP:
         element_index: Optional[int] = None,
         window_id: Optional[int] = None,
         pid: Optional[int] = None,
+        window: Optional[Dict[str, Any]] = None,
         snapshot_id: Optional[str] = None,
         from_zoom: bool = False,
         zoom_id: Optional[str] = None,
@@ -1813,8 +1851,9 @@ def create_mcp_server() -> FastMCP:
             button: Mouse button to use (default: 'left')
             duration: Duration of the drag in seconds (default: 0.5)
             element_index: Index from get_window_state to use as drag source
-            window_id: Window ID (required with element_index or from_zoom)
-            pid: Process ID (required with element_index)
+            window_id: Legacy window ID (required with element_index or from_zoom)
+            pid: Legacy process ID (required with element_index)
+            window: Canonical window object from list/get_window_state output.
             snapshot_id: Snapshot id returned by computer_get_window_state.
             from_zoom: When True, coords are in zoomed-image space
             zoom_id: Zoom id returned by computer_zoom.
@@ -1845,6 +1884,9 @@ def create_mcp_server() -> FastMCP:
 
         _suppress_learning_input(max(1.0, duration + 0.75))
 
+        pid, window_id, ref_error = _resolve_window_arg(window, pid, window_id)
+        if ref_error is not None:
+            return ref_error
         pid, window_id, ref_error = _resolve_snapshot_ref(snapshot_id, pid, window_id)
         if ref_error is not None:
             return ref_error
@@ -1976,6 +2018,7 @@ def create_mcp_server() -> FastMCP:
         element_index: Optional[int] = None,
         window_id: Optional[int] = None,
         pid: Optional[int] = None,
+        window: Optional[Dict[str, Any]] = None,
         snapshot_id: Optional[str] = None,
         from_zoom: bool = False,
         zoom_id: Optional[str] = None,
@@ -1996,8 +2039,9 @@ def create_mcp_server() -> FastMCP:
             smooth: When True, emit scroll as many small wheel ticks with 15ms spacing
                 for human-like smooth scrolling (default: True).
             element_index: Index from get_window_state to scroll on
-            window_id: Window ID (required with element_index)
-            pid: Process ID (required with element_index)
+            window_id: Legacy window ID (required with element_index)
+            pid: Legacy process ID (required with element_index)
+            window: Canonical window object from list/get_window_state output.
             snapshot_id: Snapshot id returned by computer_get_window_state.
             from_zoom: When True, x/y are zoomed-image coords and get translated back
             zoom_id: Zoom id returned by computer_zoom.
@@ -2027,6 +2071,9 @@ def create_mcp_server() -> FastMCP:
 
         _suppress_learning_input(max(1.0, abs(scroll_x) * 0.02, abs(scroll_y) * 0.02, amount * 0.02))
 
+        pid, window_id, ref_error = _resolve_window_arg(window, pid, window_id)
+        if ref_error is not None:
+            return ref_error
         pid, window_id, ref_error = _resolve_snapshot_ref(snapshot_id, pid, window_id)
         if ref_error is not None:
             return ref_error
@@ -2414,6 +2461,7 @@ def create_mcp_server() -> FastMCP:
         value: str,
         window_id: Optional[int] = None,
         pid: Optional[int] = None,
+        window: Optional[Dict[str, Any]] = None,
         sensitive: bool = False,
         snapshot_id: Optional[str] = None,
     ) -> Any:
@@ -2431,8 +2479,9 @@ def create_mcp_server() -> FastMCP:
         Args:
             element_index: Index from get_window_state nodes.
             value: New value to set.
-            window_id: Window ID.
-            pid: Process ID.
+            window_id: Legacy window ID.
+            pid: Legacy process ID.
+            window: Canonical window object from list/get_window_state output.
             sensitive: When True, redact value in result and recording metadata.
             snapshot_id: Snapshot id returned by computer_get_window_state.
 
@@ -2443,6 +2492,9 @@ def create_mcp_server() -> FastMCP:
 
         from computer_server.handlers.element_cache import get_element_cache
 
+        pid, window_id, ref_error = _resolve_window_arg(window, pid, window_id)
+        if ref_error is not None:
+            return ref_error
         pid, window_id, ref_error = _resolve_snapshot_ref(snapshot_id, pid, window_id)
         if ref_error is not None:
             return ref_error
@@ -2646,7 +2698,10 @@ def create_mcp_server() -> FastMCP:
     async def computer_get_active_window() -> Any:
         """Get the currently active window ID."""
         window_handler = _get_handlers().window
-        return await window_handler.get_current_window_id()
+        result = await window_handler.get_current_window_id()
+        if result.get("success"):
+            _add_window_field(result)
+        return result
 
     @mcp.tool(annotations={"readOnlyHint": True, "destructiveHint": False, "idempotentHint": True, "openWorldHint": True})
     async def computer_get_window_name(window_id: str) -> Any:
@@ -2758,7 +2813,13 @@ def create_mcp_server() -> FastMCP:
         'title' fields so you can identify the main window without extra calls.
         """
         window_handler = _get_handlers().window
-        return await window_handler.get_application_windows(app)
+        result = await window_handler.get_application_windows(app)
+        if result.get("success") and isinstance(result.get("windows"), list):
+            result["windows"] = [
+                _add_window_field(dict(window_record))
+                for window_record in result["windows"]
+            ]
+        return result
 
     # ============================================================
     # APP & WINDOW LISTING
@@ -2786,21 +2847,27 @@ def create_mcp_server() -> FastMCP:
                     return True
                 try:
                     _, hwnd_pid = win32process.GetWindowThreadProcessId(hwnd)
-                    if hwnd_pid in app_map:
-                        return True
                     title = win32gui.GetWindowText(hwnd) or ""
-                    try:
-                        handle = win32api.OpenProcess(0x0400 | 0x0010, False, hwnd_pid)
-                        exe = win32process.GetModuleFileNameEx(handle, 0)
-                        name = exe.rsplit("\\", 1)[-1]
-                        win32api.CloseHandle(handle)
-                    except Exception:
-                        name = title or f"PID:{hwnd_pid}"
-                    app_map[hwnd_pid] = {
-                        "name": name,
+                    if hwnd_pid not in app_map:
+                        try:
+                            handle = win32api.OpenProcess(0x0400 | 0x0010, False, hwnd_pid)
+                            exe = win32process.GetModuleFileNameEx(handle, 0)
+                            name = exe.rsplit("\\", 1)[-1]
+                            win32api.CloseHandle(handle)
+                        except Exception:
+                            name = title or f"PID:{hwnd_pid}"
+                        app_map[hwnd_pid] = {
+                            "name": name,
+                            "pid": hwnd_pid,
+                            "running": True,
+                            "windows": [],
+                        }
+                    app_map[hwnd_pid]["windows"].append(_add_window_field({
+                        "id": hwnd,
+                        "window_id": hwnd,
                         "pid": hwnd_pid,
-                        "running": True,
-                    }
+                        "title": title,
+                    }))
                 except Exception:
                     pass
                 return True
@@ -2859,7 +2926,8 @@ def create_mcp_server() -> FastMCP:
                     title = win32gui.GetWindowText(hwnd) or ""
                     rect = win32gui.GetWindowRect(hwnd)
                     w, h = rect[2] - rect[0], rect[3] - rect[1]
-                    windows.append({
+                    windows.append(_add_window_field({
+                        "id": hwnd,
                         "window_id": hwnd,
                         "pid": win_pid,
                         "title": title,
@@ -2869,7 +2937,7 @@ def create_mcp_server() -> FastMCP:
                         "height": h,
                         "is_on_screen": visible,
                         "minimized": rect[0] < -32000 or rect[1] < -32000,
-                    })
+                    }))
                 except Exception:
                     pass
                 return True
@@ -2900,7 +2968,8 @@ def create_mcp_server() -> FastMCP:
                             if pid is not None:
                                 if child.ProcessId != pid:
                                     continue
-                            windows.append({
+                            windows.append(_add_window_field({
+                                "id": hwnd or 0,
                                 "window_id": hwnd or 0,
                                 "pid": child.ProcessId or 0,
                                 "title": name,
@@ -2909,7 +2978,7 @@ def create_mcp_server() -> FastMCP:
                                 "is_on_screen": True,
                                 "minimized": False,
                                 "source": "uia_xaml",
-                            })
+                            }))
                         except Exception:
                             pass
                 except ImportError:
@@ -2938,6 +3007,8 @@ def create_mcp_server() -> FastMCP:
     @mcp.tool(annotations={"readOnlyHint": True, "destructiveHint": False, "idempotentHint": True, "openWorldHint": True})
     async def computer_get_accessibility_tree(
         window_id: int = 0,
+        pid: Optional[int] = None,
+        window: Optional[Dict[str, Any]] = None,
     ) -> Any:
         """
         Get the UIA accessibility tree for a window.
@@ -2946,17 +3017,34 @@ def create_mcp_server() -> FastMCP:
         classic Win32 apps.  Returns a markdown tree and element count.
 
         Args:
-            window_id: Target window handle.  Defaults to 0 = foreground window.
+            window_id: Legacy target window handle. Defaults to 0 = foreground window.
+            pid: Optional process ID for consistency checks with window.
+            window: Canonical window object from list/get_window_state output.
 
         Returns:
             Dictionary with 'tree_markdown', 'node_count', 'tree_quality'.
         """
         from computer_server.services.window_state_service import get_accessibility_tree_snapshot
 
-        return await get_accessibility_tree_snapshot(
-            window_id,
+        legacy_window_id = None if window_id == 0 else window_id
+        pid, resolved_window_id, ref_error = _resolve_window_arg(
+            window,
+            pid,
+            legacy_window_id,
+        )
+        if ref_error is not None:
+            return ref_error
+        target_window_id = resolved_window_id if resolved_window_id is not None else window_id
+
+        result = await get_accessibility_tree_snapshot(
+            target_window_id,
             gate=context.uia_walk_gate,
         )
+        if result.get("success") and target_window_id:
+            public_window = _build_public_window(pid, target_window_id)
+            if public_window is not None:
+                result["window"] = public_window
+        return result
 
     # ============================================================
     # RICH WINDOW STATE OBSERVATION (Element Cache + UIA + Vision)
@@ -2964,8 +3052,9 @@ def create_mcp_server() -> FastMCP:
 
     @mcp.tool(annotations={"readOnlyHint": True, "destructiveHint": False, "idempotentHint": True, "openWorldHint": True})
     async def computer_get_window_state(
-        pid: int,
-        window_id: int,
+        pid: Optional[int] = None,
+        window_id: Optional[int] = None,
+        window: Optional[Dict[str, Any]] = None,
         query: Optional[str] = None,
         screenshot_out_file: Optional[str] = None,
         max_image_dimension: int = 1280,
@@ -2980,8 +3069,9 @@ def create_mcp_server() -> FastMCP:
         computer_click, computer_double_click, computer_scroll, etc.
 
         Args:
-            pid: Process ID of the target application.
-            window_id: Window ID to snapshot.
+            pid: Legacy process ID of the target application.
+            window_id: Legacy window ID to snapshot.
+            window: Canonical window object from list/get_window_state output.
             query: Optional substring filter for the debug tree markdown and returned nodes.
             screenshot_out_file: Optional path to write screenshot PNG (skips inline base64).
             max_image_dimension: Maximum dimension for the screenshot (default 1280).
@@ -3007,6 +3097,15 @@ def create_mcp_server() -> FastMCP:
             max_image_dimension = validate_max_image_dimension(max_image_dimension)
         except ValueError as e:
             return error_result(e)
+
+        pid, window_id, ref_error = _resolve_window_arg(window, pid, window_id)
+        if ref_error is not None:
+            return ref_error
+        if pid is None or window_id is None:
+            return {
+                "success": False,
+                "error": "pid and window_id are required, or provide window",
+            }
 
         automation_handler = _get_handlers().automation
         result = await get_window_state_snapshot(
@@ -3035,6 +3134,12 @@ def create_mcp_server() -> FastMCP:
             )
             result["snapshot_id"] = snapshot.snapshot_id
             result["snapshot_latest"] = True
+            public_window = _build_public_window(pid, window_id)
+            if public_window is not None:
+                result["window"] = public_window
+            window_ref = _build_window_ref(pid, window_id, 0, 0)
+            if window_ref is not None:
+                result["window_ref"] = window_ref
         return result
 
     # ============================================================
@@ -3043,12 +3148,13 @@ def create_mcp_server() -> FastMCP:
 
     @mcp.tool(annotations={"readOnlyHint": False, "destructiveHint": True, "idempotentHint": False, "openWorldHint": True})
     async def computer_zoom(
-        pid: int,
-        window_id: int,
         x1: int,
         y1: int,
         x2: int,
         y2: int,
+        pid: Optional[int] = None,
+        window_id: Optional[int] = None,
+        window: Optional[Dict[str, Any]] = None,
     ) -> Any:
         """
         Zoom into a rectangular region of a window screenshot at full resolution.
@@ -3061,9 +3167,10 @@ def create_mcp_server() -> FastMCP:
         same pid and window_id to target coordinates within the zoomed image.
 
         Args:
-            pid: Process ID — must match a prior computer_get_window_state call.
-            window_id: Window ID — must match the same window used in the prior
+            pid: Legacy process ID — must match a prior computer_get_window_state call.
+            window_id: Legacy window ID — must match the same window used in the prior
                 computer_get_window_state call.
+            window: Canonical window object from list/get_window_state output.
             x1: Left edge of the zoom region (resized-image pixels).
             y1: Top edge of the zoom region (resized-image pixels).
             x2: Right edge of the zoom region (resized-image pixels).
@@ -3083,8 +3190,17 @@ def create_mcp_server() -> FastMCP:
         except ValueError as e:
             return error_result(e)
 
+        pid, window_id, ref_error = _resolve_window_arg(window, pid, window_id)
+        if ref_error is not None:
+            return ref_error
+        if pid is None or window_id is None:
+            return {
+                "success": False,
+                "error": "pid and window_id are required, or provide window",
+            }
+
         automation_handler = _get_handlers().automation
-        return await create_zoom_image(
+        result = await create_zoom_image(
             automation_handler,
             pid,
             window_id,
@@ -3094,6 +3210,11 @@ def create_mcp_server() -> FastMCP:
             y2,
             _zoom_metadata,
         )
+        if result.get("success"):
+            public_window = _build_public_window(pid, window_id)
+            if public_window is not None:
+                result["window"] = public_window
+        return result
 
     # ============================================================
     # BROWSER PAGE INTERACTION (CDP)

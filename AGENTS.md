@@ -47,7 +47,8 @@ computer_server/
     coordinate_service.py   — Coordinate conversion and zoom resolution
     window_state_service.py — WindowSnapshotGeometry, UIA collection,
                               SOM merge, window state snapshots, zoom images
-    window_identity_service.py — window_ref creation and stale HWND resolution
+    window_identity_service.py — public window object normalization,
+                              window_ref creation, and stale HWND resolution
     replay_resolver.py      — Replay argument resolution for moved windows and
                               element relocation
     capture_service.py      — Virtual desktop capture shared by recording and
@@ -109,7 +110,7 @@ cua-win start
 cua-win status
 cua-win list-tools
 cua-win computer_get_screen_size
-cua-win call computer_get_window_state '{"pid":1234,"window_id":5678}'
+cua-win call computer_get_window_state '{"window":{"id":5678,"pid":1234}}'
 cua-win stop
 
 # Single-tool tests
@@ -142,6 +143,26 @@ can use it instead of implicit per-window zoom state.
 
 Key invariant: `ElementCache` stores window-relative coordinates, and
 `_resolve_element_center` returns screen coordinates.
+
+## Window Identity Contract
+
+Public tools should prefer `window` over top-level `pid/window_id`:
+
+```json
+{"window":{"id":5678,"pid":1234}}
+```
+
+`window.id` and `window.window_id` are equivalent HWND fields. Legacy
+`pid/window_id` remains supported for compatibility, but if both forms are
+provided they must identify the same target or the tool returns a validation
+error. `computer_list_windows`, `computer_get_app_windows`,
+`computer_list_apps`, `computer_get_active_window`, and
+`computer_get_window_state` return canonical `window` objects for follow-up
+calls.
+
+`window_ref` is separate replay metadata. Agents should not hand-author it;
+recording builds it from the resolved `window` plus origin, process, title,
+class, and size metadata.
 
 ## Key Design Decisions
 
@@ -198,7 +219,8 @@ right edge of the cached MSAA rect to target the dropdown half.
 Recording stores `window_ref` and, for element actions, `element_ref`. Replay
 tries to resolve current windows by live HWND, process name, then title, and can
 relocate elements using cached semantic metadata before falling back to recorded
-coordinates.
+coordinates. Public callers should pass returned `window` objects; `window_ref`
+is internal replay metadata.
 
 ### HTTP / Network Boundary
 

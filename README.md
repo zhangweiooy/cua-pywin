@@ -107,7 +107,7 @@ cua-win doctor
 cua-win status
 cua-win list-tools
 cua-win computer_get_screen_size
-cua-win call computer_get_window_state '{"pid":1234,"window_id":5678}'
+cua-win call computer_get_window_state '{"window":{"id":5678,"pid":1234}}'
 cua-win stop
 
 # 若要绑定到非 localhost，必须显式确认（否则启动会被拒绝）
@@ -166,6 +166,21 @@ cua-win serve --host 0.0.0.0 --port 8000 \
 
 点击坐标传递链路：`element_index → 缓存元素中心 → +窗口原点 → 屏幕坐标 → 缩放 → 实际点击`。
 
+### Window 契约
+
+推荐使用 `window` 对象串联窗口发现、观察和动作工具：
+
+```json
+{"window":{"id":5678,"pid":1234}}
+```
+
+`window.id` 与 `window.window_id` 都表示 HWND。旧的顶层
+`pid/window_id` 仍兼容，但与 `window` 同时传入时必须一致，否则工具会
+返回 validation error。`computer_list_windows`、`computer_get_app_windows`、
+`computer_list_apps`、`computer_get_active_window` 和
+`computer_get_window_state` 都会返回可直接复用的 `window` 对象。
+`window_ref` 仅用于 recording/replay 的内部窗口身份快照，不要求调用方构造。
+
 ### 关键设计
 
 **Per-window 截图** — Windows `PrintWindow` 对硬件加速窗口失效。`get_window_state` 优先使用 Windows.Graphics.Capture 捕获目标窗口自身的 DWM 合成帧，避免被前景遮挡窗口污染；失败时回退到 `ImageGrab.grab()` + `GetWindowRect` + PIL `crop()`。`computer_zoom` 会沿用上一次 snapshot backend：WGC snapshot 使用 WGC 做原生 zoom crop，失败才退回 screen crop。多显示器负坐标 + 部分屏外通过 `WindowSnapshotGeometry` 显式区分「真实窗口原点」与「可见裁剪原点」。
@@ -182,7 +197,7 @@ cua-win serve --host 0.0.0.0 --port 8000 \
 
 **CDP target 跟踪** — `computer_page` 按稳定 `target_id`（CDP tab id）而非 `tab_index` 跟踪页面。`get_page_info` 返回 resolved `target_id`，调用方可用它把后续调用钉到同一 tab；失败重试时按 `target_id` 重解析，不会因 tab 顺序变化漂移到错误页面。
 
-**回放窗口解析** — `_build_window_ref` 保存 `window_id / origin / process_name / window_title / 尺寸`。回放时按以下顺序解析活窗口：(1) 原 HWND 仍有效 → 直接用；(2) 按 `process_name` 找首个可见窗口；(3) 按 `window_title` 子串匹配。click/drag/scroll 也会按 new_origin 重算坐标，不只有 `activate_window`。
+**回放窗口解析** — `_build_window_ref` 保存 `version / pid / window_id / origin / process_name / window_title / class_name / 尺寸`。回放时按以下顺序解析活窗口：(1) 原 HWND 仍有效 → 直接用；(2) 按 `process_name` 找首个可见窗口；(3) 按 `window_title` 子串匹配。click/drag/scroll 也会按 new_origin 重算坐标，不只有 `activate_window`。
 
 ### 已知限制
 
@@ -308,7 +323,7 @@ cua-win doctor
 cua-win status
 cua-win list-tools
 cua-win computer_get_screen_size
-cua-win call computer_get_window_state '{"pid":1234,"window_id":5678}'
+cua-win call computer_get_window_state '{"window":{"id":5678,"pid":1234}}'
 cua-win stop
 
 # Binding to a non-localhost host requires explicit consent — without it
@@ -379,6 +394,22 @@ Use `cua-win serve --no-cli-rpc` when you only want `/status + /mcp`.
 
 Click coordinate pipeline: `element_index → cached element center → +window origin → screen coords → scale → actual click`.
 
+### Window Contract
+
+Prefer passing returned `window` objects across discovery, observation, and
+action tools:
+
+```json
+{"window":{"id":5678,"pid":1234}}
+```
+
+`window.id` and `window.window_id` both refer to the HWND. Legacy top-level
+`pid/window_id` remains supported, but when both forms are provided they must
+match or the tool returns a validation error. `computer_list_windows`,
+`computer_get_app_windows`, `computer_list_apps`, `computer_get_active_window`,
+and `computer_get_window_state` return reusable `window` objects. `window_ref`
+is internal recording/replay identity metadata and should not be hand-authored.
+
 ### Key Design Decisions
 
 **Per-window screenshot capture** — `PrintWindow` fails on hardware-accelerated windows. `get_window_state` now prefers Windows.Graphics.Capture for the target window's own DWM-composited frame, avoiding overlapping foreground-window pollution. If WGC fails, it falls back to `ImageGrab.grab()` + `GetWindowRect` + PIL `crop()`. `computer_zoom` follows the last snapshot backend: WGC snapshots use WGC for native zoom crops and fall back to screen crop only when WGC fails. Multi-monitor negative coordinates and partially-offscreen windows are handled by `WindowSnapshotGeometry`, which explicitly separates the real window origin from the visible crop origin.
@@ -408,7 +439,7 @@ TinyCLIP, merge, encode, and total latency.
 
 **CDP target tracking** — `computer_page` tracks pages by stable `target_id` (CDP tab id) rather than `tab_index`. `get_page_info` returns the resolved `target_id` so callers can pin subsequent calls to the same tab; retries re-resolve by `target_id`, never drifting to the wrong page when tab order changes.
 
-**Replay window resolution** — `_build_window_ref` stores `window_id / origin / process_name / window_title / size`. At replay time the live window is resolved in this order: (1) original HWND if still valid, (2) first visible window matching `process_name`, (3) substring match on `window_title`. click / drag / scroll also rewrite coordinates against the new origin — not just `activate_window`.
+**Replay window resolution** — `_build_window_ref` stores `version / pid / window_id / origin / process_name / window_title / class_name / size`. At replay time the live window is resolved in this order: (1) original HWND if still valid, (2) first visible window matching `process_name`, (3) substring match on `window_title`. click / drag / scroll also rewrite coordinates against the new origin — not just `activate_window`.
 
 ### Known Limitations
 

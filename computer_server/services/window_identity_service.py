@@ -2,7 +2,259 @@
 
 from __future__ import annotations
 
-from typing import Any, Dict, Optional, Tuple
+from dataclasses import dataclass
+from typing import Any, Dict, Mapping, Optional, Tuple
+
+from computer_server.services.validation_service import ValidationError
+
+
+@dataclass(frozen=True)
+class ResolvedWindow:
+    """Normalized target window identity."""
+
+    pid: Optional[int]
+    window_id: Optional[int]
+    window: Optional[Dict[str, Any]]
+
+
+def _coerce_optional_int(name: str, value: Any) -> Optional[int]:
+    if value is None:
+        return None
+    if isinstance(value, bool):
+        raise ValidationError(f"{name} must be an integer")
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        raise ValidationError(f"{name} must be an integer") from None
+
+
+def _window_value(window: Mapping[str, Any], *names: str) -> Any:
+    for name in names:
+        if name in window and window[name] is not None:
+            return window[name]
+    return None
+
+
+def _get_pid_for_window(window_id: Optional[int]) -> Optional[int]:
+    if window_id is None:
+        return None
+    try:
+        import win32process
+
+        _, pid = win32process.GetWindowThreadProcessId(int(window_id))
+        return int(pid) if pid else None
+    except Exception:
+        return None
+
+
+def _get_process_name(pid: Optional[int]) -> str:
+    if not pid:
+        return ""
+    try:
+        import psutil
+
+        return psutil.Process(int(pid)).name() or ""
+    except Exception:
+        return ""
+
+
+def _get_window_title(window_id: Optional[int]) -> str:
+    if window_id is None:
+        return ""
+    try:
+        import win32gui
+
+        return win32gui.GetWindowText(int(window_id)) or ""
+    except Exception:
+        return ""
+
+
+def _get_window_class(window_id: Optional[int]) -> str:
+    if window_id is None:
+        return ""
+    try:
+        import win32gui
+
+        return win32gui.GetClassName(int(window_id)) or ""
+    except Exception:
+        return ""
+
+
+def _get_window_rect(window_id: Optional[int]) -> Optional[Tuple[int, int, int, int]]:
+    if window_id is None:
+        return None
+    try:
+        import win32gui
+
+        rect = win32gui.GetWindowRect(int(window_id))
+        if rect:
+            return int(rect[0]), int(rect[1]), int(rect[2]), int(rect[3])
+    except Exception:
+        return None
+    return None
+
+
+def _is_window_visible(window_id: Optional[int]) -> Optional[bool]:
+    if window_id is None:
+        return None
+    try:
+        import win32gui
+
+        return bool(win32gui.IsWindowVisible(int(window_id)))
+    except Exception:
+        return None
+
+
+def _foreground_window_id() -> Optional[int]:
+    try:
+        import win32gui
+
+        hwnd = win32gui.GetForegroundWindow()
+        return int(hwnd) if hwnd else None
+    except Exception:
+        return None
+
+
+def normalize_window_input(window: Optional[Mapping[str, Any]]) -> tuple[Optional[int], Optional[int]]:
+    """Extract ``(pid, window_id)`` from a user-facing window object."""
+    if window is None:
+        return None, None
+    if not isinstance(window, Mapping):
+        raise ValidationError("window must be an object")
+
+    wid_from_id = _coerce_optional_int("window.id", _window_value(window, "id"))
+    wid_from_window_id = _coerce_optional_int(
+        "window.window_id",
+        _window_value(window, "window_id"),
+    )
+    if (
+        wid_from_id is not None
+        and wid_from_window_id is not None
+        and wid_from_id != wid_from_window_id
+    ):
+        raise ValidationError(
+            f"window.id/window.window_id mismatch: {wid_from_id} != {wid_from_window_id}"
+        )
+
+    pid = _coerce_optional_int("window.pid", _window_value(window, "pid"))
+    window_id = wid_from_id if wid_from_id is not None else wid_from_window_id
+    return pid, window_id
+
+
+def resolve_window_input(
+    *,
+    window: Optional[Mapping[str, Any]] = None,
+    pid: Optional[int] = None,
+    window_id: Optional[int] = None,
+) -> ResolvedWindow:
+    """Resolve legacy ``pid/window_id`` and new ``window`` inputs.
+
+    The new ``window`` object is additive.  Legacy top-level values remain valid,
+    but when both forms are present they must identify the same target.
+    """
+    legacy_pid = _coerce_optional_int("pid", pid)
+    legacy_window_id = _coerce_optional_int("window_id", window_id)
+    window_pid, window_hwnd = normalize_window_input(window)
+
+    if legacy_pid is not None and window_pid is not None and legacy_pid != window_pid:
+        raise ValidationError(
+            f"window.pid mismatch: window has pid={window_pid}, got pid={legacy_pid}"
+        )
+    if (
+        legacy_window_id is not None
+        and window_hwnd is not None
+        and legacy_window_id != window_hwnd
+    ):
+        raise ValidationError(
+            "window.window_id mismatch: "
+            f"window has window_id={window_hwnd}, got window_id={legacy_window_id}"
+        )
+
+    resolved_pid = legacy_pid if legacy_pid is not None else window_pid
+    resolved_window_id = (
+        legacy_window_id if legacy_window_id is not None else window_hwnd
+    )
+    if resolved_pid is None and resolved_window_id is not None:
+        resolved_pid = _get_pid_for_window(resolved_window_id)
+    return ResolvedWindow(
+        pid=resolved_pid,
+        window_id=resolved_window_id,
+        window=build_window(
+            resolved_window_id,
+            pid=resolved_pid,
+            app=_window_value(window, "app", "process_name") if window else None,
+            title=_window_value(window, "title", "window_title") if window else None,
+        )
+        if resolved_window_id is not None
+        else None,
+    )
+
+
+def build_window(
+    window_id: Optional[int],
+    *,
+    pid: Optional[int] = None,
+    title: Optional[str] = None,
+    app: Optional[str] = None,
+) -> Optional[Dict[str, Any]]:
+    """Build the public canonical window object."""
+    wid = _coerce_optional_int("window_id", window_id)
+    if wid is None:
+        return None
+
+    resolved_pid = _coerce_optional_int("pid", pid)
+    if resolved_pid is None:
+        resolved_pid = _get_pid_for_window(wid)
+
+    process_name = app or _get_process_name(resolved_pid)
+    window_title = title or _get_window_title(wid)
+    rect = _get_window_rect(wid)
+    visible = _is_window_visible(wid)
+    foreground = _foreground_window_id()
+
+    result: Dict[str, Any] = {
+        "id": wid,
+        "window_id": wid,
+    }
+    if resolved_pid is not None:
+        result["pid"] = resolved_pid
+    if process_name:
+        result["app"] = process_name
+        result["process_name"] = process_name
+    if window_title:
+        result["title"] = window_title
+    class_name = _get_window_class(wid)
+    if class_name:
+        result["class_name"] = class_name
+    if rect is not None:
+        left, top, right, bottom = rect
+        minimized = left < -32000 or top < -32000
+        result["bounds"] = {
+            "x": left,
+            "y": top,
+            "width": int(right - left),
+            "height": int(bottom - top),
+        }
+        result["state"] = {
+            "visible": bool(visible) if visible is not None else None,
+            "minimized": minimized,
+            "foreground": foreground == wid if foreground is not None else None,
+        }
+    return result
+
+
+def add_window_field(record: Dict[str, Any]) -> Dict[str, Any]:
+    """Attach a canonical ``window`` object to a legacy window-shaped record."""
+    window_id = record.get("window_id", record.get("id"))
+    pid = record.get("pid")
+    title = record.get("title", record.get("name"))
+    app = record.get("app", record.get("process_name"))
+    window = build_window(window_id, pid=pid, title=title, app=app)
+    if window is not None:
+        record["window"] = window
+        if "pid" in window and "pid" not in record:
+            record["pid"] = window["pid"]
+    return record
 
 
 def _enrich_window_ref(base: Dict[str, Any]) -> Dict[str, Any]:
@@ -11,34 +263,34 @@ def _enrich_window_ref(base: Dict[str, Any]) -> Dict[str, Any]:
     if wid is None:
         return base
 
-    try:
-        import psutil
-        import win32process
+    base.setdefault("version", 1)
 
-        _, pid_val = win32process.GetWindowThreadProcessId(int(wid))
-        if pid_val:
-            base["process_name"] = psutil.Process(pid_val).name() or ""
-    except Exception:
-        pass
+    pid_val = base.get("pid")
+    if pid_val is None:
+        pid_val = _get_pid_for_window(wid)
+        if pid_val is not None:
+            base["pid"] = pid_val
 
-    try:
-        import win32gui
+    process_name = base.get("process_name") or _get_process_name(pid_val)
+    if process_name:
+        base["process_name"] = process_name
+        base.setdefault("app", process_name)
 
-        title = win32gui.GetWindowText(int(wid))
-        if title:
-            base["window_title"] = title
-    except Exception:
-        pass
+    title = base.get("window_title") or _get_window_title(wid)
+    if title:
+        base["window_title"] = title
+        base.setdefault("title", title)
 
-    try:
-        import win32gui
+    class_name = base.get("class_name") or _get_window_class(wid)
+    if class_name:
+        base["class_name"] = class_name
 
-        rect = win32gui.GetWindowRect(int(wid))
-        if rect:
-            base["width"] = int(rect[2] - rect[0])
-            base["height"] = int(rect[3] - rect[1])
-    except Exception:
-        pass
+    rect = _get_window_rect(wid)
+    if rect:
+        base.setdefault("origin_x", int(rect[0]))
+        base.setdefault("origin_y", int(rect[1]))
+        base["width"] = int(rect[2] - rect[0])
+        base["height"] = int(rect[3] - rect[1])
 
     return base
 
@@ -89,6 +341,8 @@ def build_window_ref(
             origin = get_element_cache().get_window_origin_optional(pid, window_id)
             if origin is not None:
                 base = {
+                    "version": 1,
+                    "pid": pid,
                     "window_id": window_id,
                     "origin_x": origin[0],
                     "origin_y": origin[1],
@@ -103,6 +357,8 @@ def build_window_ref(
                 rect = win32gui.GetWindowRect(int(window_id))
                 if rect:
                     base = {
+                        "version": 1,
+                        "pid": pid,
                         "window_id": window_id,
                         "origin_x": rect[0],
                         "origin_y": rect[1],

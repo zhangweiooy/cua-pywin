@@ -34,6 +34,15 @@ class _FakeWindow:
     async def activate_window(self, window_id: int):
         return {"success": True, "window_id": window_id}
 
+    async def get_application_windows(self, app: str):
+        assert app == "Target"
+        return {
+            "success": True,
+            "windows": [
+                {"id": 456, "window_id": 456, "title": "Target Window"},
+            ],
+        }
+
 
 REMOVED_PUBLIC_TOOLS = {
     "computer_file_read",
@@ -174,6 +183,136 @@ async def test_click_expand_requires_element_index():
 
 
 @pytest.mark.asyncio
+async def test_get_app_windows_returns_canonical_window(monkeypatch):
+    import computer_server.mcp_server as mcp_module
+
+    monkeypatch.setattr(
+        mcp_module,
+        "_handlers",
+        SimpleNamespace(window=_FakeWindow()),
+    )
+
+    result = await create_mcp_server().call_tool(
+        "computer_get_app_windows",
+        {"app": "Target"},
+    )
+
+    window_record = result.structured_content["windows"][0]
+    assert window_record["id"] == 456
+    assert window_record["window_id"] == 456
+    assert window_record["window"]["id"] == 456
+    assert window_record["window"]["window_id"] == 456
+    assert window_record["window"]["title"] == "Target Window"
+
+
+@pytest.mark.asyncio
+async def test_get_window_state_accepts_window_and_returns_window(monkeypatch):
+    import computer_server.mcp_server as mcp_module
+    import computer_server.services.window_state_service as window_state_service
+    from computer_server.handlers.element_cache import get_element_cache
+
+    async def fake_get_window_state_snapshot(
+        _automation_handler,
+        pid,
+        window_id,
+        **_kwargs,
+    ):
+        assert pid == 123
+        assert window_id == 456
+        cache = get_element_cache()
+        cache.set_window_origin(123, 456, 10, 20)
+        return {
+            "success": True,
+            "node_count": 0,
+            "unfiltered_node_count": 0,
+            "nodes": [],
+            "tree_markdown": "",
+        }
+
+    cache = get_element_cache()
+    cache.clear()
+    monkeypatch.setattr(cache, "_is_window_valid", lambda _window_id: True)
+    monkeypatch.setattr(
+        window_state_service,
+        "get_window_state_snapshot",
+        fake_get_window_state_snapshot,
+    )
+    monkeypatch.setattr(
+        mcp_module,
+        "_handlers",
+        SimpleNamespace(automation=_FakeAutomation()),
+    )
+
+    result = await create_mcp_server().call_tool(
+        "computer_get_window_state",
+        {"window": {"id": 456, "pid": 123, "title": "Target"}},
+    )
+
+    content = result.structured_content
+    assert content["success"] is True
+    assert content["snapshot_id"].startswith("snap-")
+    assert content["window"]["id"] == 456
+    assert content["window"]["window_id"] == 456
+    assert content["window"]["pid"] == 123
+    assert content["window_ref"]["version"] == 1
+    assert content["window_ref"]["pid"] == 123
+    assert content["window_ref"]["window_id"] == 456
+
+
+@pytest.mark.asyncio
+async def test_snapshot_id_rejects_window_mismatch(monkeypatch):
+    import computer_server.mcp_server as mcp_module
+    import computer_server.services.window_state_service as window_state_service
+    from computer_server.handlers.element_cache import get_element_cache
+
+    async def fake_get_window_state_snapshot(
+        _automation_handler,
+        pid,
+        window_id,
+        **_kwargs,
+    ):
+        cache = get_element_cache()
+        cache.set_window_origin(pid, window_id, 10, 20)
+        return {
+            "success": True,
+            "node_count": 0,
+            "unfiltered_node_count": 0,
+            "nodes": [],
+            "tree_markdown": "",
+        }
+
+    cache = get_element_cache()
+    cache.clear()
+    monkeypatch.setattr(cache, "_is_window_valid", lambda _window_id: True)
+    monkeypatch.setattr(
+        window_state_service,
+        "get_window_state_snapshot",
+        fake_get_window_state_snapshot,
+    )
+    monkeypatch.setattr(
+        mcp_module,
+        "_handlers",
+        SimpleNamespace(automation=_FakeAutomation()),
+    )
+    mcp = create_mcp_server()
+
+    snapshot_result = await mcp.call_tool(
+        "computer_get_window_state",
+        {"pid": 123, "window_id": 456},
+    )
+    snapshot_id = snapshot_result.structured_content["snapshot_id"]
+    result = await mcp.call_tool(
+        "computer_click",
+        {"snapshot_id": snapshot_id, "window": {"id": 789, "pid": 123}, "x": 1, "y": 2},
+    )
+
+    assert result.structured_content == {
+        "success": False,
+        "error": "snapshot_id window_id mismatch: snapshot has window_id=456, got window_id=789",
+    }
+
+
+@pytest.mark.asyncio
 async def test_accessibility_tree_uses_protected_service(monkeypatch):
     import computer_server.services.window_state_service as window_state_service
 
@@ -198,12 +337,17 @@ async def test_accessibility_tree_uses_protected_service(monkeypatch):
         {"window_id": 123},
     )
 
-    assert result.structured_content == {
+    assert {
+        key: result.structured_content[key]
+        for key in ("success", "tree_markdown", "tree_quality", "node_count")
+    } == {
         "success": True,
         "tree_markdown": "ok",
         "tree_quality": "poor",
         "node_count": 1,
     }
+    assert result.structured_content["window"]["id"] == 123
+    assert result.structured_content["window"]["window_id"] == 123
 
 
 @pytest.mark.asyncio
@@ -252,8 +396,7 @@ async def test_set_value_falls_back_when_uia_action_times_out(monkeypatch):
     result = await create_mcp_server().call_tool(
         "computer_set_value",
         {
-            "pid": 123,
-            "window_id": 456,
+            "window": {"id": 456, "pid": 123},
             "element_index": 1,
             "value": "abc",
         },
