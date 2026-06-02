@@ -51,7 +51,7 @@ class OmniParser:
             model_path: Optional path to the YOLO model
             cache_dir: Optional directory to cache model files
             force_device: Force specific device (cpu/cuda/mps)
-            ocr_languages: EasyOCR language codes. Default ['ch_sim', 'en'] for Chinese+English.
+            ocr_languages: OCR language hints. RapidOCR uses bundled PP-OCR Chinese+English models.
         """
         self.detector = DetectionProcessor(
             model_path=Path(model_path) if model_path else None,

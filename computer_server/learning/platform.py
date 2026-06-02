@@ -793,7 +793,7 @@ class VisionEnricher:
       region around the last click position and OCRs it.  If the OCR
       result contains non-ASCII text, replaces the action's text field.
 
-    Reuses the existing SOM OCR processor (EasyOCR with Chinese+English).
+    Reuses the existing SOM OCR processor (RapidOCR/PaddleOCR ONNX by default).
     """
 
     def __init__(self):

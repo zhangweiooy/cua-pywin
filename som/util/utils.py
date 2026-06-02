@@ -5,10 +5,11 @@ from contextlib import contextmanager
 from typing import Any, List, Optional, Sequence, Tuple, Union, cast
 
 import cv2
-import easyocr
 import matplotlib.pyplot as plt
 import numpy as np
 from PIL import Image
+
+from som.ocr import OCRProcessor
 
 logger = logging.getLogger(__name__)
 
@@ -34,22 +35,6 @@ def timeout(seconds):
         signal.signal(signal.SIGALRM, original_handler)
 
 
-# Initialize EasyOCR with optimized settings
-logger.info("Initializing EasyOCR with optimized settings...")
-reader = easyocr.Reader(
-    ["en"],
-    gpu=True,  # Use GPU if available
-    model_storage_directory=None,  # Use default directory
-    download_enabled=True,
-    detector=True,  # Enable text detection
-    recognizer=True,  # Enable text recognition
-    verbose=False,  # Disable verbose output
-    quantize=True,  # Enable quantization for faster inference
-    cudnn_benchmark=True,  # Enable cuDNN benchmarking
-)
-logger.info("EasyOCR initialization complete")
-
-
 def check_ocr_box(
     image_source: Union[str, Image.Image],
     display_img=True,
@@ -58,14 +43,14 @@ def check_ocr_box(
     easyocr_args=None,
     use_paddleocr=False,
 ) -> Tuple[Tuple[List[str], List[Tuple[float, float, float, float]]], Optional[Any]]:
-    """Check OCR box using EasyOCR with optimized settings.
+    """Check OCR box using the shared OCRProcessor.
 
     Args:
         image_source: Either a file path or PIL Image
         display_img: Whether to display the annotated image
         output_bb_format: Format for bounding boxes ('xywh' or 'xyxy')
         goal_filtering: Optional filtering of results
-        easyocr_args: Arguments for EasyOCR
+        easyocr_args: Ignored; kept for backward compatibility
         use_paddleocr: Ignored (kept for backward compatibility)
 
     Returns:
@@ -86,35 +71,18 @@ def check_ocr_box(
     w, h = image_source.size
     logger.info(f"Image size: {w}x{h}")
 
-    # Default EasyOCR arguments optimized for speed
-    default_args = {
-        "paragraph": False,  # Disable paragraph detection
-        "text_threshold": 0.5,  # Confidence threshold
-        "link_threshold": 0.4,  # Text link threshold
-        "canvas_size": 2560,  # Max image size
-        "mag_ratio": 1.0,  # Magnification ratio
-        "slope_ths": 0.1,  # Slope threshold
-        "ycenter_ths": 0.5,  # Y-center threshold
-        "height_ths": 0.5,  # Height threshold
-        "width_ths": 0.5,  # Width threshold
-        "add_margin": 0.1,  # Margin around text
-        "min_size": 20,  # Minimum text size
-    }
-
-    # Update with user-provided arguments
     if easyocr_args:
-        logger.info(f"Using custom EasyOCR arguments: {easyocr_args}")
-        default_args.update(easyocr_args)
+        logger.info("Ignoring legacy easyocr_args with OCRProcessor backend: %s", easyocr_args)
 
     try:
-        # Use EasyOCR with timeout
-        logger.info("Starting EasyOCR detection with 5 second timeout...")
+        logger.info("Starting OCR detection with 5 second timeout...")
         with timeout(5):  # 5 second timeout
-            # EasyOCR's readtext returns a list of tuples, where each tuple is (bbox, text, confidence)
-            raw_result = reader.readtext(image_np, **default_args)
-            result = cast(Sequence[Tuple[List[Tuple[float, float]], str, float]], raw_result)
-            coord = [item[0] for item in result]  # item[0] is the bbox coordinates
-            text = [item[1] for item in result]  # item[1] is the text content
+            result = OCRProcessor().detect_text(image_source, confidence_threshold=0.5)
+            coord = [
+                _normalized_xyxy_to_points(item["bbox"], w, h)
+                for item in result
+            ]
+            text = [item["content"] for item in result]
             logger.info(f"OCR completed successfully. Found {len(text)} text regions")
             logger.info(f"Detected text: {text}")
 
@@ -159,6 +127,20 @@ def check_ocr_box(
 
     logger.info("OCR processing complete")
     return (text, bb), goal_filtering
+
+
+def _normalized_xyxy_to_points(
+    bbox: Sequence[float],
+    width: int,
+    height: int,
+) -> List[Tuple[float, float]]:
+    x1, y1, x2, y2 = bbox
+    return [
+        (x1 * width, y1 * height),
+        (x2 * width, y1 * height),
+        (x2 * width, y2 * height),
+        (x1 * width, y2 * height),
+    ]
 
 
 def get_xywh(box):

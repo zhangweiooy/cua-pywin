@@ -38,7 +38,8 @@ dependencies = [
     "numpy>=1.26",
     "torch>=2.2",
     "torchvision>=0.17",
-    "easyocr>=1.7",
+    "rapidocr>=3,<4",
+    "onnxruntime>=1.18",
     "opencv-python-headless>=4.11",
     "ultralytics>=8.1",
     "supervision>=0.25",
@@ -60,6 +61,9 @@ windows = [
 ]
 cdp = [
     "websockets>=12.0",
+]
+ocr-easy = [
+    "easyocr>=1.7",
 ]
 
 [project.urls]

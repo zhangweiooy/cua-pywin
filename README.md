@@ -16,8 +16,8 @@ Windows AI Agent 桌面操控 MCP 服务 — 43 个计算机控制工具。
 
 - **43 个 MCP 工具** — 截图、鼠标、键盘、窗口管理
 - **录制 / 回放** — 录制 MCP 工具调用序列到磁盘，完整回放（含坐标重算和过期窗口解析）
-- **学习模式** — 录制真人操作（pynput 全局钩子 + UIA 元素标注 + EasyOCR 视觉增强）
-- **SOM 视觉检测** — OmniParser YOLO + EasyOCR 中文识别 + TinyCLIP 图标语义标签，UIA 不可用时自动回退
+- **学习模式** — 录制真人操作（pynput 全局钩子 + UIA 元素标注 + PaddleOCR ONNX 视觉增强）
+- **SOM 视觉检测** — OmniParser YOLO + PaddleOCR ONNX 中文识别 + TinyCLIP 图标语义标签，UIA 不可用时自动回退
 - **UIA 树遍历** — 支持 Win32 / UWP / Electron / Qt 应用，非 UIA 应用自动触发 SOM
 - **Agent 光标覆盖层** — Dubins 路径飞行动画 + 弹簧过冲 + 辉光渲染
 
@@ -68,7 +68,7 @@ cua-pywin/
 │     └─ motion.py           ← Dubins 路径规划 + 弹簧动力学（Phase enum + Pose）
 ├─ som/                      ← SOM 视觉 (vendored)
 │  ├─ detect.py              ← OmniParser YOLOv8 检测
-│  ├─ ocr.py                 ← EasyOCR 中文识别
+│  ├─ ocr.py                 ← PaddleOCR ONNX / RapidOCR 中文识别
 │  └─ weights/               ← 内置 OmniParser v2 YOLO 图标检测权重
 ├─ scripts/
 │  └─ mcp_test_one.py        ← 单工具测试脚本
@@ -91,7 +91,8 @@ uv：
 uv sync --index-url https://pypi.tuna.tsinghua.edu.cn/simple
 ```
 
-首次导入自动加载 EasyOCR 模型（~30s），后续秒启动。
+默认 OCR 后端是 RapidOCR + ONNXRuntime（PaddleOCR PP-OCRv4 mobile 模型）。
+首次初始化会校验/下载 RapidOCR ONNX 模型；后续 daemon 热启动复用已加载状态。
 
 ### 快速开始
 
@@ -197,6 +198,8 @@ cua-win serve --host 0.0.0.0 --port 8000 \
 
 **树质量 + SOM 回退** — `tree_quality: rich(>50) / ok(15-50)` 跳过 SOM，`poor(<15) / empty(0)` 启用 SOM 视觉检测。`uia_quality` 与 `vision_quality` 单独报告，不互相覆盖。
 
+**PaddleOCR ONNX 后端** — OCR 默认使用 RapidOCR + ONNXRuntime，也就是 PaddleOCR PP-OCRv4 mobile ONNX 模型。`CUA_OCR_BACKEND=easyocr` 可启用可选 EasyOCR fallback（需安装 `ocr-easy` extra）。`CUA_OCR_TIMEOUT_SECONDS` 覆盖单次 OCR timeout；`CUA_RAPIDOCR_DEVICE=cpu` 是 v1 支持的运行方式。RapidOCR 首次初始化可能下载 ONNX 模型，离线/打包发布前需要确认这些模型已内置。
+
 **录制 vs 学习** — 录制是 agent 视角（MCP 工具调用回放），学习是人类视角（pynput + UIA 标注 + OCR 增强）。两者通过 `capture_service / ocr_service / uia_service / window_identity_service` 共享底层能力。
 
 **录制写盘** — 录制 turn 文件夹通过专用 daemon writer 线程 + 有界队列写入，不与 anyio 默认 executor 竞争；队列满时丢弃并计数（`state.dropped_turns`）。
@@ -212,7 +215,7 @@ cua-win serve --host 0.0.0.0 --port 8000 \
 - **SOM 检测同步运行于事件循环线程**：anyio 任务组持有 GIL。warm_up() 启动时预加载（~30s），后续调用 < 3s
 - **录制截图必须同步**：`ImageGrab.grab()` 不能卸到线程——anyio 事件循环阻止 `run_in_executor` 任务执行。50 步录制总计 ~5-10s 阻塞
 - **SOM OCR 遮挡噪音**：WGC window capture 可避免大多数重叠窗口污染；screen crop 回退会在 `capture_metadata.occlusion_risk=true` 中显式标记
-- **SOM YOLO/OCR 并行收益有限**：2026-06-01 CPU 基准（1280x830 WGC screenshot）串行 3.31s、`ThreadPoolExecutor` 并行 3.07s，仅约 8% 提升；默认保持串行，等真实慢样本或 GPU 基准再重评
+- **SOM YOLO/OCR 并行收益有限**：2026-06-01 EasyOCR CPU 基准（1280x830 WGC screenshot）串行 3.31s、`ThreadPoolExecutor` 并行 3.07s，仅约 8% 提升；RapidOCR 后端需重新基准后再决定是否并行
 - **学习 IME 对终端无效**：PowerShell/CMD 无 UIA ValuePattern，回退拼音 + OCR
 - **录制坐标绝对化**：回放时窗口位置变化导致错位。`window_ref` 机制在窗口存活时可重算坐标，窗口过期则按进程名/标题重新搜索
 - **GBK 编码**：子进程必须设置 `PYTHONIOENCODING=utf-8`
@@ -239,8 +242,8 @@ python -m py_compile computer_server/learning/*.py
 
 - **43 MCP tools** — screenshots, mouse, keyboard, window management
 - **Recording / Replay** — record MCP tool invocations to disk with full replay (coordinate recalculation + stale-window resolution)
-- **Learning mode** — record human actions (pynput global hooks + UIA element enrichment + EasyOCR vision)
-- **SOM vision detection** — OmniParser YOLO + EasyOCR (Chinese + English) + TinyCLIP icon labels, automatic fallback when UIA is unavailable
+- **Learning mode** — record human actions (pynput global hooks + UIA element enrichment + PaddleOCR ONNX vision)
+- **SOM vision detection** — OmniParser YOLO + PaddleOCR ONNX (Chinese + English) + TinyCLIP icon labels, automatic fallback when UIA is unavailable
 - **UIA tree walking** — supports Win32 / UWP / Electron / Qt apps; auto-triggers SOM for non-UIA apps
 - **Agent cursor overlay** — Dubins-path flight animation + spring overshoot + glow rendering
 
@@ -292,7 +295,7 @@ cua-pywin/
 │     └─ motion.py           ← Dubins planner + spring (Phase enum + Pose)
 ├─ som/                      ← SOM vision (vendored)
 │  ├─ detect.py              ← OmniParser YOLOv8 detection
-│  ├─ ocr.py                 ← EasyOCR Chinese/English
+│  ├─ ocr.py                 ← PaddleOCR ONNX / RapidOCR Chinese/English
 │  └─ weights/               ← Bundled OmniParser v2 YOLO icon detector
 ├─ scripts/
 │  └─ mcp_test_one.py        ← Single-tool test script
@@ -315,7 +318,9 @@ Or with uv:
 uv sync --index-url https://pypi.tuna.tsinghua.edu.cn/simple
 ```
 
-First import loads EasyOCR models (~30s). Subsequent starts are instant.
+The default OCR backend is RapidOCR + ONNXRuntime with PaddleOCR PP-OCRv4
+mobile models. First initialization validates/downloads RapidOCR ONNX models;
+subsequent daemon calls reuse loaded state.
 
 ### Quick Start
 
@@ -449,6 +454,13 @@ default; use `CUA_TINYCLIP_MODEL` to override the local model path or
 timing is exposed under `vision_metadata.stage_timings`, including YOLO, OCR,
 TinyCLIP, merge, encode, and total latency.
 
+**PaddleOCR ONNX backend** — OCR defaults to RapidOCR + ONNXRuntime with
+PaddleOCR PP-OCRv4 mobile models. `CUA_OCR_BACKEND=easyocr` enables the optional
+EasyOCR fallback when installed with the `ocr-easy` extra. `CUA_OCR_TIMEOUT_SECONDS`
+overrides per-call OCR timeout, and `CUA_RAPIDOCR_DEVICE=cpu` is the supported v1
+runtime. RapidOCR may download ONNX models on first initialization; package/offline
+builds should verify these model files are vendored before release.
+
 **Recording vs Learning** — Recording is agent-perspective (MCP tool replay); Learning is human-perspective (pynput + UIA + OCR enrichment). The two share capture / OCR / UIA-timeout / window-identity through `services/` rather than duplicating logic.
 
 **Recording disk writes** — Turn-folder writes go through a dedicated daemon writer thread + bounded queue so they don't compete with the anyio default executor; full queue drops with a counter in `state.dropped_turns`.
@@ -464,7 +476,7 @@ TinyCLIP, merge, encode, and total latency.
 - **SOM detection runs synchronously on the event loop**: anyio task group holds the GIL. warm_up() pre-loads at startup (~30s); subsequent calls <3s
 - **Recording screenshots cannot be offloaded**: `ImageGrab.grab()` must stay synchronous — anyio blocks `run_in_executor`. ~5-10s total for 50-action recordings
 - **SOM OCR occlusion noise**: WGC window capture avoids most overlapping-window pollution; screen-crop fallback marks `capture_metadata.occlusion_risk=true`
-- **Limited SOM YOLO/OCR parallelism gain**: 2026-06-01 CPU benchmark on a 1280x830 WGC screenshot measured 3.31s serial vs 3.07s with `ThreadPoolExecutor` parallelism, about 8% faster; keep serial by default until real slow samples or GPU benchmarks justify it
+- **Limited SOM YOLO/OCR parallelism gain**: the 2026-06-01 EasyOCR CPU benchmark on a 1280x830 WGC screenshot measured 3.31s serial vs 3.07s with `ThreadPoolExecutor` parallelism, about 8% faster; re-benchmark with RapidOCR before enabling parallelism
 - **Learning IME not supported in terminals**: PowerShell/CMD lack UIA ValuePattern. Falls back to pinyin + OCR
 - **Recording coordinates are absolute**: window position changes break replay. `window_ref` recalculates if window is alive; falls back to process-name/title search for stale IDs
 - **GBK encoding**: set `PYTHONIOENCODING=utf-8` in subprocess environments

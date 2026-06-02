@@ -279,10 +279,10 @@ is internal replay metadata.
 
 ## SOM Vision Strategy
 
-### Current: OmniParser YOLO + EasyOCR + TinyCLIP
+### Current: OmniParser YOLO + PaddleOCR ONNX + TinyCLIP
 
 ```
-OCR: EasyOCR default ['ch_sim', 'en'] (Chinese+English)
+OCR: RapidOCR + ONNXRuntime default, PaddleOCR PP-OCRv4 mobile Chinese+English
 Icon labels: bundled TinyCLIP wkcn/TinyCLIP-ViT-8M-16-Text-3M-YFCC15M
 Perf: CPU 2-5s/frame, GPU <1s/frame
 Risk: OmniParser is trained on modern Web/mobile UI; old Win32 recall may vary
@@ -294,12 +294,16 @@ builds include the `som` package and this weight file.
 
 TinyCLIP runs over YOLO icon crops only. The model is bundled under
 `computer_server/models/tinyclip/` and package-data includes it for future
-builds. It complements EasyOCR: TinyCLIP labels non-text icons; EasyOCR labels
+builds. It complements OCR: TinyCLIP labels non-text icons; RapidOCR labels
 visible text. Inference must remain batched across all icon crops in one pass;
 do not call the model once per icon.
 
 Relevant controls:
 
+- `CUA_OCR_BACKEND=rapidocr|easyocr` selects OCR backend. RapidOCR is default;
+  EasyOCR is optional and requires the `ocr-easy` extra.
+- `CUA_OCR_TIMEOUT_SECONDS` overrides per-call OCR timeout.
+- `CUA_RAPIDOCR_DEVICE=cpu` is the supported RapidOCR runtime in v1.
 - `CUA_ENABLE_TINYCLIP=0` disables icon semantic labeling.
 - `CUA_TINYCLIP_MODEL` overrides the model id/path; local HF snapshot paths are
   supported.
@@ -312,10 +316,11 @@ Relevant controls:
 `tinyclip_latency`, `bridge_convert_latency`, `annotation_encode_latency`,
 `omniparser_latency`, and `total_latency`.
 
-### OCR Fallback: EasyOCR -> PaddleOCR
+### OCR Fallback: RapidOCR -> EasyOCR
 
-Use PaddleOCR only if Windows Chinese recognition is insufficient. It is heavier
-and has a slower first load.
+RapidOCR may download PP-OCR ONNX models on first initialization. Offline and
+packaged releases should verify these model files are vendored before shipping.
+Use EasyOCR only as an explicit fallback for comparison or regressions.
 
 ### Detection Fallback: OmniParser -> Grounding DINO
 
@@ -444,8 +449,8 @@ uv run cua-win stop
   lifecycle, shutdown, or modularity problems.
 - Revisit MobileCLIP-S0 only if TinyCLIP label quality is insufficient on
   collected Windows icon-label samples.
-- Keep YOLO + EasyOCR parallelism disabled by default; the measured CPU speedup
-  was about 8%, which does not justify added complexity yet.
+- Keep YOLO + OCR parallelism disabled by default; the prior EasyOCR CPU speedup
+  was about 8%, and RapidOCR needs fresh benchmarks before adding complexity.
 
 ## Deferred Refactors
 
@@ -494,5 +499,5 @@ uv run cua-win stop
   insufficient.
 - YOLO + EasyOCR `ThreadPoolExecutor` parallelism was evaluated on 2026-06-01
   with a 1280x830 WGC screenshot on CPU: serial averaged 3.31s, parallel
-  averaged 3.07s, about 8% faster. Do not enable by default; revisit only with
-  representative slow samples or GPU benchmarks.
+  averaged 3.07s, about 8% faster. This is historical EasyOCR data; re-benchmark
+  with RapidOCR before enabling OCR parallelism.
