@@ -4,7 +4,7 @@ This file provides guidance to coding agents working in this repository.
 
 # cua-pywin
 
-Windows UI automation MCP server — 42 tools for computer control.
+Windows UI automation MCP server — 43 tools for computer control.
 
 **Priority: Windows + Chinese UI is the highest-guarantee target.**
 
@@ -12,7 +12,7 @@ Windows UI automation MCP server — 42 tools for computer control.
 
 ```
 computer_server/
-  mcp_server.py             — 42 MCP tools via FastMCP; tool wrappers,
+  mcp_server.py             — 43 MCP tools via FastMCP; tool wrappers,
                               recording/replay/learning entrypoints
   main.py                   — Shared HTTP app: /status, /mcp, and
                               token-protected cua-win JSON RPC routes
@@ -156,9 +156,10 @@ Public tools should prefer `window` over top-level `pid/window_id`:
 `pid/window_id` remains supported for compatibility, but if both forms are
 provided they must identify the same target or the tool returns a validation
 error. `computer_list_windows`, `computer_get_app_windows`,
-`computer_list_apps`, `computer_get_active_window`, and
+`computer_list_apps`, `computer_get_active_window`, `computer_get_window`, and
 `computer_get_window_state` return canonical `window` objects for follow-up
-calls.
+calls. Use `computer_get_window({"id":..., "app":...})` to rehydrate a stale or
+lost window binding.
 
 `window_ref` is separate replay metadata. Agents should not hand-author it;
 recording builds it from the resolved `window` plus origin, process, title,
@@ -404,6 +405,48 @@ uv run cua-win stop
    it to `RECORDABLE_TOOLS`.
 6. Preserve `-> Any` return annotations until the MCP SDK outputSchema bug is
    fixed.
+
+## Current Priorities
+
+### P1: High-Value API Stabilization
+
+- Use `computer_get_window` as the public stale-window rehydrate entrypoint
+  after lost bindings, agent context resets, or closed/reopened app windows.
+- Add screenshot identity for coordinate actions. Coordinates should be able to
+  bind to the exact screenshot/crop they came from, building on `snapshot_id`
+  and preparing for multi-screenshot state.
+- Make `computer_get_window_state` more explicit and cheaper through
+  request flags such as screenshot, text/tree, nodes, and vision inclusion.
+  Preserve current compatibility defaults until callers migrate.
+- Extend `window` input support to keyboard and window-management tools:
+  `computer_type`, `computer_press_key`, `computer_hotkey`,
+  `computer_activate_window`, `computer_minimize_window`,
+  `computer_maximize_window`, and `computer_close_window`.
+- Add a `CUA_TOOL_PROFILE=core|full` surface profile. Default should expose a
+  smaller high-level core set; full keeps low-level primitives and debug tools.
+
+### P2: Useful, But Not Blocking
+
+- Split non-primary accessibility actions into a dedicated secondary-action
+  tool instead of growing `computer_click(action=...)`.
+- Continue WGC app coverage testing and capture-stage timing so WGC and screen
+  crop can be compared with concrete latency and failure data.
+- Deduplicate EnumWindows search strategies for process/title matching.
+- Explore broader MSAA-backed actions only when the action contract is
+  observable and verification-gated.
+
+### P3: Defer Until Evidence Accumulates
+
+- Isolate UIA/MSAA COM work in disposable worker processes only if leaked
+  provider calls become an observed operational problem.
+- Add a CDP WebSocket connection pool only if browser page tools become
+  high-frequency.
+- Rework overlay architecture only after more Windows runs expose concrete GDI
+  lifecycle, shutdown, or modularity problems.
+- Revisit MobileCLIP-S0 only if TinyCLIP label quality is insufficient on
+  collected Windows icon-label samples.
+- Keep YOLO + EasyOCR parallelism disabled by default; the measured CPU speedup
+  was about 8%, which does not justify added complexity yet.
 
 ## Deferred Refactors
 

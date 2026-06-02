@@ -8,6 +8,7 @@ from computer_server.services.window_identity_service import (
     build_window,
     build_window_ref,
     normalize_window_input,
+    rehydrate_window,
     resolve_window_input,
 )
 
@@ -87,6 +88,70 @@ def test_add_window_field_preserves_legacy_record():
     assert record["window"]["window_id"] == 123
     assert record["window"]["pid"] == 456
     assert record["window"]["title"] == "Target"
+
+
+def test_rehydrate_window_returns_canonical_window(monkeypatch):
+    import computer_server.services.window_identity_service as identity
+
+    monkeypatch.setattr(identity, "is_live_window", lambda _window_id: True)
+    monkeypatch.setattr(identity, "_get_pid_for_window", lambda _window_id: 456)
+    monkeypatch.setattr(identity, "_get_process_name", lambda _pid: "Target.exe")
+    monkeypatch.setattr(identity, "_get_window_title", lambda _window_id: "Target")
+    monkeypatch.setattr(identity, "_get_window_class", lambda _window_id: "TargetClass")
+    monkeypatch.setattr(identity, "_get_window_rect", lambda _window_id: (10, 20, 110, 220))
+    monkeypatch.setattr(identity, "_is_window_visible", lambda _window_id: True)
+    monkeypatch.setattr(identity, "_foreground_window_id", lambda: 123)
+
+    result = rehydrate_window(123, app="Display Name")
+
+    assert result["success"] is True
+    assert result["id"] == 123
+    assert result["window_id"] == 123
+    assert result["pid"] == 456
+    assert result["title"] == "Target"
+    assert result["app"] == "Target.exe"
+    assert result["window"]["class_name"] == "TargetClass"
+    assert result["window"]["bounds"] == {
+        "x": 10,
+        "y": 20,
+        "width": 100,
+        "height": 200,
+    }
+    assert result["window"]["state"] == {
+        "visible": True,
+        "minimized": False,
+        "foreground": True,
+    }
+
+
+def test_rehydrate_window_rejects_non_integer_id():
+    with pytest.raises(ValidationError, match="id must be an integer"):
+        rehydrate_window("abc")
+
+
+def test_rehydrate_window_returns_error_for_dead_hwnd(monkeypatch):
+    import computer_server.services.window_identity_service as identity
+
+    monkeypatch.setattr(identity, "is_live_window", lambda _window_id: False)
+
+    assert rehydrate_window(123) == {
+        "success": False,
+        "error": "Window 123 is not currently available",
+        "suggestion": "Call computer_list_apps or computer_list_windows to select a current window.",
+    }
+
+
+def test_rehydrate_window_allows_app_hint_mismatch(monkeypatch):
+    import computer_server.services.window_identity_service as identity
+
+    monkeypatch.setattr(identity, "is_live_window", lambda _window_id: True)
+    monkeypatch.setattr(identity, "_get_pid_for_window", lambda _window_id: 456)
+    monkeypatch.setattr(identity, "_get_process_name", lambda _pid: "Actual.exe")
+
+    result = rehydrate_window(123, app="Different Display Name")
+
+    assert result["success"] is True
+    assert result["window"]["app"] == "Actual.exe"
 
 
 def test_build_window_ref_includes_version_and_pid(monkeypatch):

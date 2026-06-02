@@ -115,6 +115,50 @@ def _foreground_window_id() -> Optional[int]:
         return None
 
 
+def is_live_window(window_id: Any) -> bool:
+    """Return whether ``window_id`` currently identifies a live HWND."""
+    wid = _coerce_optional_int("id", window_id)
+    if wid is None or wid <= 0:
+        return False
+    try:
+        import win32gui
+
+        return bool(win32gui.IsWindow(wid))
+    except Exception:
+        return False
+
+
+def rehydrate_window(window_id: Any, app: Optional[str] = None) -> Dict[str, Any]:
+    """Rebuild a public canonical window object for a currently open HWND."""
+    wid = _coerce_optional_int("id", window_id)
+    if wid is None:
+        raise ValidationError("id is required")
+    if app is not None and not isinstance(app, str):
+        raise ValidationError("app must be a string")
+    if not is_live_window(wid):
+        return {
+            "success": False,
+            "error": f"Window {wid} is not currently available",
+            "suggestion": "Call computer_list_apps or computer_list_windows to select a current window.",
+        }
+
+    window = build_window(wid)
+    if window is None:
+        return {
+            "success": False,
+            "error": f"Window {wid} could not be resolved",
+            "suggestion": "Call computer_list_apps or computer_list_windows to select a current window.",
+        }
+    if app and "app" not in window:
+        window["app"] = app
+
+    result: Dict[str, Any] = {"success": True, "window": window}
+    for key in ("id", "window_id", "pid", "title", "app"):
+        if key in window:
+            result[key] = window[key]
+    return result
+
+
 def normalize_window_input(window: Optional[Mapping[str, Any]]) -> tuple[Optional[int], Optional[int]]:
     """Extract ``(pid, window_id)`` from a user-facing window object."""
     if window is None:

@@ -1,8 +1,8 @@
 # cua-pywin
 
-Windows UI automation MCP server for AI agents — 42 tools for computer control.
+Windows UI automation MCP server for AI agents — 43 tools for computer control.
 <br>
-Windows AI Agent 桌面操控 MCP 服务 — 42 个计算机控制工具。
+Windows AI Agent 桌面操控 MCP 服务 — 43 个计算机控制工具。
 
 ---
 
@@ -14,7 +14,7 @@ Windows AI Agent 桌面操控 MCP 服务 — 42 个计算机控制工具。
 
 ### 亮点
 
-- **42 个 MCP 工具** — 截图、鼠标、键盘、窗口管理
+- **43 个 MCP 工具** — 截图、鼠标、键盘、窗口管理
 - **录制 / 回放** — 录制 MCP 工具调用序列到磁盘，完整回放（含坐标重算和过期窗口解析）
 - **学习模式** — 录制真人操作（pynput 全局钩子 + UIA 元素标注 + EasyOCR 视觉增强）
 - **SOM 视觉检测** — OmniParser YOLO + EasyOCR 中文识别 + TinyCLIP 图标语义标签，UIA 不可用时自动回退
@@ -26,7 +26,7 @@ Windows AI Agent 桌面操控 MCP 服务 — 42 个计算机控制工具。
 ```
 cua-pywin/
 ├─ computer_server/          ← 主程序
-│  ├─ mcp_server.py          ← 42 MCP 工具入口（薄 wrapper，业务转交 services/）
+│  ├─ mcp_server.py          ← 43 MCP 工具入口（薄 wrapper，业务转交 services/）
 │  ├─ main.py                ← 本机 HTTP 服务器（/status + /mcp + cua-win JSON RPC）
 │  ├─ tool_cli.py            ← cua-win CLI / HTTP server launcher
 │  ├─ server_context.py      ← 每实例可变状态（录制会话/学习/UIA gate/popover dedup）
@@ -146,7 +146,7 @@ cua-win serve --host 0.0.0.0 --port 8000 \
 
 **键盘** — `computer_type` `computer_press_key` `computer_hotkey` `computer_key_down` `computer_key_up` `computer_set_value`
 
-**窗口管理** — `computer_open_url` `computer_launch_app` `computer_get_active_window` `computer_get_window_name` `computer_get_window_size` `computer_get_window_position` `computer_set_window_size` `computer_set_window_position` `computer_activate_window` `computer_minimize_window` `computer_maximize_window` `computer_close_window` `computer_get_app_windows` `computer_list_windows` `computer_list_apps`
+**窗口管理** — `computer_open_url` `computer_launch_app` `computer_get_active_window` `computer_get_window` `computer_get_window_name` `computer_get_window_size` `computer_get_window_position` `computer_set_window_size` `computer_set_window_position` `computer_activate_window` `computer_minimize_window` `computer_maximize_window` `computer_close_window` `computer_get_app_windows` `computer_list_windows` `computer_list_apps`
 
 **桌面与辅助** — `computer_get_desktop_environment` `computer_get_accessibility_tree` `computer_page`
 
@@ -177,8 +177,10 @@ cua-win serve --host 0.0.0.0 --port 8000 \
 `window.id` 与 `window.window_id` 都表示 HWND。旧的顶层
 `pid/window_id` 仍兼容，但与 `window` 同时传入时必须一致，否则工具会
 返回 validation error。`computer_list_windows`、`computer_get_app_windows`、
-`computer_list_apps`、`computer_get_active_window` 和
-`computer_get_window_state` 都会返回可直接复用的 `window` 对象。
+`computer_list_apps`、`computer_get_active_window`、`computer_get_window` 和
+`computer_get_window_state` 都会返回可直接复用的 `window` 对象。使用
+`computer_get_window({"id":...,"app":...})` 可以在 stale handle、绑定丢失或
+上下文重置后重新获取当前窗口对象。
 `window_ref` 仅用于 recording/replay 的内部窗口身份快照，不要求调用方构造。
 
 ### 关键设计
@@ -229,7 +231,7 @@ python -m py_compile computer_server/learning/*.py
 
 ### Highlights
 
-- **42 MCP tools** — screenshots, mouse, keyboard, window management
+- **43 MCP tools** — screenshots, mouse, keyboard, window management
 - **Recording / Replay** — record MCP tool invocations to disk with full replay (coordinate recalculation + stale-window resolution)
 - **Learning mode** — record human actions (pynput global hooks + UIA element enrichment + EasyOCR vision)
 - **SOM vision detection** — OmniParser YOLO + EasyOCR (Chinese + English) + TinyCLIP icon labels, automatic fallback when UIA is unavailable
@@ -241,7 +243,7 @@ python -m py_compile computer_server/learning/*.py
 ```
 cua-pywin/
 ├─ computer_server/          ← Main package
-│  ├─ mcp_server.py          ← 42 MCP tools (thin wrappers; logic in services/)
+│  ├─ mcp_server.py          ← 43 MCP tools (thin wrappers; logic in services/)
 │  ├─ main.py                ← Local HTTP server (/status + /mcp + cua-win JSON RPC)
 │  ├─ tool_cli.py            ← cua-win CLI / HTTP server launcher
 │  ├─ server_context.py      ← Per-instance state (recording / learning /
@@ -374,7 +376,7 @@ Use `cua-win serve --no-cli-rpc` when you only want `/status + /mcp`.
 
 **Keyboard** — `computer_type` `computer_press_key` `computer_hotkey` `computer_key_down` `computer_key_up` `computer_set_value`
 
-**Window Management** — `computer_open_url` `computer_launch_app` `computer_get_active_window` `computer_get_window_name` `computer_get_window_size` `computer_get_window_position` `computer_set_window_size` `computer_set_window_position` `computer_activate_window` `computer_minimize_window` `computer_maximize_window` `computer_close_window` `computer_get_app_windows` `computer_list_windows` `computer_list_apps`
+**Window Management** — `computer_open_url` `computer_launch_app` `computer_get_active_window` `computer_get_window` `computer_get_window_name` `computer_get_window_size` `computer_get_window_position` `computer_set_window_size` `computer_set_window_position` `computer_activate_window` `computer_minimize_window` `computer_maximize_window` `computer_close_window` `computer_get_app_windows` `computer_list_windows` `computer_list_apps`
 
 **Desktop & Accessibility** — `computer_get_desktop_environment` `computer_get_accessibility_tree` `computer_page`
 
@@ -407,8 +409,10 @@ action tools:
 `pid/window_id` remains supported, but when both forms are provided they must
 match or the tool returns a validation error. `computer_list_windows`,
 `computer_get_app_windows`, `computer_list_apps`, `computer_get_active_window`,
-and `computer_get_window_state` return reusable `window` objects. `window_ref`
-is internal recording/replay identity metadata and should not be hand-authored.
+`computer_get_window`, and `computer_get_window_state` return reusable `window`
+objects. Use `computer_get_window({"id":...,"app":...})` to rehydrate a current
+window after stale handles, lost bindings, or context resets. `window_ref` is
+internal recording/replay identity metadata and should not be hand-authored.
 
 ### Key Design Decisions
 

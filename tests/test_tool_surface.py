@@ -68,8 +68,9 @@ async def test_agent_native_tools_are_not_exposed():
     tools = await mcp.list_tools()
     names = {tool.name for tool in tools}
 
-    assert len(names) == 42
+    assert len(names) == 43
     assert names.isdisjoint(REMOVED_PUBLIC_TOOLS)
+    assert "computer_get_window" in names
     assert "computer_open_url" in names
 
 
@@ -203,6 +204,71 @@ async def test_get_app_windows_returns_canonical_window(monkeypatch):
     assert window_record["window"]["id"] == 456
     assert window_record["window"]["window_id"] == 456
     assert window_record["window"]["title"] == "Target Window"
+
+
+@pytest.mark.asyncio
+async def test_get_window_rehydrates_canonical_window(monkeypatch):
+    import computer_server.services.window_identity_service as identity
+
+    def fake_rehydrate_window(window_id, app=None):
+        assert window_id == 456
+        assert app == "Target.exe"
+        return {
+            "success": True,
+            "id": 456,
+            "window_id": 456,
+            "pid": 123,
+            "title": "Target",
+            "window": {
+                "id": 456,
+                "window_id": 456,
+                "pid": 123,
+                "app": "Target.exe",
+                "title": "Target",
+            },
+        }
+
+    monkeypatch.setattr(identity, "rehydrate_window", fake_rehydrate_window)
+
+    result = await create_mcp_server().call_tool(
+        "computer_get_window",
+        {"id": 456, "app": "Target.exe"},
+    )
+
+    assert result.structured_content == {
+        "success": True,
+        "id": 456,
+        "window_id": 456,
+        "pid": 123,
+        "title": "Target",
+        "window": {
+            "id": 456,
+            "window_id": 456,
+            "pid": 123,
+            "app": "Target.exe",
+            "title": "Target",
+        },
+    }
+
+
+@pytest.mark.asyncio
+async def test_get_window_rejects_invalid_id(monkeypatch):
+    import computer_server.services.window_identity_service as identity
+
+    def fake_rehydrate_window(_window_id, app=None):
+        raise ValueError("id must be an integer")
+
+    monkeypatch.setattr(identity, "rehydrate_window", fake_rehydrate_window)
+
+    result = await create_mcp_server().call_tool(
+        "computer_get_window",
+        {"id": 456},
+    )
+
+    assert result.structured_content == {
+        "success": False,
+        "error": "id must be an integer",
+    }
 
 
 @pytest.mark.asyncio

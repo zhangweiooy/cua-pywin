@@ -2704,6 +2704,29 @@ def create_mcp_server() -> FastMCP:
         return result
 
     @mcp.tool(annotations={"readOnlyHint": True, "destructiveHint": False, "idempotentHint": True, "openWorldHint": True})
+    async def computer_get_window(id: int, app: Optional[str] = None) -> Any:
+        """Rehydrate a current canonical window object by window id.
+
+        Use this after stale handles, lost bindings, or context resets. The
+        optional app value is a carry-forward hint only; it is not used as a
+        strict mismatch check.
+
+        Args:
+            id: Window id / HWND from a previously returned window object.
+            app: Optional app hint from a previously returned window object.
+
+        Returns:
+            Dictionary with success status and a canonical `window` object.
+        """
+        from computer_server.services.validation_service import error_result
+        from computer_server.services.window_identity_service import rehydrate_window
+
+        try:
+            return rehydrate_window(id, app=app)
+        except ValueError as e:
+            return error_result(e)
+
+    @mcp.tool(annotations={"readOnlyHint": True, "destructiveHint": False, "idempotentHint": True, "openWorldHint": True})
     async def computer_get_window_name(window_id: str) -> Any:
         """Get the title/name of a window."""
         window_handler = _get_handlers().window
