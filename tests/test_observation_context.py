@@ -11,6 +11,10 @@ def test_observation_registry_marks_only_latest_snapshot_current():
         window_id=2,
         node_count=3,
         unfiltered_node_count=4,
+        screen_width=100,
+        screen_height=50,
+        capture_geometry={"compression_ratio": 2.0},
+        capture_metadata={"capture_backend": "wgc"},
     )
     second = registry.create_snapshot(
         pid=1,
@@ -23,6 +27,16 @@ def test_observation_registry_marks_only_latest_snapshot_current():
     assert registry.get_snapshot(second.snapshot_id) == second
     assert registry.is_latest(first.snapshot_id) is False
     assert registry.is_latest(second.snapshot_id) is True
+    assert registry.get_screenshot(first.screenshot_id) is not None
+    assert registry.is_latest_screenshot(first.screenshot_id) is False
+    assert registry.is_latest_screenshot(second.screenshot_id) is True
+
+    capture = registry.get_screenshot(first.screenshot_id).to_public_capture()
+    assert capture["id"] == first.screenshot_id
+    assert capture["snapshot_id"] == first.snapshot_id
+    assert capture["screen_width"] == 100
+    assert capture["screen_height"] == 50
+    assert capture["capture_backend"] == "wgc"
 
 
 def test_observation_registry_expires_old_snapshots():
@@ -35,3 +49,4 @@ def test_observation_registry_expires_old_snapshots():
     )
 
     assert registry.get_snapshot(snapshot.snapshot_id) is None
+    assert registry.get_screenshot(snapshot.screenshot_id) is None

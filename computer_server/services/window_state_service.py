@@ -1247,6 +1247,7 @@ async def get_window_state_snapshot(
                 "x": geometry.screenshot_origin_x,
                 "y": geometry.screenshot_origin_y,
             },
+            "_capture_geometry": dict(zoom_entry),
         }
         if popover_candidates_text:
             response["popover_candidates_text"] = popover_candidates_text

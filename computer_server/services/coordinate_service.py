@@ -72,10 +72,12 @@ def window_resized_to_screen(
     x: int,
     y: int,
     zoom_metadata: Optional[Dict[Tuple[int, int], Dict[str, Any]]] = None,
+    capture_geometry: Optional[Dict[str, Any]] = None,
 ) -> Tuple[int, int]:
     """Convert resized window-screenshot coordinates to screen coordinates.
 
     Priority:
+    0. Explicit capture geometry from a ``screenshot_id``.
     1. ``zoom_metadata[(pid, window_id)]`` — the authoritative record produced
        by the most recent ``get_window_state`` call.  Holds the visible crop
        origin (which differs from real window origin on multi-monitor /
@@ -86,6 +88,12 @@ def window_resized_to_screen(
     """
     if pid is None or window_id is None:
         return x, y
+
+    if capture_geometry:
+        origin_x = capture_geometry.get("crop_origin_screen_x", 0)
+        origin_y = capture_geometry.get("crop_origin_screen_y", 0)
+        ratio = float(capture_geometry.get("compression_ratio", 1.0))
+        return (int(origin_x) + int(x * ratio), int(origin_y) + int(y * ratio))
 
     zoom_metadata = zoom_metadata or {}
     meta = zoom_metadata.get((pid, window_id), {})
@@ -108,10 +116,18 @@ def window_full_res_to_screen(
     window_id: Optional[int],
     x: int,
     y: int,
+    capture_geometry: Optional[Dict[str, Any]] = None,
 ) -> Tuple[int, int]:
     """Convert full-resolution window-local coordinates to screen coordinates."""
     if pid is None or window_id is None:
         raise ValueError("pid and window_id are required for window_full_res coordinates")
+
+    if capture_geometry:
+        if "window_origin_x" in capture_geometry and "window_origin_y" in capture_geometry:
+            return (
+                int(capture_geometry["window_origin_x"]) + x,
+                int(capture_geometry["window_origin_y"]) + y,
+            )
 
     from computer_server.handlers.element_cache import get_element_cache
 

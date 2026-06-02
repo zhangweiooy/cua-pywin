@@ -183,6 +183,12 @@ cua-win serve --host 0.0.0.0 --port 8000 \
 上下文重置后重新获取当前窗口对象。
 `window_ref` 仅用于 recording/replay 的内部窗口身份快照，不要求调用方构造。
 
+坐标链路推荐使用 `screenshot_id`。`computer_get_window_state` 同时返回
+`snapshot_id` 和 `screenshot_id`：`snapshot_id` 绑定观察/节点快照，
+`screenshot_id` 绑定该次截图的 crop origin、resize ratio 和 capture backend。
+当 `computer_click`、`computer_drag`、`computer_scroll` 或 `computer_zoom` 的坐标来自
+返回截图时，传入 `screenshot_id` 可以避免后续截图刷新覆盖全局几何状态。
+
 ### 关键设计
 
 **Per-window 截图** — Windows `PrintWindow` 对硬件加速窗口失效。`get_window_state` 优先使用 Windows.Graphics.Capture 捕获目标窗口自身的 DWM 合成帧，避免被前景遮挡窗口污染；失败时回退到 `ImageGrab.grab()` + `GetWindowRect` + PIL `crop()`。`computer_zoom` 会沿用上一次 snapshot backend：WGC snapshot 使用 WGC 做原生 zoom crop，失败才退回 screen crop。多显示器负坐标 + 部分屏外通过 `WindowSnapshotGeometry` 显式区分「真实窗口原点」与「可见裁剪原点」。
@@ -413,6 +419,14 @@ match or the tool returns a validation error. `computer_list_windows`,
 objects. Use `computer_get_window({"id":...,"app":...})` to rehydrate a current
 window after stale handles, lost bindings, or context resets. `window_ref` is
 internal recording/replay identity metadata and should not be hand-authored.
+
+Prefer `screenshot_id` for coordinate chains. `computer_get_window_state`
+returns both `snapshot_id` and `screenshot_id`: `snapshot_id` binds the
+observation/node snapshot, while `screenshot_id` binds that capture's crop
+origin, resize ratio, and backend. Pass `screenshot_id` to
+`computer_click`, `computer_drag`, `computer_scroll`, or `computer_zoom` when
+coordinates come from a returned screenshot, so later observations cannot
+overwrite the geometry used for coordinate conversion.
 
 ### Key Design Decisions
 

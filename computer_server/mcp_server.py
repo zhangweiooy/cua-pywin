@@ -244,7 +244,11 @@ def _resolve_element_center(
 
 
 def _window_resized_to_screen(
-    pid: Optional[int], window_id: Optional[int], x: int, y: int
+    pid: Optional[int],
+    window_id: Optional[int],
+    x: int,
+    y: int,
+    capture_geometry: Optional[Dict[str, Any]] = None,
 ) -> Tuple[int, int]:
     """Convert window-relative resized-screenshot coords to absolute screen coords.
 
@@ -271,6 +275,7 @@ def _window_resized_to_screen(
         x,
         y,
         zoom_metadata=_zoom_metadata,
+        capture_geometry=capture_geometry,
     )
 
 
@@ -279,10 +284,11 @@ def _window_full_res_to_screen(
     window_id: Optional[int],
     x: int,
     y: int,
+    capture_geometry: Optional[Dict[str, Any]] = None,
 ) -> Tuple[int, int]:
     from computer_server.services.coordinate_service import window_full_res_to_screen
 
-    return window_full_res_to_screen(pid, window_id, x, y)
+    return window_full_res_to_screen(pid, window_id, x, y, capture_geometry=capture_geometry)
 
 
 # ---------------------------------------------------------------------------
@@ -533,6 +539,63 @@ def create_mcp_server() -> FastMCP:
                 ),
             }
         return snapshot.pid, snapshot.window_id, None
+
+    def _resolve_screenshot_ref(
+        screenshot_id: Optional[str],
+        snapshot_id: Optional[str],
+        pid: Optional[int],
+        window_id: Optional[int],
+    ) -> Tuple[Optional[int], Optional[int], Optional[Any], Optional[Dict[str, Any]]]:
+        """Resolve an optional screenshot handle to pid/window_id and capture geometry."""
+        if not screenshot_id:
+            return pid, window_id, None, None
+        if not isinstance(screenshot_id, str) or not screenshot_id.strip():
+            return pid, window_id, None, {
+                "success": False,
+                "error": "screenshot_id must be a non-empty string",
+            }
+
+        screenshot = context.observations.get_screenshot(screenshot_id)
+        if screenshot is None:
+            return pid, window_id, None, {
+                "success": False,
+                "error": f"Unknown or expired screenshot_id: {screenshot_id}",
+                "suggestion": "Call computer_get_window_state again and use the returned screenshot_id.",
+            }
+        if not context.observations.is_latest_screenshot(screenshot_id):
+            return pid, window_id, None, {
+                "success": False,
+                "error": (
+                    "screenshot_id is stale for "
+                    f"pid={screenshot.pid}, window_id={screenshot.window_id}"
+                ),
+                "suggestion": "Use the latest screenshot_id returned by computer_get_window_state or capture_after.",
+            }
+        if snapshot_id is not None and snapshot_id != screenshot.snapshot_id:
+            return pid, window_id, None, {
+                "success": False,
+                "error": (
+                    "screenshot_id snapshot mismatch: "
+                    f"screenshot has snapshot_id={screenshot.snapshot_id}, got snapshot_id={snapshot_id}"
+                ),
+            }
+        if pid is not None and int(pid) != screenshot.pid:
+            return pid, window_id, None, {
+                "success": False,
+                "error": f"screenshot_id pid mismatch: screenshot has pid={screenshot.pid}, got pid={pid}",
+            }
+        if window_id is not None and int(window_id) != screenshot.window_id:
+            return pid, window_id, None, {
+                "success": False,
+                "error": (
+                    "screenshot_id window_id mismatch: "
+                    f"screenshot has window_id={screenshot.window_id}, got window_id={window_id}"
+                ),
+            }
+        return screenshot.pid, screenshot.window_id, screenshot, None
+
+    def _public_capture_from_screenshot(screenshot: Any) -> Dict[str, Any]:
+        return screenshot.to_public_capture()
 
     def _resolve_zoom_ref(
         zoom_id: Optional[str],
@@ -807,6 +870,9 @@ def create_mcp_server() -> FastMCP:
                 return {"success": False, "error": fresh.get("error", "get_window_state returned success=False")}
             return {
                 "screenshot": fresh.get("screenshot"),
+                "screenshot_id": fresh.get("screenshot_id"),
+                "capture": fresh.get("capture"),
+                "capture_metadata": fresh.get("capture_metadata"),
                 "nodes": fresh.get("nodes", []),
                 "node_count": fresh.get("node_count", 0),
                 "returned_node_count": fresh.get("returned_node_count", fresh.get("node_count", 0)),
@@ -835,6 +901,9 @@ def create_mcp_server() -> FastMCP:
         uses_system_input: bool,
         requires_visible_target: bool,
         coordinate_source: Optional[str] = None,
+        input_screenshot_id: Optional[str] = None,
+        capture_backend: Optional[str] = None,
+        capture_coordinate_space: Optional[str] = None,
     ) -> None:
         """Attach transparent action-path metadata to a tool result."""
         result.setdefault("method", method)
@@ -849,6 +918,12 @@ def create_mcp_server() -> FastMCP:
         }
         if coordinate_source:
             result["action_path"]["coordinate_source"] = coordinate_source
+        if input_screenshot_id:
+            result["action_path"]["input_screenshot_id"] = input_screenshot_id
+        if capture_backend:
+            result["action_path"]["capture_backend"] = capture_backend
+        if capture_coordinate_space:
+            result["action_path"]["capture_coordinate_space"] = capture_coordinate_space
 
     def _verification_from_capture(
         verify_query: str,
@@ -873,6 +948,8 @@ def create_mcp_server() -> FastMCP:
             "matched_node_count": matched_node_count,
             "matched_tree": matched_tree,
             "snapshot_id": capture.get("snapshot_id"),
+            "screenshot_id": capture.get("screenshot_id"),
+            "capture": capture.get("capture"),
             "tree_quality": capture.get("tree_quality"),
             "node_sources": capture.get("node_sources", []),
         }
@@ -1348,6 +1425,7 @@ def create_mcp_server() -> FastMCP:
         element_index: Optional[int],
         coordinate_space: str,
         zoom_id: Optional[str],
+        capture_geometry: Optional[Dict[str, Any]] = None,
     ) -> Tuple[Optional[Dict[str, Any]], Optional[int], Optional[int]]:
         """Convert click input coordinates into absolute screen coordinates."""
         if x is None or y is None:
@@ -1361,10 +1439,10 @@ def create_mcp_server() -> FastMCP:
             }, None, None
 
         if element_index is None and coordinate_space == "window_resized":
-            x, y = _window_resized_to_screen(pid, window_id, x, y)
+            x, y = _window_resized_to_screen(pid, window_id, x, y, capture_geometry)
         elif element_index is None and coordinate_space == "window_full_res":
             try:
-                x, y = _window_full_res_to_screen(pid, window_id, x, y)
+                x, y = _window_full_res_to_screen(pid, window_id, x, y, capture_geometry)
             except ValueError as exc:
                 return {"success": False, "error": str(exc)}, None, None
 
@@ -1439,6 +1517,9 @@ def create_mcp_server() -> FastMCP:
         require_verification: bool,
         coordinate_source: str,
         recorded_element_ref: Optional[Dict[str, Any]],
+        input_screenshot_id: Optional[str] = None,
+        capture_backend: Optional[str] = None,
+        capture_coordinate_space: Optional[str] = None,
     ) -> Optional[Dict[str, Any]]:
         """Perform force-frontmost click when requested by the caller."""
         if sys.platform != "win32" or pid is None or window_id is None:
@@ -1481,6 +1562,9 @@ def create_mcp_server() -> FastMCP:
                 uses_system_input=True,
                 requires_visible_target=True,
                 coordinate_source=coordinate_source,
+                input_screenshot_id=input_screenshot_id,
+                capture_backend=capture_backend,
+                capture_coordinate_space=capture_coordinate_space,
             )
             await _attach_post_action_observation(
                 result,
@@ -1499,6 +1583,7 @@ def create_mcp_server() -> FastMCP:
                     "button": button,
                     "force_frontmost": True,
                     "count": count,
+                    "screenshot_id": input_screenshot_id,
                     "verify_query": verify_query,
                     "require_verification": require_verification,
                 },
@@ -1555,6 +1640,7 @@ def create_mcp_server() -> FastMCP:
         pid: Optional[int] = None,
         window: Optional[Dict[str, Any]] = None,
         snapshot_id: Optional[str] = None,
+        screenshot_id: Optional[str] = None,
         from_zoom: bool = False,
         zoom_id: Optional[str] = None,
         coordinate_space: Optional[str] = None,
@@ -1592,6 +1678,7 @@ def create_mcp_server() -> FastMCP:
             pid: Legacy process ID (required with element_index)
             window: Canonical window object from list/get_window_state output.
             snapshot_id: Snapshot id returned by computer_get_window_state.
+            screenshot_id: Screenshot id returned by computer_get_window_state for bound coordinate conversion.
             from_zoom: When True, x/y are zoomed-image coords and get translated back
             zoom_id: Zoom id returned by computer_zoom.
             coordinate_space: Explicit coordinate space for x/y or element_index.
@@ -1645,6 +1732,14 @@ def create_mcp_server() -> FastMCP:
         pid, window_id, ref_error = _resolve_snapshot_ref(snapshot_id, pid, window_id)
         if ref_error is not None:
             return ref_error
+        pid, window_id, screenshot_ctx, ref_error = _resolve_screenshot_ref(
+            screenshot_id,
+            snapshot_id,
+            pid,
+            window_id,
+        )
+        if ref_error is not None:
+            return ref_error
         if zoom_id:
             if element_index is not None:
                 return {
@@ -1694,6 +1789,7 @@ def create_mcp_server() -> FastMCP:
             element_index,
             coordinate_space,
             zoom_id,
+            screenshot_ctx.capture_geometry if screenshot_ctx is not None else None,
         )
         if coord_error is not None:
             return coord_error
@@ -1726,6 +1822,15 @@ def create_mcp_server() -> FastMCP:
                 require_verification,
                 "element" if element_index is not None else coordinate_space,
                 recorded_element_ref,
+                input_screenshot_id=screenshot_ctx.screenshot_id if screenshot_ctx is not None else None,
+                capture_backend=(
+                    screenshot_ctx.capture_metadata.get("capture_backend")
+                    if screenshot_ctx is not None
+                    else None
+                ),
+                capture_coordinate_space=(
+                    coordinate_space if screenshot_ctx is not None else None
+                ),
             )
             if result is not None:
                 return result
@@ -1757,6 +1862,15 @@ def create_mcp_server() -> FastMCP:
             uses_system_input=True,
             requires_visible_target=True,
             coordinate_source="element" if element_index is not None else coordinate_space,
+            input_screenshot_id=screenshot_ctx.screenshot_id if screenshot_ctx is not None else None,
+            capture_backend=(
+                screenshot_ctx.capture_metadata.get("capture_backend")
+                if screenshot_ctx is not None
+                else None
+            ),
+            capture_coordinate_space=(
+                coordinate_space if screenshot_ctx is not None else None
+            ),
         )
         await _attach_post_action_observation(
             result,
@@ -1775,6 +1889,7 @@ def create_mcp_server() -> FastMCP:
                 "y": y,
                 "button": button,
                 "count": count,
+                "screenshot_id": screenshot_id,
                 "verify_query": verify_query,
                 "require_verification": require_verification,
             },
@@ -1835,6 +1950,7 @@ def create_mcp_server() -> FastMCP:
         pid: Optional[int] = None,
         window: Optional[Dict[str, Any]] = None,
         snapshot_id: Optional[str] = None,
+        screenshot_id: Optional[str] = None,
         from_zoom: bool = False,
         zoom_id: Optional[str] = None,
         coordinate_space: Optional[str] = None,
@@ -1855,6 +1971,7 @@ def create_mcp_server() -> FastMCP:
             pid: Legacy process ID (required with element_index)
             window: Canonical window object from list/get_window_state output.
             snapshot_id: Snapshot id returned by computer_get_window_state.
+            screenshot_id: Screenshot id returned by computer_get_window_state for bound coordinate conversion.
             from_zoom: When True, coords are in zoomed-image space
             zoom_id: Zoom id returned by computer_zoom.
             coordinate_space: Explicit coordinate space for start/end coords.
@@ -1888,6 +2005,14 @@ def create_mcp_server() -> FastMCP:
         if ref_error is not None:
             return ref_error
         pid, window_id, ref_error = _resolve_snapshot_ref(snapshot_id, pid, window_id)
+        if ref_error is not None:
+            return ref_error
+        pid, window_id, screenshot_ctx, ref_error = _resolve_screenshot_ref(
+            screenshot_id,
+            snapshot_id,
+            pid,
+            window_id,
+        )
         if ref_error is not None:
             return ref_error
         if zoom_id:
@@ -1934,12 +2059,42 @@ def create_mcp_server() -> FastMCP:
 
         # Convert explicit/legacy non-screen spaces to absolute screen coords.
         if element_index is None and coordinate_space == "window_resized":
-            start_x, start_y = _window_resized_to_screen(pid, window_id, start_x, start_y)
-            end_x, end_y = _window_resized_to_screen(pid, window_id, end_x, end_y)
+            capture_geometry = (
+                screenshot_ctx.capture_geometry if screenshot_ctx is not None else None
+            )
+            start_x, start_y = _window_resized_to_screen(
+                pid,
+                window_id,
+                start_x,
+                start_y,
+                capture_geometry,
+            )
+            end_x, end_y = _window_resized_to_screen(
+                pid,
+                window_id,
+                end_x,
+                end_y,
+                capture_geometry,
+            )
         elif element_index is None and coordinate_space == "window_full_res":
+            capture_geometry = (
+                screenshot_ctx.capture_geometry if screenshot_ctx is not None else None
+            )
             try:
-                start_x, start_y = _window_full_res_to_screen(pid, window_id, start_x, start_y)
-                end_x, end_y = _window_full_res_to_screen(pid, window_id, end_x, end_y)
+                start_x, start_y = _window_full_res_to_screen(
+                    pid,
+                    window_id,
+                    start_x,
+                    start_y,
+                    capture_geometry,
+                )
+                end_x, end_y = _window_full_res_to_screen(
+                    pid,
+                    window_id,
+                    end_x,
+                    end_y,
+                    capture_geometry,
+                )
             except ValueError as e:
                 return {"success": False, "error": str(e)}
 
@@ -1991,12 +2146,28 @@ def create_mcp_server() -> FastMCP:
         automation_handler.mouse.position = (actual_end_x, actual_end_y)
         await automation_handler.mouse_up(actual_end_x, actual_end_y, button=button)
         result = {"success": True}
+        _annotate_action_path(
+            result,
+            method="pixel_drag",
+            used_foreground=True,
+            uses_system_input=True,
+            requires_visible_target=True,
+            coordinate_source="element" if element_index is not None else coordinate_space,
+            input_screenshot_id=screenshot_ctx.screenshot_id if screenshot_ctx is not None else None,
+            capture_backend=(
+                screenshot_ctx.capture_metadata.get("capture_backend")
+                if screenshot_ctx is not None
+                else None
+            ),
+            capture_coordinate_space=coordinate_space if screenshot_ctx is not None else None,
+        )
         wr = _build_window_ref(pid, window_id, actual_start_x, actual_start_y)
         await _recording_hook(_recorded_turn(
             "computer_drag",
             {
                 "start_x": start_x, "start_y": start_y,
                 "end_x": end_x, "end_y": end_y, "button": button,
+                "screenshot_id": screenshot_id,
             },
             result,
             click_point=(actual_start_x, actual_start_y),
@@ -2020,6 +2191,7 @@ def create_mcp_server() -> FastMCP:
         pid: Optional[int] = None,
         window: Optional[Dict[str, Any]] = None,
         snapshot_id: Optional[str] = None,
+        screenshot_id: Optional[str] = None,
         from_zoom: bool = False,
         zoom_id: Optional[str] = None,
         coordinate_space: Optional[str] = None,
@@ -2043,6 +2215,7 @@ def create_mcp_server() -> FastMCP:
             pid: Legacy process ID (required with element_index)
             window: Canonical window object from list/get_window_state output.
             snapshot_id: Snapshot id returned by computer_get_window_state.
+            screenshot_id: Screenshot id returned by computer_get_window_state for bound coordinate conversion.
             from_zoom: When True, x/y are zoomed-image coords and get translated back
             zoom_id: Zoom id returned by computer_zoom.
             coordinate_space: Explicit coordinate space for x/y or element_index.
@@ -2075,6 +2248,14 @@ def create_mcp_server() -> FastMCP:
         if ref_error is not None:
             return ref_error
         pid, window_id, ref_error = _resolve_snapshot_ref(snapshot_id, pid, window_id)
+        if ref_error is not None:
+            return ref_error
+        pid, window_id, screenshot_ctx, ref_error = _resolve_screenshot_ref(
+            screenshot_id,
+            snapshot_id,
+            pid,
+            window_id,
+        )
         if ref_error is not None:
             return ref_error
         if zoom_id:
@@ -2133,7 +2314,13 @@ def create_mcp_server() -> FastMCP:
             and y is not None
             and coordinate_space == "window_resized"
         ):
-            x, y = _window_resized_to_screen(pid, window_id, x, y)
+            x, y = _window_resized_to_screen(
+                pid,
+                window_id,
+                x,
+                y,
+                screenshot_ctx.capture_geometry if screenshot_ctx is not None else None,
+            )
         elif (
             element_index is None
             and x is not None
@@ -2141,7 +2328,13 @@ def create_mcp_server() -> FastMCP:
             and coordinate_space == "window_full_res"
         ):
             try:
-                x, y = _window_full_res_to_screen(pid, window_id, x, y)
+                x, y = _window_full_res_to_screen(
+                    pid,
+                    window_id,
+                    x,
+                    y,
+                    screenshot_ctx.capture_geometry if screenshot_ctx is not None else None,
+                )
             except ValueError as e:
                 return {"success": False, "error": str(e)}
         elif (
@@ -2190,11 +2383,32 @@ def create_mcp_server() -> FastMCP:
             result = {"success": True}
         else:
             result = await automation_handler.scroll(scroll_x, scroll_y)
+        _annotate_action_path(
+            result,
+            method="pixel_scroll",
+            used_foreground=x is not None and y is not None,
+            uses_system_input=True,
+            requires_visible_target=True,
+            coordinate_source="element" if element_index is not None else coordinate_space,
+            input_screenshot_id=screenshot_ctx.screenshot_id if screenshot_ctx is not None else None,
+            capture_backend=(
+                screenshot_ctx.capture_metadata.get("capture_backend")
+                if screenshot_ctx is not None
+                else None
+            ),
+            capture_coordinate_space=coordinate_space if screenshot_ctx is not None else None,
+        )
         if scroll_ax is not None and pid is not None and window_id is not None:
             wr = _build_window_ref(pid, window_id, scroll_ax, scroll_ay)
             await _recording_hook(_recorded_turn(
                 "computer_scroll",
-                {"x": x, "y": y, "scroll_x": scroll_x, "scroll_y": scroll_y},
+                {
+                    "x": x,
+                    "y": y,
+                    "scroll_x": scroll_x,
+                    "scroll_y": scroll_y,
+                    "screenshot_id": screenshot_id,
+                },
                 result,
                 click_point=(scroll_ax, scroll_ay),
                 window_ref=wr,
@@ -2203,7 +2417,13 @@ def create_mcp_server() -> FastMCP:
         else:
             await _recording_hook(_recorded_turn(
                 "computer_scroll",
-                {"x": x, "y": y, "scroll_x": scroll_x, "scroll_y": scroll_y},
+                {
+                    "x": x,
+                    "y": y,
+                    "scroll_x": scroll_x,
+                    "scroll_y": scroll_y,
+                    "screenshot_id": screenshot_id,
+                },
                 result,
                 element_ref=recorded_element_ref,
             ))
@@ -3146,6 +3366,7 @@ def create_mcp_server() -> FastMCP:
             seen_popovers=context.seen_popovers,
         )
         if result.get("success"):
+            capture_geometry = result.pop("_capture_geometry", None)
             snapshot = context.observations.create_snapshot(
                 pid=pid,
                 window_id=window_id,
@@ -3154,9 +3375,17 @@ def create_mcp_server() -> FastMCP:
                     "unfiltered_node_count",
                     result.get("node_count", 0),
                 ),
+                screen_width=result.get("screen_width", 0),
+                screen_height=result.get("screen_height", 0),
+                capture_geometry=capture_geometry,
+                capture_metadata=result.get("capture_metadata", {}),
             )
             result["snapshot_id"] = snapshot.snapshot_id
+            result["screenshot_id"] = snapshot.screenshot_id
             result["snapshot_latest"] = True
+            screenshot = context.observations.get_screenshot(snapshot.screenshot_id)
+            if screenshot is not None:
+                result["capture"] = _public_capture_from_screenshot(screenshot)
             public_window = _build_public_window(pid, window_id)
             if public_window is not None:
                 result["window"] = public_window
@@ -3178,6 +3407,7 @@ def create_mcp_server() -> FastMCP:
         pid: Optional[int] = None,
         window_id: Optional[int] = None,
         window: Optional[Dict[str, Any]] = None,
+        screenshot_id: Optional[str] = None,
     ) -> Any:
         """
         Zoom into a rectangular region of a window screenshot at full resolution.
@@ -3194,6 +3424,7 @@ def create_mcp_server() -> FastMCP:
             window_id: Legacy window ID — must match the same window used in the prior
                 computer_get_window_state call.
             window: Canonical window object from list/get_window_state output.
+            screenshot_id: Screenshot id returned by computer_get_window_state.
             x1: Left edge of the zoom region (resized-image pixels).
             y1: Top edge of the zoom region (resized-image pixels).
             x2: Right edge of the zoom region (resized-image pixels).
@@ -3216,6 +3447,14 @@ def create_mcp_server() -> FastMCP:
         pid, window_id, ref_error = _resolve_window_arg(window, pid, window_id)
         if ref_error is not None:
             return ref_error
+        pid, window_id, screenshot_ctx, ref_error = _resolve_screenshot_ref(
+            screenshot_id,
+            None,
+            pid,
+            window_id,
+        )
+        if ref_error is not None:
+            return ref_error
         if pid is None or window_id is None:
             return {
                 "success": False,
@@ -3223,6 +3462,13 @@ def create_mcp_server() -> FastMCP:
             }
 
         automation_handler = _get_handlers().automation
+        zoom_metadata = _zoom_metadata
+        if screenshot_ctx is not None:
+            zoom_metadata = dict(_zoom_metadata)
+            zoom_metadata[(pid, window_id)] = {
+                **screenshot_ctx.capture_geometry,
+                "capture_backend": screenshot_ctx.capture_metadata.get("capture_backend"),
+            }
         result = await create_zoom_image(
             automation_handler,
             pid,
@@ -3231,9 +3477,11 @@ def create_mcp_server() -> FastMCP:
             y1,
             x2,
             y2,
-            _zoom_metadata,
+            zoom_metadata,
         )
         if result.get("success"):
+            if screenshot_ctx is not None:
+                result["parent_screenshot_id"] = screenshot_ctx.screenshot_id
             public_window = _build_public_window(pid, window_id)
             if public_window is not None:
                 result["window"] = public_window

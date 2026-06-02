@@ -137,9 +137,13 @@ python -m compileall -q computer_server som
 `element`, zoom args mean `zoom`, `pid + window_id` means `window_resized`,
 otherwise `screen`.
 
-`computer_get_window_state` returns `snapshot_id`; element actions can use it
-to reject stale observations. `computer_zoom` returns `zoom_id`; zoom actions
-can use it instead of implicit per-window zoom state.
+`computer_get_window_state` returns both `snapshot_id` and `screenshot_id`.
+`snapshot_id` binds the observation/node snapshot and rejects stale element
+observations. `screenshot_id` binds the exact screenshot/crop geometry used for
+`window_resized` and `window_full_res` coordinate conversion; prefer passing it
+to `computer_click`, `computer_drag`, `computer_scroll`, and `computer_zoom`
+when coordinates come from a returned screenshot. `computer_zoom` returns
+`zoom_id`; zoom actions can use it instead of implicit per-window zoom state.
 
 Key invariant: `ElementCache` stores window-relative coordinates, and
 `_resolve_element_center` returns screen coordinates.
@@ -254,7 +258,7 @@ is internal replay metadata.
   post-action window-state check and marks the result failed when the query is
   not observed. `pid` and `window_id` are required for verification.
 - `capture_after=True` is supported by click, scroll, and type tools and returns
-  a fresh snapshot with `snapshot_id`.
+  a fresh snapshot with `snapshot_id`, `screenshot_id`, and `capture`.
 - Window snapshots include `capture_metadata` with screenshot provenance,
   crop geometry, resize metadata, capture backend, fallback reason, and
   explicit occlusion-risk warnings. WGC snapshots report
@@ -410,11 +414,6 @@ uv run cua-win stop
 
 ### P1: High-Value API Stabilization
 
-- Use `computer_get_window` as the public stale-window rehydrate entrypoint
-  after lost bindings, agent context resets, or closed/reopened app windows.
-- Add screenshot identity for coordinate actions. Coordinates should be able to
-  bind to the exact screenshot/crop they came from, building on `snapshot_id`
-  and preparing for multi-screenshot state.
 - Make `computer_get_window_state` more explicit and cheaper through
   request flags such as screenshot, text/tree, nodes, and vision inclusion.
   Preserve current compatibility defaults until callers migrate.

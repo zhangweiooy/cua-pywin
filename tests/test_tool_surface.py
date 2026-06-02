@@ -11,7 +11,13 @@ from computer_server.mcp_server import create_mcp_server
 
 
 class _FakeAutomation:
+    def __init__(self):
+        self.mouse = SimpleNamespace(position=(0, 0), scroll=lambda _x, _y: None)
+        self.moves = []
+        self.mouse_events = []
+
     async def move_cursor(self, x: int, y: int):
+        self.moves.append((x, y))
         return {"success": True, "x": x, "y": y}
 
     async def left_click(self, x: int, y: int):
@@ -22,6 +28,20 @@ class _FakeAutomation:
 
     async def middle_click(self, x: int, y: int):
         return {"success": True, "x": x, "y": y}
+
+    async def mouse_down(self, x: int, y: int, button: str = "left"):
+        self.mouse_events.append(("down", x, y, button))
+        return {"success": True, "x": x, "y": y, "button": button}
+
+    async def mouse_up(self, x: int, y: int, button: str = "left"):
+        self.mouse_events.append(("up", x, y, button))
+        return {"success": True, "x": x, "y": y, "button": button}
+
+    def _map_button(self, button: str):
+        return button
+
+    async def scroll(self, scroll_x: int, scroll_y: int):
+        return {"success": True, "scroll_x": scroll_x, "scroll_y": scroll_y}
 
     async def hotkey(self, keys):
         return {"success": True, "keys": keys}
@@ -293,6 +313,18 @@ async def test_get_window_state_accepts_window_and_returns_window(monkeypatch):
             "unfiltered_node_count": 0,
             "nodes": [],
             "tree_markdown": "",
+            "screen_width": 100,
+            "screen_height": 50,
+            "capture_metadata": {"capture_backend": "wgc"},
+            "_capture_geometry": {
+                "compression_ratio": 2.0,
+                "original_width": 200,
+                "original_height": 100,
+                "window_origin_x": 10,
+                "window_origin_y": 20,
+                "crop_origin_screen_x": 10,
+                "crop_origin_screen_y": 20,
+            },
         }
 
     cache = get_element_cache()
@@ -317,6 +349,12 @@ async def test_get_window_state_accepts_window_and_returns_window(monkeypatch):
     content = result.structured_content
     assert content["success"] is True
     assert content["snapshot_id"].startswith("snap-")
+    assert content["screenshot_id"].startswith("shot-")
+    assert content["capture"]["id"] == content["screenshot_id"]
+    assert content["capture"]["snapshot_id"] == content["snapshot_id"]
+    assert content["capture"]["screen_width"] == 100
+    assert content["capture"]["screen_height"] == 50
+    assert content["capture"]["capture_backend"] == "wgc"
     assert content["window"]["id"] == 456
     assert content["window"]["window_id"] == 456
     assert content["window"]["pid"] == 123
@@ -376,6 +414,435 @@ async def test_snapshot_id_rejects_window_mismatch(monkeypatch):
         "success": False,
         "error": "snapshot_id window_id mismatch: snapshot has window_id=456, got window_id=789",
     }
+
+
+@pytest.mark.asyncio
+async def test_screenshot_id_binds_click_coordinates_to_capture(monkeypatch):
+    import computer_server.mcp_server as mcp_module
+    import computer_server.services.window_state_service as window_state_service
+    from computer_server.handlers.element_cache import get_element_cache
+
+    async def noop_animate(_x: int, _y: int) -> None:
+        return None
+
+    async def fake_get_window_state_snapshot(
+        _automation_handler,
+        pid,
+        window_id,
+        **_kwargs,
+    ):
+        cache = get_element_cache()
+        cache.set_window_origin(pid, window_id, 10, 20)
+        return {
+            "success": True,
+            "node_count": 0,
+            "unfiltered_node_count": 0,
+            "nodes": [],
+            "tree_markdown": "",
+            "screen_width": 100,
+            "screen_height": 50,
+            "capture_metadata": {"capture_backend": "wgc"},
+            "_capture_geometry": {
+                "compression_ratio": 2.0,
+                "original_width": 200,
+                "original_height": 100,
+                "window_origin_x": 10,
+                "window_origin_y": 20,
+                "crop_origin_screen_x": 10,
+                "crop_origin_screen_y": 20,
+            },
+        }
+
+    cache = get_element_cache()
+    cache.clear()
+    fake_automation = _FakeAutomation()
+    monkeypatch.setattr(cache, "_is_window_valid", lambda _window_id: True)
+    monkeypatch.setattr(mcp_module, "_zoom_metadata", {})
+    monkeypatch.setattr(mcp_module, "_scale_x", 1.0)
+    monkeypatch.setattr(mcp_module, "_scale_y", 1.0)
+    monkeypatch.setattr(mcp_module, "_animate_cursor_to", noop_animate)
+    monkeypatch.setattr(
+        window_state_service,
+        "get_window_state_snapshot",
+        fake_get_window_state_snapshot,
+    )
+    monkeypatch.setattr(
+        mcp_module,
+        "_handlers",
+        SimpleNamespace(automation=fake_automation),
+    )
+    mcp = create_mcp_server()
+
+    snapshot_result = await mcp.call_tool(
+        "computer_get_window_state",
+        {"pid": 123, "window_id": 456},
+    )
+    screenshot_id = snapshot_result.structured_content["screenshot_id"]
+    mcp_module._zoom_metadata[(123, 456)] = {
+        "compression_ratio": 10.0,
+        "crop_origin_screen_x": 1000,
+        "crop_origin_screen_y": 2000,
+    }
+
+    result = await mcp.call_tool(
+        "computer_click",
+        {"screenshot_id": screenshot_id, "x": 5, "y": 6},
+    )
+
+    content = result.structured_content
+    assert content["success"] is True
+    assert content["x"] == 20
+    assert content["y"] == 32
+    assert content["action_path"]["input_screenshot_id"] == screenshot_id
+    assert content["action_path"]["capture_backend"] == "wgc"
+    assert content["action_path"]["capture_coordinate_space"] == "window_resized"
+
+
+@pytest.mark.asyncio
+async def test_screenshot_id_binds_drag_and_scroll_coordinates(monkeypatch):
+    import computer_server.mcp_server as mcp_module
+    import computer_server.services.window_state_service as window_state_service
+    from computer_server.handlers.element_cache import get_element_cache
+
+    async def noop_animate(_x: int, _y: int) -> None:
+        return None
+
+    async def fake_get_window_state_snapshot(
+        _automation_handler,
+        pid,
+        window_id,
+        **_kwargs,
+    ):
+        cache = get_element_cache()
+        cache.set_window_origin(pid, window_id, 10, 20)
+        return {
+            "success": True,
+            "node_count": 0,
+            "unfiltered_node_count": 0,
+            "nodes": [],
+            "tree_markdown": "",
+            "screen_width": 100,
+            "screen_height": 50,
+            "capture_metadata": {"capture_backend": "screen_crop"},
+            "_capture_geometry": {
+                "compression_ratio": 2.0,
+                "original_width": 200,
+                "original_height": 100,
+                "window_origin_x": 10,
+                "window_origin_y": 20,
+                "crop_origin_screen_x": 10,
+                "crop_origin_screen_y": 20,
+            },
+        }
+
+    cache = get_element_cache()
+    cache.clear()
+    fake_automation = _FakeAutomation()
+    monkeypatch.setattr(cache, "_is_window_valid", lambda _window_id: True)
+    monkeypatch.setattr(mcp_module, "_zoom_metadata", {})
+    monkeypatch.setattr(mcp_module, "_scale_x", 1.0)
+    monkeypatch.setattr(mcp_module, "_scale_y", 1.0)
+    monkeypatch.setattr(mcp_module, "_animate_cursor_to", noop_animate)
+    monkeypatch.setattr(
+        window_state_service,
+        "get_window_state_snapshot",
+        fake_get_window_state_snapshot,
+    )
+    monkeypatch.setattr(
+        mcp_module,
+        "_handlers",
+        SimpleNamespace(automation=fake_automation),
+    )
+    mcp = create_mcp_server()
+
+    snapshot_result = await mcp.call_tool(
+        "computer_get_window_state",
+        {"pid": 123, "window_id": 456},
+    )
+    screenshot_id = snapshot_result.structured_content["screenshot_id"]
+    mcp_module._zoom_metadata[(123, 456)] = {
+        "compression_ratio": 10.0,
+        "crop_origin_screen_x": 1000,
+        "crop_origin_screen_y": 2000,
+    }
+
+    drag_result = await mcp.call_tool(
+        "computer_drag",
+        {
+            "screenshot_id": screenshot_id,
+            "start_x": 1,
+            "start_y": 2,
+            "end_x": 3,
+            "end_y": 4,
+            "duration": 0.001,
+        },
+    )
+    scroll_result = await mcp.call_tool(
+        "computer_scroll",
+        {
+            "screenshot_id": screenshot_id,
+            "x": 5,
+            "y": 6,
+            "scroll_y": 1,
+            "smooth": False,
+        },
+    )
+
+    assert drag_result.structured_content["success"] is True
+    assert fake_automation.mouse_events[0] == ("down", 12, 24, "left")
+    assert fake_automation.mouse_events[-1] == ("up", 16, 28, "left")
+    assert drag_result.structured_content["action_path"]["input_screenshot_id"] == screenshot_id
+    assert scroll_result.structured_content["success"] is True
+    assert fake_automation.moves[-1] == (20, 32)
+    assert scroll_result.structured_content["action_path"]["input_screenshot_id"] == screenshot_id
+
+
+@pytest.mark.asyncio
+async def test_screenshot_id_rejects_snapshot_mismatch(monkeypatch):
+    import computer_server.mcp_server as mcp_module
+    import computer_server.services.window_state_service as window_state_service
+    from computer_server.handlers.element_cache import get_element_cache
+
+    async def fake_get_window_state_snapshot(
+        _automation_handler,
+        pid,
+        window_id,
+        **_kwargs,
+    ):
+        cache = get_element_cache()
+        cache.set_window_origin(pid, window_id, 10, 20)
+        return {
+            "success": True,
+            "node_count": 0,
+            "unfiltered_node_count": 0,
+            "nodes": [],
+            "tree_markdown": "",
+            "screen_width": 10,
+            "screen_height": 10,
+            "capture_metadata": {"capture_backend": "wgc"},
+            "_capture_geometry": {
+                "compression_ratio": 1.0,
+                "window_origin_x": 10,
+                "window_origin_y": 20,
+                "crop_origin_screen_x": 10,
+                "crop_origin_screen_y": 20,
+            },
+        }
+
+    cache = get_element_cache()
+    cache.clear()
+    monkeypatch.setattr(cache, "_is_window_valid", lambda _window_id: True)
+    monkeypatch.setattr(mcp_module, "_zoom_metadata", {})
+    monkeypatch.setattr(
+        window_state_service,
+        "get_window_state_snapshot",
+        fake_get_window_state_snapshot,
+    )
+    monkeypatch.setattr(
+        mcp_module,
+        "_handlers",
+        SimpleNamespace(automation=_FakeAutomation()),
+    )
+    mcp = create_mcp_server()
+
+    first = await mcp.call_tool(
+        "computer_get_window_state",
+        {"pid": 123, "window_id": 456},
+    )
+    second = await mcp.call_tool(
+        "computer_get_window_state",
+        {"pid": 123, "window_id": 789},
+    )
+    result = await mcp.call_tool(
+        "computer_click",
+        {
+            "snapshot_id": first.structured_content["snapshot_id"],
+            "screenshot_id": second.structured_content["screenshot_id"],
+            "x": 1,
+            "y": 2,
+        },
+    )
+
+    assert result.structured_content == {
+        "success": False,
+        "error": (
+            "screenshot_id snapshot mismatch: "
+            f"screenshot has snapshot_id={second.structured_content['snapshot_id']}, "
+            f"got snapshot_id={first.structured_content['snapshot_id']}"
+        ),
+    }
+
+
+@pytest.mark.asyncio
+async def test_screenshot_id_rejects_stale_capture(monkeypatch):
+    import computer_server.mcp_server as mcp_module
+    import computer_server.services.window_state_service as window_state_service
+    from computer_server.handlers.element_cache import get_element_cache
+
+    async def fake_get_window_state_snapshot(
+        _automation_handler,
+        pid,
+        window_id,
+        **_kwargs,
+    ):
+        cache = get_element_cache()
+        cache.set_window_origin(pid, window_id, 10, 20)
+        return {
+            "success": True,
+            "node_count": 0,
+            "unfiltered_node_count": 0,
+            "nodes": [],
+            "tree_markdown": "",
+            "screen_width": 10,
+            "screen_height": 10,
+            "capture_metadata": {"capture_backend": "wgc"},
+            "_capture_geometry": {
+                "compression_ratio": 1.0,
+                "window_origin_x": 10,
+                "window_origin_y": 20,
+                "crop_origin_screen_x": 10,
+                "crop_origin_screen_y": 20,
+            },
+        }
+
+    cache = get_element_cache()
+    cache.clear()
+    monkeypatch.setattr(cache, "_is_window_valid", lambda _window_id: True)
+    monkeypatch.setattr(mcp_module, "_zoom_metadata", {})
+    monkeypatch.setattr(
+        window_state_service,
+        "get_window_state_snapshot",
+        fake_get_window_state_snapshot,
+    )
+    monkeypatch.setattr(
+        mcp_module,
+        "_handlers",
+        SimpleNamespace(automation=_FakeAutomation()),
+    )
+    mcp = create_mcp_server()
+
+    first = await mcp.call_tool(
+        "computer_get_window_state",
+        {"pid": 123, "window_id": 456},
+    )
+    await mcp.call_tool(
+        "computer_get_window_state",
+        {"pid": 123, "window_id": 456},
+    )
+    result = await mcp.call_tool(
+        "computer_click",
+        {"screenshot_id": first.structured_content["screenshot_id"], "x": 1, "y": 2},
+    )
+
+    assert result.structured_content == {
+        "success": False,
+        "error": "screenshot_id is stale for pid=123, window_id=456",
+        "suggestion": "Use the latest screenshot_id returned by computer_get_window_state or capture_after.",
+    }
+
+
+@pytest.mark.asyncio
+async def test_zoom_uses_screenshot_id_capture_metadata(monkeypatch):
+    import computer_server.mcp_server as mcp_module
+    import computer_server.services.window_state_service as window_state_service
+    from computer_server.handlers.element_cache import get_element_cache
+
+    async def fake_get_window_state_snapshot(
+        _automation_handler,
+        pid,
+        window_id,
+        **_kwargs,
+    ):
+        cache = get_element_cache()
+        cache.set_window_origin(pid, window_id, 10, 20)
+        return {
+            "success": True,
+            "node_count": 0,
+            "unfiltered_node_count": 0,
+            "nodes": [],
+            "tree_markdown": "",
+            "screen_width": 100,
+            "screen_height": 50,
+            "capture_metadata": {"capture_backend": "wgc"},
+            "_capture_geometry": {
+                "compression_ratio": 2.0,
+                "original_width": 200,
+                "original_height": 100,
+                "window_origin_x": 10,
+                "window_origin_y": 20,
+                "crop_origin_screen_x": 10,
+                "crop_origin_screen_y": 20,
+            },
+        }
+
+    async def fake_create_zoom_image(
+        _automation_handler,
+        pid,
+        window_id,
+        x1,
+        y1,
+        x2,
+        y2,
+        zoom_metadata,
+    ):
+        assert pid == 123
+        assert window_id == 456
+        assert (x1, y1, x2, y2) == (1, 2, 3, 4)
+        assert zoom_metadata[(123, 456)]["compression_ratio"] == 2.0
+        assert zoom_metadata[(123, 456)]["crop_origin_screen_x"] == 10
+        assert zoom_metadata[(123, 456)]["capture_backend"] == "wgc"
+        return {
+            "success": True,
+            "zoom_id": "zoom-test",
+            "pid": pid,
+            "window_id": window_id,
+        }
+
+    cache = get_element_cache()
+    cache.clear()
+    monkeypatch.setattr(cache, "_is_window_valid", lambda _window_id: True)
+    monkeypatch.setattr(mcp_module, "_zoom_metadata", {})
+    monkeypatch.setattr(
+        window_state_service,
+        "get_window_state_snapshot",
+        fake_get_window_state_snapshot,
+    )
+    monkeypatch.setattr(
+        window_state_service,
+        "create_zoom_image",
+        fake_create_zoom_image,
+    )
+    monkeypatch.setattr(
+        mcp_module,
+        "_handlers",
+        SimpleNamespace(automation=_FakeAutomation()),
+    )
+    mcp = create_mcp_server()
+
+    snapshot_result = await mcp.call_tool(
+        "computer_get_window_state",
+        {"pid": 123, "window_id": 456},
+    )
+    screenshot_id = snapshot_result.structured_content["screenshot_id"]
+    mcp_module._zoom_metadata[(123, 456)] = {
+        "compression_ratio": 10.0,
+        "crop_origin_screen_x": 1000,
+        "capture_backend": "screen_crop",
+    }
+
+    result = await mcp.call_tool(
+        "computer_zoom",
+        {
+            "screenshot_id": screenshot_id,
+            "x1": 1,
+            "y1": 2,
+            "x2": 3,
+            "y2": 4,
+        },
+    )
+
+    assert result.structured_content["success"] is True
+    assert result.structured_content["parent_screenshot_id"] == screenshot_id
 
 
 @pytest.mark.asyncio
