@@ -203,21 +203,31 @@ def _element_to_cached(
 
     elem_type = getattr(elem, "type", None) or "icon"
     is_text = elem_type == "text"
+    confidence = getattr(elem, "confidence", None)
 
     metadata: Dict[str, Any] = {}
+    if confidence is not None:
+        try:
+            metadata["vision_confidence"] = float(confidence)
+        except (TypeError, ValueError):
+            pass
     if is_text:
         name: Optional[str] = getattr(elem, "content", None)
         actions: List[str] = []
+        if "vision_confidence" in metadata:
+            metadata["ocr_confidence"] = metadata["vision_confidence"]
     else:
         name = icon_label.label if icon_label is not None else None
         actions = ["click"]
         if icon_label is not None:
-            metadata = {
-                "icon_label": icon_label.label,
-                "icon_label_score": icon_label.score,
-                "icon_label_margin": icon_label.margin,
-                "icon_label_source": "tinyclip",
-            }
+            metadata.update(
+                {
+                    "icon_label": icon_label.label,
+                    "icon_label_score": icon_label.score,
+                    "icon_label_margin": icon_label.margin,
+                    "icon_label_source": "tinyclip",
+                }
+            )
 
     return CachedElement(
         element_index=index,

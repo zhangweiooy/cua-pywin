@@ -304,6 +304,9 @@ Relevant controls:
   EasyOCR is optional and requires the `ocr-easy` extra.
 - `CUA_OCR_TIMEOUT_SECONDS` overrides per-call OCR timeout.
 - `CUA_RAPIDOCR_DEVICE=cpu` is the supported RapidOCR runtime in v1.
+- `CUA_OCR_DENOISE=0` disables OCR text cleanup; `CUA_OCR_DENOISE=strict`
+  enables deletion-style filtering for isolated symbol/single-character
+  artifacts. Default denoising must stay conservative.
 - `CUA_ENABLE_TINYCLIP=0` disables icon semantic labeling.
 - `CUA_TINYCLIP_MODEL` overrides the model id/path; local HF snapshot paths are
   supported.
@@ -315,6 +318,12 @@ Relevant controls:
 `image_decode_latency`, `yolo_latency`, `ocr_latency`, `merge_latency`,
 `tinyclip_latency`, `bridge_convert_latency`, `annotation_encode_latency`,
 `omniparser_latency`, and `total_latency`.
+
+Vision text nodes propagate OCR confidence as `confidence`,
+`ocr_confidence`, and `metadata.ocr_confidence`. Default denoising must not
+delete visible single-character detections because `+`, `O`, `0`, and Chinese
+characters can be valid UI labels. Keep deletion-style rules behind explicit
+`CUA_OCR_DENOISE=strict`.
 
 ### OCR Fallback: RapidOCR -> EasyOCR
 

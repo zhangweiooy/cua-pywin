@@ -818,6 +818,10 @@ def merge_som_vision(
             }
             if metadata:
                 node["metadata"] = metadata
+                if "vision_confidence" in metadata:
+                    node["confidence"] = metadata["vision_confidence"]
+                if "ocr_confidence" in metadata:
+                    node["ocr_confidence"] = metadata["ocr_confidence"]
                 if "icon_label" in metadata:
                     node["icon_label"] = metadata["icon_label"]
                     node["icon_label_score"] = metadata.get("icon_label_score")

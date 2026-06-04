@@ -8,6 +8,7 @@ import pytest
 from PIL import Image
 
 import computer_server.services.window_state_service as window_state_service
+from computer_server.handlers.element_cache import CachedElement
 from computer_server.services.window_state_service import (
     MSAAWalkGate,
     UIAWalkGate,
@@ -147,6 +148,55 @@ def test_node_matches_query_checks_icon_label_metadata():
 
     assert node_matches_query(node, "send")
     assert node_matches_query(node, "tinyclip") is False
+
+
+def test_merge_som_vision_exposes_confidence_on_nodes(monkeypatch):
+    import computer_server.handlers.som_bridge as som_bridge
+
+    element = CachedElement(
+        element_index=10000,
+        source="vision",
+        center_x=10,
+        center_y=10,
+        bbox=(5, 5, 20, 20),
+        control_type="text",
+        name="搜索",
+        metadata={"vision_confidence": 0.88, "ocr_confidence": 0.88},
+    )
+
+    monkeypatch.setattr(
+        som_bridge,
+        "detect_sync",
+        lambda *args, **kwargs: SimpleNamespace(
+            elements=[element],
+            metadata={"stage_timings": {"ocr_latency": 0.01}},
+        ),
+    )
+
+    class FakeCache:
+        def append_vision_elements(self, pid, window_id, elements):
+            self.elements = elements
+
+        def set_quality(self, pid, window_id, quality):
+            self.quality = quality
+
+    result = window_state_service.merge_som_vision(
+        Image.new("RGB", (100, 50), "white"),
+        pid=1,
+        window_id=2,
+        screen_width=100,
+        screen_height=50,
+        compression_ratio=2.0,
+        crop_origin_window_x=3,
+        crop_origin_window_y=4,
+        cache=FakeCache(),
+        uia_quality="poor",
+    )
+
+    node = result["nodes"][0]
+    assert node["confidence"] == 0.88
+    assert node["ocr_confidence"] == 0.88
+    assert node["metadata"]["vision_confidence"] == 0.88
 
 
 class _FakeAutomationHandler:

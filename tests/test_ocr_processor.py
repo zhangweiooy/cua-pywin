@@ -78,6 +78,100 @@ def test_rapidocr_legacy_list_result_is_supported(monkeypatch):
     assert result[0]["confidence"] == 0.88
 
 
+def test_rapidocr_default_denoise_keeps_single_character_detections(monkeypatch):
+    _reset_ocr_processor()
+
+    class FakeRapidOCR:
+        def __call__(self, _image_np, text_score=None):
+            return [
+                ([[1, 1], [6, 1], [6, 6], [1, 6]], "#", 0.99),
+                ([[10, 10], [14, 10], [14, 14], [10, 14]], "O", 0.99),
+                ([[15, 10], [22, 10], [22, 18], [15, 18]], "口", 0.99),
+                ([[20, 10], [80, 10], [80, 30], [20, 30]], "搜索", 0.88),
+                ([[90, 10], [120, 10], [120, 30], [90, 30]], "OK", 0.9),
+            ]
+
+    monkeypatch.setitem(
+        sys.modules,
+        "rapidocr",
+        types.SimpleNamespace(RapidOCR=lambda: FakeRapidOCR()),
+    )
+    monkeypatch.setenv("CUA_OCR_BACKEND", "rapidocr")
+
+    result = OCRProcessor().detect_text(Image.new("RGB", (200, 100), "white"))
+
+    assert [item["content"] for item in result] == ["#", "O", "口", "搜索", "OK"]
+
+
+def test_rapidocr_strict_denoise_filters_isolated_artifacts(monkeypatch):
+    _reset_ocr_processor()
+
+    class FakeRapidOCR:
+        def __call__(self, _image_np, text_score=None):
+            return [
+                ([[1, 1], [6, 1], [6, 6], [1, 6]], "#", 0.99),
+                ([[10, 10], [14, 10], [14, 14], [10, 14]], "O", 0.99),
+                ([[15, 10], [22, 10], [22, 18], [15, 18]], "口", 0.99),
+                ([[20, 10], [80, 10], [80, 30], [20, 30]], "搜索", 0.88),
+                ([[90, 10], [120, 10], [120, 30], [90, 30]], "OK", 0.9),
+            ]
+
+    monkeypatch.setitem(
+        sys.modules,
+        "rapidocr",
+        types.SimpleNamespace(RapidOCR=lambda: FakeRapidOCR()),
+    )
+    monkeypatch.setenv("CUA_OCR_BACKEND", "rapidocr")
+    monkeypatch.setenv("CUA_OCR_DENOISE", "strict")
+
+    result = OCRProcessor().detect_text(Image.new("RGB", (200, 100), "white"))
+
+    assert [item["content"] for item in result] == ["搜索", "OK"]
+
+
+def test_rapidocr_normalizes_search_icon_artifact(monkeypatch):
+    _reset_ocr_processor()
+
+    class FakeRapidOCR:
+        def __call__(self, _image_np, text_score=None):
+            return [
+                ([[20, 10], [80, 10], [80, 30], [20, 30]], "Q搜索", 0.88),
+            ]
+
+    monkeypatch.setitem(
+        sys.modules,
+        "rapidocr",
+        types.SimpleNamespace(RapidOCR=lambda: FakeRapidOCR()),
+    )
+    monkeypatch.setenv("CUA_OCR_BACKEND", "rapidocr")
+
+    result = OCRProcessor().detect_text(Image.new("RGB", (200, 100), "white"))
+
+    assert result[0]["content"] == "搜索"
+
+
+def test_ocr_denoise_can_be_disabled(monkeypatch):
+    _reset_ocr_processor()
+
+    class FakeRapidOCR:
+        def __call__(self, _image_np, text_score=None):
+            return [
+                ([[1, 1], [6, 1], [6, 6], [1, 6]], "#", 0.99),
+            ]
+
+    monkeypatch.setitem(
+        sys.modules,
+        "rapidocr",
+        types.SimpleNamespace(RapidOCR=lambda: FakeRapidOCR()),
+    )
+    monkeypatch.setenv("CUA_OCR_BACKEND", "rapidocr")
+    monkeypatch.setenv("CUA_OCR_DENOISE", "0")
+
+    result = OCRProcessor().detect_text(Image.new("RGB", (200, 100), "white"))
+
+    assert result[0]["content"] == "#"
+
+
 def test_rapidocr_import_failure_returns_empty(monkeypatch):
     _reset_ocr_processor()
     real_import = builtins.__import__

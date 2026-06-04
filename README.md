@@ -93,6 +93,8 @@ uv sync --index-url https://pypi.tuna.tsinghua.edu.cn/simple
 
 默认 OCR 后端是 RapidOCR + ONNXRuntime（PaddleOCR PP-OCRv4 mobile 模型）。
 首次初始化会校验/下载 RapidOCR ONNX 模型；后续 daemon 热启动复用已加载状态。
+OCR 文本节点会保留 `confidence`。默认去噪只做空文本过滤和确定性误读修正；
+删除孤立符号/单字符的严格过滤需显式设置 `CUA_OCR_DENOISE=strict`。
 
 ### 快速开始
 
@@ -198,7 +200,7 @@ cua-win serve --host 0.0.0.0 --port 8000 \
 
 **树质量 + SOM 回退** — `tree_quality: rich(>50) / ok(15-50)` 跳过 SOM，`poor(<15) / empty(0)` 启用 SOM 视觉检测。`uia_quality` 与 `vision_quality` 单独报告，不互相覆盖。
 
-**PaddleOCR ONNX 后端** — OCR 默认使用 RapidOCR + ONNXRuntime，也就是 PaddleOCR PP-OCRv4 mobile ONNX 模型。`CUA_OCR_BACKEND=easyocr` 可启用可选 EasyOCR fallback（需安装 `ocr-easy` extra）。`CUA_OCR_TIMEOUT_SECONDS` 覆盖单次 OCR timeout；`CUA_RAPIDOCR_DEVICE=cpu` 是 v1 支持的运行方式。RapidOCR 首次初始化可能下载 ONNX 模型，离线/打包发布前需要确认这些模型已内置。
+**PaddleOCR ONNX 后端** — OCR 默认使用 RapidOCR + ONNXRuntime，也就是 PaddleOCR PP-OCRv4 mobile ONNX 模型。`CUA_OCR_BACKEND=easyocr` 可启用可选 EasyOCR fallback（需安装 `ocr-easy` extra）。`CUA_OCR_TIMEOUT_SECONDS` 覆盖单次 OCR timeout；`CUA_RAPIDOCR_DEVICE=cpu` 是 v1 支持的运行方式。RapidOCR 首次初始化可能下载 ONNX 模型，离线/打包发布前需要确认这些模型已内置。OCR 文本结果会透传 `confidence` / `ocr_confidence` 到 vision nodes。默认去噪只做空文本过滤和确定性误读修正；删除孤立符号、微小 ASCII 和已知图标形状误读需显式设置 `CUA_OCR_DENOISE=strict`，`CUA_OCR_DENOISE=0` 可关闭修正。
 
 **录制 vs 学习** — 录制是 agent 视角（MCP 工具调用回放），学习是人类视角（pynput + UIA 标注 + OCR 增强）。两者通过 `capture_service / ocr_service / uia_service / window_identity_service` 共享底层能力。
 
@@ -321,6 +323,9 @@ uv sync --index-url https://pypi.tuna.tsinghua.edu.cn/simple
 The default OCR backend is RapidOCR + ONNXRuntime with PaddleOCR PP-OCRv4
 mobile models. First initialization validates/downloads RapidOCR ONNX models;
 subsequent daemon calls reuse loaded state.
+OCR text nodes preserve `confidence`. Default denoising only drops empty text
+and applies deterministic misread fixes; deletion-style filtering for isolated
+symbols and single characters requires `CUA_OCR_DENOISE=strict`.
 
 ### Quick Start
 
@@ -459,7 +464,11 @@ PaddleOCR PP-OCRv4 mobile models. `CUA_OCR_BACKEND=easyocr` enables the optional
 EasyOCR fallback when installed with the `ocr-easy` extra. `CUA_OCR_TIMEOUT_SECONDS`
 overrides per-call OCR timeout, and `CUA_RAPIDOCR_DEVICE=cpu` is the supported v1
 runtime. RapidOCR may download ONNX models on first initialization; package/offline
-builds should verify these model files are vendored before release.
+builds should verify these model files are vendored before release. OCR text results
+propagate `confidence` / `ocr_confidence` into vision nodes. Default denoising only
+drops empty text and applies deterministic misread fixes; deletion-style filtering
+for isolated symbols, tiny ASCII artifacts, and known icon-shape misreads requires
+`CUA_OCR_DENOISE=strict`. Set `CUA_OCR_DENOISE=0` to disable denoising.
 
 **Recording vs Learning** — Recording is agent-perspective (MCP tool replay); Learning is human-perspective (pynput + UIA + OCR enrichment). The two share capture / OCR / UIA-timeout / window-identity through `services/` rather than duplicating logic.
 

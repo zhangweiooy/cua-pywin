@@ -44,9 +44,12 @@ def test_convert_parse_result_applies_tinyclip_icon_label(monkeypatch):
     )
 
     assert converted.elements[0].name == "send button"
+    assert converted.elements[0].metadata["vision_confidence"] == 0.9
     assert converted.elements[0].metadata["icon_label_source"] == "tinyclip"
     assert converted.elements[0].metadata["icon_label_score"] == 0.91
     assert converted.elements[1].name == "搜索"
+    assert converted.elements[1].metadata["vision_confidence"] == 0.8
+    assert converted.elements[1].metadata["ocr_confidence"] == 0.8
     assert converted.metadata["icon_label_count"] == 1
     assert converted.metadata["stage_timings"]["yolo_latency"] == 0.01
     assert converted.metadata["stage_timings"]["ocr_latency"] == 0.02

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import logging
 import os
+import re
 import threading
 from concurrent.futures import ThreadPoolExecutor, TimeoutError as FutureTimeoutError
 from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple
@@ -10,6 +11,11 @@ import numpy as np
 from PIL import Image
 
 logger = logging.getLogger(__name__)
+
+_CJK_RE = re.compile(r"[\u3400-\u9fff]")
+_FALSE_VALUES = {"0", "false", "no", "off"}
+_STRICT_VALUES = {"strict", "aggressive"}
+_CJK_SHAPE_ARTIFACTS = {"\u53e3"}
 
 
 class TimeoutException(Exception):
@@ -175,16 +181,70 @@ class OCRProcessor:
             bbox = self._normalize_box(box, img_width, img_height)
             if bbox is None:
                 continue
+            text_content = self._clean_text_detection(str(text))
+            if not self._should_keep_text_detection(text_content, bbox):
+                continue
             detections.append(
                 {
                     "type": "text",
                     "bbox": bbox,
-                    "content": str(text),
+                    "content": text_content,
                     "confidence": conf,
                     "interactivity": False,
                 }
             )
         return detections
+
+    def _clean_text_detection(self, text: str) -> str:
+        if self._denoise_mode() == "off":
+            return str(text).strip()
+        compact = "".join(str(text).split())
+        if compact in {"Q\u641c\u7d22", "O\u641c\u7d22", "0\u641c\u7d22"}:
+            return "\u641c\u7d22"
+        return str(text).strip()
+
+    def _denoise_mode(self) -> str:
+        value = os.getenv("CUA_OCR_DENOISE", "conservative").strip().lower()
+        if value in _FALSE_VALUES:
+            return "off"
+        if value in _STRICT_VALUES:
+            return "strict"
+        return "conservative"
+
+    def _should_keep_text_detection(self, text: str, bbox: Sequence[float]) -> bool:
+        """Filter low-value OCR artifacts without dropping Chinese UI text."""
+        compact = "".join(str(text).split())
+        if not compact:
+            return False
+        if self._denoise_mode() != "strict":
+            return True
+
+        try:
+            x1, y1, x2, y2 = [float(v) for v in bbox]
+        except Exception:
+            return True
+        width = max(0.0, x2 - x1)
+        height = max(0.0, y2 - y1)
+
+        if (
+            len(compact) == 1
+            and compact in _CJK_SHAPE_ARTIFACTS
+            and width <= 0.06
+            and height <= 0.08
+        ):
+            return False
+        if _CJK_RE.search(compact):
+            return True
+        if len(compact) >= 2:
+            return any(ch.isalnum() for ch in compact)
+
+        ch = compact[0]
+        if not ch.isalnum():
+            return False
+
+        if width <= 0.04 and height <= 0.06:
+            return False
+        return True
 
     def _iter_raw_results(self, raw_results: Any) -> Iterable[Tuple[Any, Any, Any]]:
         """Yield ``(box, text, score)`` triples from RapidOCR/EasyOCR formats."""
