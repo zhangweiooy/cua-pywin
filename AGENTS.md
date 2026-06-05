@@ -115,6 +115,7 @@ cua-win computer_press_key '{\"key\":\"Control_L+s\"}'
 cua-win computer_mouse '{\"action\":\"move\",\"x\":100,\"y\":100}'
 cua-win computer_recording '{\"action\":\"status\"}'
 cua-win computer_learn '{\"action\":\"status\"}'
+'[{"type":"wait","milliseconds":100},{"tool":"computer_get_screen_size","arguments":{}}]' | cua-win batch
 cua-win stop
 
 # Single-tool tests
@@ -420,6 +421,10 @@ functions. When the SDK is upgraded past the fix:
   opens a WebSocket. High-frequency DOM reads may need a connection pool.
 - A running `cua-win` daemon keeps code and model state loaded until
   `cua-win stop`, process exit, logout, or reboot. Restart it after code changes.
+- `cua-win batch` executes a JSON array of mixed MCP tool calls and waits
+  sequentially through one CLI process and one persistent daemon HTTP
+  connection. It is a precomputed batch runner, not a server-side script
+  executor; recording still occurs inside each invoked action tool.
 - Subprocess environments should set `PYTHONIOENCODING=utf-8` to avoid GBK output
   issues.
 - One-shot `cua-win --no-daemon` schema queries and explicitly safe read-only

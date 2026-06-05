@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import io
 import os
+import sys
 
 import pytest
 
@@ -9,8 +11,10 @@ from computer_server.tool_cli import (
     _call_result_to_json,
     _collect_doctor_checks,
     _doctor_summary,
+    _execute_batch,
     _is_lightweight_inprocess_call,
     _mcp_import_mode,
+    _parse_batch_actions,
     _parse_tool_arguments,
     _rewrite_implicit_call,
     _tool_to_json,
@@ -33,6 +37,114 @@ def test_parse_tool_arguments_requires_object() -> None:
 
     with pytest.raises(SystemExit, match="tool arguments must be a JSON object"):
         _parse_tool_arguments("[1, 2, 3]")
+
+
+def test_parse_batch_actions_accepts_inline_file_and_stdin(tmp_path, monkeypatch) -> None:
+    actions = [{"tool": "computer_get_screen_size", "arguments": {}}]
+    encoded = '[{"tool":"computer_get_screen_size","arguments":{}}]'
+    batch_file = tmp_path / "batch.json"
+    batch_file.write_text(encoded, encoding="utf-8")
+
+    assert _parse_batch_actions(encoded) == actions
+    assert _parse_batch_actions(str(batch_file)) == actions
+
+    monkeypatch.setattr(sys, "stdin", io.StringIO("\ufeff" + encoded))
+    assert _parse_batch_actions("-") == actions
+
+
+def test_batch_parser_accepts_minimal_options() -> None:
+    args = build_parser().parse_args(
+        [
+            "batch",
+            "batch.json",
+            "--continue-on-error",
+            "--timeout",
+            "10",
+        ]
+    )
+
+    assert args.command == "batch"
+    assert args.input == "batch.json"
+    assert args.continue_on_error is True
+    assert args.timeout == 10
+
+
+def test_execute_batch_mixes_waits_and_tool_calls(monkeypatch) -> None:
+    class Client:
+        def __init__(self) -> None:
+            self.calls = []
+
+        def request(self, method, path, payload=None):
+            self.calls.append((method, path, payload))
+            return {
+                "is_error": False,
+                "structured_content": {"success": True, "value": 1},
+            }
+
+    client = Client()
+    sleeps = []
+    monkeypatch.setattr("computer_server.tool_cli.time.sleep", sleeps.append)
+
+    result = _execute_batch(
+        client,
+        [
+            {"type": "wait", "milliseconds": 25},
+            {"tool": "computer_get_screen_size", "arguments": {}},
+        ],
+    )
+
+    assert result["success"] is True
+    assert result["processed"] == 2
+    assert result["failed"] == 0
+    assert sleeps == [0.025]
+    assert client.calls == [
+        (
+            "POST",
+            "/call",
+            {
+                "name": "computer_get_screen_size",
+                "arguments": {},
+            },
+        )
+    ]
+
+
+def test_execute_batch_stops_and_releases_inputs_after_failure() -> None:
+    class Client:
+        def __init__(self) -> None:
+            self.tools = []
+
+        def request(self, method, path, payload=None):
+            tool = payload["name"]
+            self.tools.append(tool)
+            if tool == "computer_click":
+                return {
+                    "is_error": False,
+                    "structured_content": {"success": False, "error": "failed"},
+                }
+            return {
+                "is_error": False,
+                "structured_content": {"success": True},
+            }
+
+    client = Client()
+    result = _execute_batch(
+        client,
+        [
+            {"tool": "computer_click", "arguments": {"x": 1, "y": 2}},
+            {"tool": "computer_press_key", "arguments": {"key": "Return"}},
+        ],
+    )
+
+    assert result["success"] is False
+    assert result["completed"] is False
+    assert result["processed"] == 1
+    assert result["failed"] == 1
+    assert result["released_inputs"] is True
+    assert client.tools == [
+        "computer_click",
+        "computer_release_all_inputs",
+    ]
 
 
 def test_lightweight_inprocess_calls_are_explicit() -> None:

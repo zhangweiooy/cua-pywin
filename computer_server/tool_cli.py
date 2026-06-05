@@ -4,10 +4,12 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import http.client
 import importlib.metadata
 import importlib.util
 import json
 import logging
+import math
 import os
 import platform
 import secrets
@@ -46,6 +48,7 @@ COMMANDS = {
     "list-tools",
     "describe",
     "call",
+    "batch",
 }
 LIGHTWEIGHT_INPROCESS_TOOLS = {
     "computer_get_screen_size",
@@ -93,6 +96,9 @@ TINYCLIP_REQUIRED_FILES = (
     "tokenizer.json",
 )
 
+MAX_BATCH_ACTIONS = 10_000
+MAX_BATCH_WAIT_MS = 600_000
+
 
 @dataclass(frozen=True)
 class DaemonInfo:
@@ -123,6 +129,59 @@ class DoctorCheck:
         if self.details:
             payload["details"] = self.details
         return payload
+
+
+class _DaemonHttpClient:
+    """Small persistent HTTP client used by multi-call CLI commands."""
+
+    def __init__(
+        self,
+        info: DaemonInfo,
+        *,
+        timeout: float = DEFAULT_REQUEST_TIMEOUT,
+    ) -> None:
+        self._info = info
+        self._timeout = timeout
+        self._connection = http.client.HTTPConnection(
+            info.host,
+            info.port,
+            timeout=timeout,
+        )
+
+    def close(self) -> None:
+        self._connection.close()
+
+    def request(
+        self,
+        method: str,
+        path: str,
+        payload: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        body = None
+        headers = {AUTH_HEADER: self._info.token, "Accept": "application/json"}
+        if payload is not None:
+            body = json.dumps(payload).encode("utf-8")
+            headers["Content-Type"] = "application/json"
+
+        try:
+            self._connection.request(method, path, body=body, headers=headers)
+            response = self._connection.getresponse()
+            raw = response.read().decode("utf-8")
+        except (OSError, http.client.HTTPException) as exc:
+            self.close()
+            raise RuntimeError(str(exc)) from exc
+
+        if response.status >= 400:
+            raise RuntimeError(f"HTTP {response.status}: {raw}")
+        if not raw:
+            return {}
+        try:
+            decoded = json.loads(raw)
+        except json.JSONDecodeError as exc:
+            raise RuntimeError(f"invalid JSON response: {raw[:200]}") from exc
+        if not isinstance(decoded, dict):
+            raise RuntimeError("daemon returned a non-object JSON response")
+        return decoded
 
 
 def _state_dir() -> Path:
@@ -235,6 +294,8 @@ def _http_json(
     except urllib.error.URLError as exc:
         reason = getattr(exc, "reason", exc)
         raise RuntimeError(str(reason)) from exc
+    except OSError as exc:
+        raise RuntimeError(str(exc)) from exc
 
     if not raw:
         return {}
@@ -361,6 +422,142 @@ def _parse_tool_arguments(raw: str | None) -> dict[str, Any]:
     if not isinstance(parsed, dict):
         raise SystemExit("tool arguments must be a JSON object")
     return parsed
+
+
+def _parse_batch_actions(raw: str | None) -> list[dict[str, Any]]:
+    if raw is None or raw == "-":
+        source = sys.stdin.read()
+    else:
+        stripped = raw.lstrip()
+        if stripped.startswith("["):
+            source = raw
+        else:
+            try:
+                source = Path(raw).read_text(encoding="utf-8")
+            except OSError as exc:
+                raise SystemExit(f"cannot read batch input: {raw}") from exc
+
+    source = source.lstrip("\ufeff")
+    try:
+        parsed = json.loads(source)
+    except json.JSONDecodeError as exc:
+        raise SystemExit(f"invalid batch JSON: {exc.msg}") from exc
+    if not isinstance(parsed, list):
+        raise SystemExit("batch input must be a JSON array")
+    if len(parsed) > MAX_BATCH_ACTIONS:
+        raise SystemExit(
+            f"batch contains {len(parsed)} actions; maximum is {MAX_BATCH_ACTIONS}"
+        )
+    if not all(isinstance(item, dict) for item in parsed):
+        raise SystemExit("every batch item must be a JSON object")
+    return parsed
+
+
+def _batch_payload_failed(payload: dict[str, Any]) -> bool:
+    if payload.get("is_error"):
+        return True
+    structured = payload.get("structured_content")
+    return isinstance(structured, dict) and structured.get("success") is False
+
+
+def _release_batch_inputs(client: _DaemonHttpClient) -> bool:
+    try:
+        payload = client.request(
+            "POST",
+            "/call",
+            payload={"name": "computer_release_all_inputs", "arguments": {}},
+        )
+    except RuntimeError:
+        return False
+    return not _batch_payload_failed(payload)
+
+
+def _execute_batch(
+    client: _DaemonHttpClient,
+    actions: Sequence[dict[str, Any]],
+    *,
+    continue_on_error: bool = False,
+) -> dict[str, Any]:
+    started = time.monotonic()
+    results: list[dict[str, Any]] = []
+    failed = 0
+    released_inputs = False
+
+    try:
+        for index, item in enumerate(actions):
+            item_started = time.monotonic()
+            item_type = item.get("type")
+            try:
+                if item_type == "wait":
+                    milliseconds = item.get("milliseconds")
+                    if (
+                        isinstance(milliseconds, bool)
+                        or not isinstance(milliseconds, (int, float))
+                        or not math.isfinite(milliseconds)
+                        or milliseconds < 0
+                        or milliseconds > MAX_BATCH_WAIT_MS
+                    ):
+                        raise ValueError(
+                            "wait milliseconds must be between "
+                            f"0 and {MAX_BATCH_WAIT_MS}"
+                        )
+                    time.sleep(float(milliseconds) / 1000.0)
+                    payload: dict[str, Any] = {
+                        "success": True,
+                        "waited_ms": milliseconds,
+                    }
+                    label = "wait"
+                    item_failed = False
+                else:
+                    tool = item.get("tool")
+                    arguments = item.get("arguments", {})
+                    if not isinstance(tool, str) or not tool.strip():
+                        raise ValueError("batch tool item requires a non-empty tool")
+                    if not isinstance(arguments, dict):
+                        raise ValueError("batch tool arguments must be an object")
+                    label = tool.strip()
+                    payload = client.request(
+                        "POST",
+                        "/call",
+                        payload={"name": label, "arguments": arguments},
+                    )
+                    item_failed = _batch_payload_failed(payload)
+            except (RuntimeError, ValueError) as exc:
+                label = str(item.get("tool") or item_type or "invalid")
+                payload = {"success": False, "error": str(exc)}
+                item_failed = True
+
+            elapsed_ms = round((time.monotonic() - item_started) * 1000, 2)
+            results.append(
+                {
+                    "index": index,
+                    "operation": label,
+                    "success": not item_failed,
+                    "duration_ms": elapsed_ms,
+                    "result": payload,
+                }
+            )
+            if item_failed:
+                failed += 1
+                released_inputs = _release_batch_inputs(client) or released_inputs
+                if not continue_on_error:
+                    break
+    except KeyboardInterrupt:
+        _release_batch_inputs(client)
+        raise
+
+    succeeded = len(results) - failed
+    return {
+        "success": failed == 0 and len(results) == len(actions),
+        "completed": len(results) == len(actions),
+        "total": len(actions),
+        "processed": len(results),
+        "succeeded": succeeded,
+        "failed": failed,
+        "released_inputs": released_inputs,
+        "duration_ms": round((time.monotonic() - started) * 1000, 2),
+        "results": results,
+    }
 
 
 def _is_lightweight_inprocess_call(tool_name: str, tool_args: dict[str, Any]) -> bool:
@@ -894,6 +1091,25 @@ def _cmd_call(args: argparse.Namespace) -> int:
     return 1 if payload.get("is_error") else 0
 
 
+def _cmd_batch(args: argparse.Namespace) -> int:
+    actions = _parse_batch_actions(args.input)
+    info = _ensure_daemon(timeout=args.start_timeout)
+    client = _DaemonHttpClient(info, timeout=args.timeout)
+    try:
+        payload = _execute_batch(
+            client,
+            actions,
+            continue_on_error=args.continue_on_error,
+        )
+    except KeyboardInterrupt:
+        print("batch interrupted", file=sys.stderr)
+        return 130
+    finally:
+        client.close()
+    _json_print(payload)
+    return 0 if payload["success"] else 1
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog=CLI_NAME,
@@ -983,6 +1199,25 @@ def build_parser() -> argparse.ArgumentParser:
     call.add_argument("--start-timeout", type=float, default=DEFAULT_START_TIMEOUT)
     call.add_argument("--no-daemon", action="store_true")
     call.set_defaults(func=_cmd_call)
+
+    batch = subparsers.add_parser(
+        "batch",
+        help="execute a JSON array of tool calls and waits sequentially",
+    )
+    batch.add_argument(
+        "input",
+        nargs="?",
+        default="-",
+        help="JSON array, UTF-8 JSON file, or '-' for stdin (default)",
+    )
+    batch.add_argument(
+        "--continue-on-error",
+        action="store_true",
+        help="Continue after a failed batch item instead of stopping.",
+    )
+    batch.add_argument("--timeout", type=float, default=DEFAULT_REQUEST_TIMEOUT)
+    batch.add_argument("--start-timeout", type=float, default=DEFAULT_START_TIMEOUT)
+    batch.set_defaults(func=_cmd_batch)
 
     return parser
 

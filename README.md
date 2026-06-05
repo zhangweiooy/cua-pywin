@@ -115,6 +115,8 @@ cua-win computer_press_key '{\"key\":\"Control_L+s\"}'
 cua-win computer_mouse '{\"action\":\"move\",\"x\":100,\"y\":100}'
 cua-win computer_recording '{\"action\":\"status\"}'
 cua-win computer_learn '{\"action\":\"status\"}'
+$batch = '[{"type":"wait","milliseconds":100},{"tool":"computer_get_screen_size","arguments":{}}]'
+$batch | cua-win batch
 cua-win stop
 
 # 若要绑定到非 localhost，必须显式确认（否则启动会被拒绝）
@@ -128,6 +130,13 @@ cua-win serve --host 0.0.0.0 --port 8000 \
 `cua-win <tool> '<json>'` 会自动等价转换为 `cua-win call <tool> '<json>'`。
 PowerShell 调用 native command 时会剥离 JSON 内层双引号，示例中因此使用
 `'{\"key\":\"value\"}'` 写法。
+
+`cua-win batch` 从标准输入、内联 JSON 或 UTF-8 JSON 文件读取动作数组，并在同一
+CLI 进程中通过常驻 daemon 顺序执行。条目可以是
+`{"tool":"computer_click","arguments":{...}}`，也可以是
+`{"type":"wait","milliseconds":200}`。默认首个失败即停止；使用
+`--continue-on-error` 可继续后续条目。失败或 Ctrl+C 中断时会尝试调用
+`computer_release_all_inputs`。
 
 `cua-win doctor` 执行只读本机诊断：平台、Python 版本、依赖可发现性、打包模型文件、状态目录和现有 daemon 可达性。它不会启动 daemon 或调用桌面控制工具。
 
@@ -363,6 +372,8 @@ cua-win computer_press_key '{\"key\":\"Control_L+s\"}'
 cua-win computer_mouse '{\"action\":\"move\",\"x\":100,\"y\":100}'
 cua-win computer_recording '{\"action\":\"status\"}'
 cua-win computer_learn '{\"action\":\"status\"}'
+$batch = '[{"type":"wait","milliseconds":100},{"tool":"computer_get_screen_size","arguments":{}}]'
+$batch | cua-win batch
 cua-win stop
 
 # Binding to a non-localhost host requires explicit consent — without it
@@ -386,6 +397,13 @@ should still reuse the daemon.
 `cua-win <tool> '<json>'` is rewritten to `cua-win call <tool> '<json>'`.
 PowerShell strips inner JSON quotes when launching native commands, so CLI
 examples use `'{\"key\":\"value\"}'`.
+
+`cua-win batch` reads an action array from stdin, inline JSON, or a UTF-8 JSON
+file and executes it sequentially through the same daemon process. Entries may
+be `{"tool":"computer_click","arguments":{...}}` or
+`{"type":"wait","milliseconds":200}`. Execution stops on the first failure by
+default; `--continue-on-error` processes the remaining entries. Failures and
+Ctrl+C interruptions trigger a best-effort `computer_release_all_inputs` call.
 
 `cua-win doctor` performs read-only local diagnostics for platform, Python
 version, dependency availability, bundled model files, state directory, and
