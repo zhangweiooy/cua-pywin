@@ -1,8 +1,8 @@
 # cua-pywin
 
-Windows UI automation MCP server for AI agents — 43 tools for computer control.
+Windows UI automation MCP server for AI agents — 24 tools for computer control.
 <br>
-Windows AI Agent 桌面操控 MCP 服务 — 43 个计算机控制工具。
+Windows AI Agent 桌面操控 MCP 服务 — 24 个计算机控制工具。
 
 ---
 
@@ -14,7 +14,7 @@ Windows AI Agent 桌面操控 MCP 服务 — 43 个计算机控制工具。
 
 ### 亮点
 
-- **43 个 MCP 工具** — 截图、鼠标、键盘、窗口管理
+- **24 个 MCP 工具** — 截图、鼠标、键盘、窗口管理；重复 wrapper 已合并为高层入口
 - **录制 / 回放** — 录制 MCP 工具调用序列到磁盘，完整回放（含坐标重算和过期窗口解析）
 - **学习模式** — 录制真人操作（pynput 全局钩子 + UIA 元素标注 + PaddleOCR ONNX 视觉增强）
 - **SOM 视觉检测** — OmniParser YOLO + PaddleOCR ONNX 中文识别 + TinyCLIP 图标语义标签，UIA 不可用时自动回退
@@ -26,7 +26,7 @@ Windows AI Agent 桌面操控 MCP 服务 — 43 个计算机控制工具。
 ```
 cua-pywin/
 ├─ computer_server/          ← 主程序
-│  ├─ mcp_server.py          ← 43 MCP 工具入口（薄 wrapper，业务转交 services/）
+│  ├─ mcp_server.py          ← 24 MCP 工具入口（薄 wrapper，业务转交 services/）
 │  ├─ main.py                ← 本机 HTTP 服务器（/status + /mcp + cua-win JSON RPC）
 │  ├─ tool_cli.py            ← cua-win CLI / HTTP server launcher
 │  ├─ server_context.py      ← 每实例可变状态（录制会话/学习/UIA gate/popover dedup）
@@ -110,7 +110,11 @@ cua-win doctor
 cua-win status
 cua-win list-tools
 cua-win computer_get_screen_size
-cua-win call computer_get_window_state '{"window":{"id":5678,"pid":1234}}'
+cua-win call computer_get_window_state '{\"window\":{\"id\":5678,\"pid\":1234}}'
+cua-win computer_press_key '{\"key\":\"Control_L+s\"}'
+cua-win computer_mouse '{\"action\":\"move\",\"x\":100,\"y\":100}'
+cua-win computer_recording '{\"action\":\"status\"}'
+cua-win computer_learn '{\"action\":\"status\"}'
 cua-win stop
 
 # 若要绑定到非 localhost，必须显式确认（否则启动会被拒绝）
@@ -118,9 +122,12 @@ cua-win serve --host 0.0.0.0 --port 8000 \
     --i-know-this-exposes-my-computer
 ```
 
-普通 HTTP 服务暴露 `/status` 与 `/mcp`，legacy `/ws` 与 `/commands` 已删除；`cua-win` daemon 复用同一个 app，并额外启用 token 保护的 `/tools`、`/call`、`/shutdown` JSON RPC 路由。CORS 仅放行 `localhost / 127.0.0.1 / [::1]` origin。
+普通 HTTP 服务暴露 `/status` 与 `/mcp`；`cua-win` daemon 复用同一个 app，并额外启用 token 保护的 `/tools`、`/call`、`/shutdown` JSON RPC 路由。CORS 仅放行 `localhost / 127.0.0.1 / [::1]` origin。
 
 `cua-win` 是面向人和脚本的 CLI。默认启动同一个本机 HTTP app，并通过 token 保护的 JSON RPC 路由调用 MCP 工具，因此 `computer_get_window_state` 这类高频重工具只在 daemon 启动时预热一次；`--no-daemon` 会强制单次进程内调用，适合调试但不适合高频使用。
+`cua-win <tool> '<json>'` 会自动等价转换为 `cua-win call <tool> '<json>'`。
+PowerShell 调用 native command 时会剥离 JSON 内层双引号，示例中因此使用
+`'{\"key\":\"value\"}'` 写法。
 
 `cua-win doctor` 执行只读本机诊断：平台、Python 版本、依赖可发现性、打包模型文件、状态目录和现有 daemon 可达性。它不会启动 daemon 或调用桌面控制工具。
 
@@ -145,17 +152,17 @@ cua-win serve --host 0.0.0.0 --port 8000 \
 
 ### MCP 工具
 
-**屏幕与鼠标** — `computer_screenshot` `computer_click` `computer_move` `computer_drag` `computer_scroll` `computer_mouse_down` `computer_mouse_up` `computer_release_all_inputs` `computer_get_screen_size` `computer_get_cursor_position` `computer_get_window_state` `computer_zoom`
+**屏幕与鼠标** — `computer_screenshot` `computer_click` `computer_mouse` `computer_drag` `computer_scroll` `computer_release_all_inputs` `computer_get_screen_size` `computer_get_cursor_position` `computer_get_window_state` `computer_zoom`
 
-**键盘** — `computer_type` `computer_press_key` `computer_hotkey` `computer_key_down` `computer_key_up` `computer_set_value`
+**键盘** — `computer_type` `computer_press_key` `computer_set_value`
 
-**窗口管理** — `computer_open_url` `computer_launch_app` `computer_get_active_window` `computer_get_window` `computer_get_window_name` `computer_get_window_size` `computer_get_window_position` `computer_set_window_size` `computer_set_window_position` `computer_activate_window` `computer_minimize_window` `computer_maximize_window` `computer_close_window` `computer_get_app_windows` `computer_list_windows` `computer_list_apps`
+**窗口与应用** — `computer_open_url` `computer_launch_app` `computer_get_window` `computer_manage_window` `computer_list_windows` `computer_list_apps`
 
-**桌面与辅助** — `computer_get_desktop_environment` `computer_get_accessibility_tree` `computer_page`
+**桌面与浏览器** — `computer_get_desktop_environment` `computer_page`
 
-**录制回放** — `computer_set_recording` `computer_get_recording_state` `computer_replay_trajectory`
+**录制回放** — `computer_recording` `computer_replay_trajectory`
 
-**学习** — `computer_learn_start` `computer_learn_stop` `computer_learn_status`
+**学习** — `computer_learn`
 
 ### 坐标系统
 
@@ -179,12 +186,22 @@ cua-win serve --host 0.0.0.0 --port 8000 \
 
 `window.id` 与 `window.window_id` 都表示 HWND。旧的顶层
 `pid/window_id` 仍兼容，但与 `window` 同时传入时必须一致，否则工具会
-返回 validation error。`computer_list_windows`、`computer_get_app_windows`、
-`computer_list_apps`、`computer_get_active_window`、`computer_get_window` 和
-`computer_get_window_state` 都会返回可直接复用的 `window` 对象。使用
-`computer_get_window({"id":...,"app":...})` 可以在 stale handle、绑定丢失或
-上下文重置后重新获取当前窗口对象。
+返回 validation error。`computer_list_windows`、`computer_list_apps`、
+`computer_get_window` 和 `computer_get_window_state` 都会返回可直接复用的
+`window` 对象。使用 `computer_get_window({"id":...,"app":...})` 可以在 stale
+handle、绑定丢失或上下文重置后重新获取当前窗口对象；使用
+`computer_get_window({"active":true})` 获取当前前台窗口。
 `window_ref` 仅用于 recording/replay 的内部窗口身份快照，不要求调用方构造。
+
+合并后的入口约定：热键通过 `computer_press_key({"keys":[...]})` 或
+`computer_press_key({"key":"Control_L+s"})` 执行；窗口激活、最小化、最大化、
+关闭、移动和缩放统一走 `computer_manage_window`；按 app/title/query 查窗口统一走
+`computer_list_windows`；鼠标 move/down/up 低层动作统一走
+`computer_mouse({"action":"move|down|up"})`；键盘 down/up 低层动作统一走
+`computer_press_key({"key":"Shift","action":"down|up"})`；录制 start/stop/status
+统一走 `computer_recording({"action":"start|stop|status"})`；学习 start/stop/status
+统一走 `computer_learn({"action":"start|stop|status"})`；辅助树读取统一走
+`computer_get_window_state` 的 `tree_markdown` 和 `nodes`。
 
 坐标链路推荐使用 `screenshot_id`。`computer_get_window_state` 同时返回
 `snapshot_id` 和 `screenshot_id`：`snapshot_id` 绑定观察/节点快照，
@@ -242,7 +259,7 @@ python -m py_compile computer_server/learning/*.py
 
 ### Highlights
 
-- **43 MCP tools** — screenshots, mouse, keyboard, window management
+- **24 MCP tools** — screenshots, mouse, keyboard, window management; duplicate wrappers merged into higher-level entries
 - **Recording / Replay** — record MCP tool invocations to disk with full replay (coordinate recalculation + stale-window resolution)
 - **Learning mode** — record human actions (pynput global hooks + UIA element enrichment + PaddleOCR ONNX vision)
 - **SOM vision detection** — OmniParser YOLO + PaddleOCR ONNX (Chinese + English) + TinyCLIP icon labels, automatic fallback when UIA is unavailable
@@ -254,7 +271,7 @@ python -m py_compile computer_server/learning/*.py
 ```
 cua-pywin/
 ├─ computer_server/          ← Main package
-│  ├─ mcp_server.py          ← 43 MCP tools (thin wrappers; logic in services/)
+│  ├─ mcp_server.py          ← 24 MCP tools (thin wrappers; logic in services/)
 │  ├─ main.py                ← Local HTTP server (/status + /mcp + cua-win JSON RPC)
 │  ├─ tool_cli.py            ← cua-win CLI / HTTP server launcher
 │  ├─ server_context.py      ← Per-instance state (recording / learning /
@@ -341,7 +358,11 @@ cua-win doctor
 cua-win status
 cua-win list-tools
 cua-win computer_get_screen_size
-cua-win call computer_get_window_state '{"window":{"id":5678,"pid":1234}}'
+cua-win call computer_get_window_state '{\"window\":{\"id\":5678,\"pid\":1234}}'
+cua-win computer_press_key '{\"key\":\"Control_L+s\"}'
+cua-win computer_mouse '{\"action\":\"move\",\"x\":100,\"y\":100}'
+cua-win computer_recording '{\"action\":\"status\"}'
+cua-win computer_learn '{\"action\":\"status\"}'
 cua-win stop
 
 # Binding to a non-localhost host requires explicit consent — without it
@@ -350,17 +371,19 @@ cua-win serve --host 0.0.0.0 --port 8000 \
     --i-know-this-exposes-my-computer
 ```
 
-The normal HTTP server exposes `/status` and `/mcp`; the legacy `/ws` and
-`/commands` WebSocket APIs have been removed. `cua-win` daemon mode reuses the
-same app and additionally enables token-protected `/tools`, `/call`, and
-`/shutdown` JSON RPC routes. CORS only allows `localhost / 127.0.0.1 / [::1]`
-origins.
+The normal HTTP server exposes `/status` and `/mcp`. `cua-win` daemon mode
+reuses the same app and additionally enables token-protected `/tools`, `/call`,
+and `/shutdown` JSON RPC routes. CORS only allows
+`localhost / 127.0.0.1 / [::1]` origins.
 
 `cua-win` is the human/script-facing CLI. It starts the same local HTTP app by
 default and calls MCP tools through token-protected JSON RPC routes, so heavy
 high-frequency tools such as `computer_get_window_state` pay warm-up once per
 daemon process. `--no-daemon` forces a one-shot in-process call and is intended
 for debugging rather than frequent use.
+`cua-win <tool> '<json>'` is rewritten to `cua-win call <tool> '<json>'`.
+PowerShell strips inner JSON quotes when launching native commands, so CLI
+examples use `'{\"key\":\"value\"}'`.
 
 `cua-win doctor` performs read-only local diagnostics for platform, Python
 version, dependency availability, bundled model files, state directory, and
@@ -388,17 +411,17 @@ Use `cua-win serve --no-cli-rpc` when you only want `/status + /mcp`.
 
 ### MCP Tools
 
-**Screen & Mouse** — `computer_screenshot` `computer_click` `computer_move` `computer_drag` `computer_scroll` `computer_mouse_down` `computer_mouse_up` `computer_release_all_inputs` `computer_get_screen_size` `computer_get_cursor_position` `computer_get_window_state` `computer_zoom`
+**Screen & Mouse** — `computer_screenshot` `computer_click` `computer_mouse` `computer_drag` `computer_scroll` `computer_release_all_inputs` `computer_get_screen_size` `computer_get_cursor_position` `computer_get_window_state` `computer_zoom`
 
-**Keyboard** — `computer_type` `computer_press_key` `computer_hotkey` `computer_key_down` `computer_key_up` `computer_set_value`
+**Keyboard** — `computer_type` `computer_press_key` `computer_set_value`
 
-**Window Management** — `computer_open_url` `computer_launch_app` `computer_get_active_window` `computer_get_window` `computer_get_window_name` `computer_get_window_size` `computer_get_window_position` `computer_set_window_size` `computer_set_window_position` `computer_activate_window` `computer_minimize_window` `computer_maximize_window` `computer_close_window` `computer_get_app_windows` `computer_list_windows` `computer_list_apps`
+**Windows & Apps** — `computer_open_url` `computer_launch_app` `computer_get_window` `computer_manage_window` `computer_list_windows` `computer_list_apps`
 
-**Desktop & Accessibility** — `computer_get_desktop_environment` `computer_get_accessibility_tree` `computer_page`
+**Desktop & Browser** — `computer_get_desktop_environment` `computer_page`
 
-**Recording & Replay** — `computer_set_recording` `computer_get_recording_state` `computer_replay_trajectory`
+**Recording & Replay** — `computer_recording` `computer_replay_trajectory`
 
-**Learning** — `computer_learn_start` `computer_learn_stop` `computer_learn_status`
+**Learning** — `computer_learn`
 
 ### Coordinate Systems
 
@@ -421,14 +444,27 @@ action tools:
 {"window":{"id":5678,"pid":1234}}
 ```
 
-`window.id` and `window.window_id` both refer to the HWND. Legacy top-level
+`window.id` and `window.window_id` both refer to the HWND. Top-level
 `pid/window_id` remains supported, but when both forms are provided they must
-match or the tool returns a validation error. `computer_list_windows`,
-`computer_get_app_windows`, `computer_list_apps`, `computer_get_active_window`,
-`computer_get_window`, and `computer_get_window_state` return reusable `window`
-objects. Use `computer_get_window({"id":...,"app":...})` to rehydrate a current
-window after stale handles, lost bindings, or context resets. `window_ref` is
-internal recording/replay identity metadata and should not be hand-authored.
+match or the tool returns a validation error.
+`computer_list_windows`, `computer_list_apps`, `computer_get_window`, and
+`computer_get_window_state` return reusable `window` objects. Use
+`computer_get_window({"id":...,"app":...})` to rehydrate a current window after
+stale handles, lost bindings, or context resets. Use
+`computer_get_window({"active":true})` for the current foreground window.
+`window_ref` is internal recording/replay identity metadata and should not be
+hand-authored.
+
+Merged entry points: hotkeys use `computer_press_key({"keys":[...]})` or
+`computer_press_key({"key":"Control_L+s"})`; activate/minimize/maximize/close,
+move, and resize use `computer_manage_window`; app/title/query window search
+uses `computer_list_windows`; mouse move/down/up primitives use
+`computer_mouse({"action":"move|down|up"})`; keyboard down/up primitives use
+`computer_press_key({"key":"Shift","action":"down|up"})`; recording
+start/stop/status uses `computer_recording({"action":"start|stop|status"})`;
+learning start/stop/status uses `computer_learn({"action":"start|stop|status"})`;
+accessibility-tree reads use `computer_get_window_state` `tree_markdown` and
+`nodes`.
 
 Prefer `screenshot_id` for coordinate chains. `computer_get_window_state`
 returns both `snapshot_id` and `screenshot_id`: `snapshot_id` binds the

@@ -693,7 +693,7 @@ class GenericWindowHandler(BaseWindowHandler):
                     if a in title:
                         matched.append(w)
                         continue
-                    # Match by process name — skip legacy/background windows
+                    # Match by process name; skip background helper windows.
                     try:
                         p = psutil.Process(w.getPID())
                         pname = (p.name() or "").lower()

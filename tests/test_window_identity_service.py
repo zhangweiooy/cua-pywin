@@ -25,7 +25,7 @@ def test_normalize_window_rejects_id_mismatch():
         normalize_window_input({"id": 123, "window_id": 124})
 
 
-def test_resolve_window_input_accepts_legacy_values():
+def test_resolve_window_input_accepts_top_level_values():
     resolved = resolve_window_input(pid=456, window_id=123)
 
     assert resolved.pid == 456
@@ -61,7 +61,7 @@ def test_resolve_window_input_rejects_window_id_mismatch():
         resolve_window_input(window={"id": 123, "pid": 456}, pid=456, window_id=124)
 
 
-def test_build_window_keeps_legacy_ids():
+def test_build_window_keeps_public_ids():
     window = build_window(123, pid=456, title="Target", app="Target.exe")
 
     assert window is not None
@@ -78,7 +78,7 @@ def test_build_window_keeps_legacy_ids():
     }
 
 
-def test_add_window_field_preserves_legacy_record():
+def test_add_window_field_preserves_existing_record():
     record = {"id": 123, "window_id": 123, "pid": 456, "title": "Target"}
 
     assert add_window_field(record) is record
@@ -118,7 +118,7 @@ def test_add_window_field_mirrors_canonical_window_fields(monkeypatch):
     assert record["window"]["class_name"] == record["class_name"]
 
 
-def test_add_window_field_does_not_overwrite_legacy_values(monkeypatch):
+def test_add_window_field_does_not_overwrite_existing_values(monkeypatch):
     import computer_server.services.window_identity_service as identity
 
     monkeypatch.setattr(identity, "_get_process_name", lambda _pid: "Actual.exe")

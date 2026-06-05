@@ -4,6 +4,20 @@ import json
 
 from computer_server.recording.session import RECORDABLE_TOOLS, RecordedTurnContext, RecordingSession
 
+EXPECTED_RECORDABLE_TOOLS = {
+    "computer_click",
+    "computer_mouse",
+    "computer_drag",
+    "computer_type",
+    "computer_press_key",
+    "computer_set_value",
+    "computer_page",
+    "computer_open_url",
+    "computer_scroll",
+    "computer_launch_app",
+    "computer_manage_window",
+}
+
 
 def test_write_turn_persists_element_ref(tmp_path):
     session = RecordingSession(str(tmp_path))
@@ -34,15 +48,8 @@ def test_write_turn_persists_element_ref(tmp_path):
     }
 
 
-def test_low_level_pointer_primitives_are_recordable():
-    assert "computer_move" in RECORDABLE_TOOLS
-    assert "computer_mouse_down" in RECORDABLE_TOOLS
-    assert "computer_mouse_up" in RECORDABLE_TOOLS
-
-
-def test_open_url_replaces_legacy_open_recording_name():
-    assert "computer_open_url" in RECORDABLE_TOOLS
-    assert "computer_open" not in RECORDABLE_TOOLS
+def test_recordable_tools_are_current_action_tools():
+    assert RECORDABLE_TOOLS == EXPECTED_RECORDABLE_TOOLS
 
 
 def test_recorded_turn_context_groups_hook_payload():

@@ -4,7 +4,7 @@ This file provides guidance to coding agents working in this repository.
 
 # cua-pywin
 
-Windows UI automation MCP server — 43 tools for computer control.
+Windows UI automation MCP server — 24 tools for computer control.
 
 **Priority: Windows + Chinese UI is the highest-guarantee target.**
 
@@ -12,7 +12,7 @@ Windows UI automation MCP server — 43 tools for computer control.
 
 ```
 computer_server/
-  mcp_server.py             — 43 MCP tools via FastMCP; tool wrappers,
+  mcp_server.py             — 24 MCP tools via FastMCP; tool wrappers,
                               recording/replay/learning entrypoints
   main.py                   — Shared HTTP app: /status, /mcp, and
                               token-protected cua-win JSON RPC routes
@@ -110,7 +110,11 @@ cua-win start
 cua-win status
 cua-win list-tools
 cua-win computer_get_screen_size
-cua-win call computer_get_window_state '{"window":{"id":5678,"pid":1234}}'
+cua-win call computer_get_window_state '{\"window\":{\"id\":5678,\"pid\":1234}}'
+cua-win computer_press_key '{\"key\":\"Control_L+s\"}'
+cua-win computer_mouse '{\"action\":\"move\",\"x\":100,\"y\":100}'
+cua-win computer_recording '{\"action\":\"status\"}'
+cua-win computer_learn '{\"action\":\"status\"}'
 cua-win stop
 
 # Single-tool tests
@@ -133,7 +137,7 @@ python -m compileall -q computer_server som
 
 `computer_click`, `computer_drag`, and `computer_scroll` accept optional
 `coordinate_space`: `screen`, `window_resized`, `window_full_res`, `zoom`, or
-`element`. If omitted, legacy inference is preserved: `element_index` means
+`element`. If omitted, default inference is preserved: `element_index` means
 `element`, zoom args mean `zoom`, `pid + window_id` means `window_resized`,
 otherwise `screen`.
 
@@ -156,14 +160,29 @@ Public tools should prefer `window` over top-level `pid/window_id`:
 {"window":{"id":5678,"pid":1234}}
 ```
 
-`window.id` and `window.window_id` are equivalent HWND fields. Legacy
+`window.id` and `window.window_id` are equivalent HWND fields. Top-level
 `pid/window_id` remains supported for compatibility, but if both forms are
 provided they must identify the same target or the tool returns a validation
-error. `computer_list_windows`, `computer_get_app_windows`,
-`computer_list_apps`, `computer_get_active_window`, `computer_get_window`, and
-`computer_get_window_state` return canonical `window` objects for follow-up
+error. `computer_list_windows`, `computer_list_apps`, `computer_get_window`,
+and `computer_get_window_state` return canonical `window` objects for follow-up
 calls. Use `computer_get_window({"id":..., "app":...})` to rehydrate a stale or
-lost window binding.
+lost window binding, and `computer_get_window({"active":true})` for the current
+foreground window.
+
+Merged public entry points:
+
+- Hotkeys use `computer_press_key({"keys":[...]})` or
+  `computer_press_key({"key":"Control_L+s"})`.
+- Keyboard down/up primitives use
+  `computer_press_key({"key":"Shift","action":"down|up"})`.
+- Mouse move/down/up primitives use `computer_mouse({"action":"move|down|up"})`.
+- Window activate/minimize/maximize/close/move/resize use
+  `computer_manage_window`.
+- Recording start/stop/status uses `computer_recording`.
+- Learning start/stop/status uses `computer_learn`.
+- App/title/query window search uses `computer_list_windows`.
+- Accessibility-tree reads use `computer_get_window_state` `tree_markdown` and
+  `nodes`.
 
 `window_ref` is separate replay metadata. Agents should not hand-author it;
 recording builds it from the resolved `window` plus origin, process, title,
@@ -185,8 +204,9 @@ class, and size metadata.
 - `window_state_service.collect_uia_nodes` calls `handlers.windows_uia.walk_uia_tree`.
 - `UIAWalkGate` prevents stacked UIA walks against a hung provider; timed-out
   providers are marked unhealthy briefly and can fall through to SOM.
-- `computer_get_accessibility_tree` uses the same protected UIA walk path
-  instead of calling `walk_uia_tree` synchronously in the tool handler.
+- Accessibility tree output is exposed through `computer_get_window_state`,
+  which uses the protected UIA walk path instead of calling `walk_uia_tree`
+  synchronously in a standalone tool handler.
 - UIA action calls (`InvokePattern.Invoke` and `ValuePattern.SetValue`) run
   behind `UIAActionGate`; timeout or in-flight conflicts fall back to pixel/HID
   paths rather than blocking the action tool indefinitely.
@@ -197,7 +217,7 @@ class, and size metadata.
 
 `get_window_state` reports UIA, MSAA, and vision quality separately. A bounded
 MSAA observation pass runs behind `MSAAWalkGate` alongside UIA because it is
-cheap and can preserve legacy roles that UIA proxies collapse. Timed-out MSAA
+cheap and can preserve classic Win32 roles that UIA proxies collapse. Timed-out MSAA
 providers are marked unhealthy by window so repeat requests do not stack leaked
 COM calls. MSAA only promotes the combined semantic tree quality when it
 contributes usable indexed nodes. SOM vision is used when the combined semantic
@@ -236,7 +256,7 @@ is internal replay metadata.
 - When `cua-win` daemon RPC is enabled, `/tools`, `/tools/{name}`, `/call`, and
   `/shutdown` are enabled behind the per-daemon `X-Cua-Token` header.
 - `cua-win serve --no-cli-rpc` disables the JSON RPC routes and metadata.
-- Legacy `/ws` and `/commands` are removed.
+- The HTTP surface is `/status`, `/mcp`, and token-protected cua-win JSON RPC routes.
 - CORS allows only localhost origins.
 - High-privilege control flows through MCP tools.
 - `python -m computer_server` is not a supported compatibility entrypoint;
@@ -269,7 +289,8 @@ is internal replay metadata.
 - Disabled UIA elements return an explicit error; callers should raise/focus the
   window and re-snapshot.
 - `computer_release_all_inputs` releases tracked held keys and mouse buttons
-  after interrupted primitive input or replay failures.
+  after interrupted `computer_press_key(action="down")`,
+  `computer_mouse(action="down")`, or replay failures.
 - Clipboard typing uses a process-level lock and restores clipboard on type
   failures when possible.
 - `computer_page` requires an explicit CDP port or browser
@@ -426,17 +447,31 @@ uv run cua-win stop
 
 ## Current Priorities
 
+### Immediate Closeout
+
+- Commit the current 24-tool surface consolidation as one coherent change after
+  full tests and CLI smoke checks remain green.
+- Stop one-shot read-only CLI commands such as `list-tools`, `describe`, and
+  status calls from starting unnecessary SOM/TinyCLIP/RapidOCR warm-up work.
+  Their output should also remain free of model initialization/shutdown noise.
+- Run real Windows desktop smoke tests for the consolidated entry points:
+  `computer_mouse`, `computer_press_key`, and `computer_manage_window`.
+- Add an end-to-end recording/replay test that records the consolidated tool
+  names and confirms replay resolves and invokes those same current tools.
+
 ### P1: High-Value API Stabilization
 
 - Make `computer_get_window_state` more explicit and cheaper through
   request flags such as screenshot, text/tree, nodes, and vision inclusion.
   Preserve current compatibility defaults until callers migrate.
-- Extend `window` input support to keyboard and window-management tools:
-  `computer_type`, `computer_press_key`, `computer_hotkey`,
-  `computer_activate_window`, `computer_minimize_window`,
-  `computer_maximize_window`, and `computer_close_window`.
-- Add a `CUA_TOOL_PROFILE=core|full` surface profile. Default should expose a
-  smaller high-level core set; full keeps low-level primitives and debug tools.
+- Extend `window` input support to remaining keyboard tools where it improves
+  focus safety, especially `computer_type` and `computer_press_key`.
+- Defer `CUA_TOOL_PROFILE=core|full` until the merged 24-tool surface has had
+  enough real agent usage to show which low-level primitives should stay hidden
+  by default.
+- Keep the public surface at 24 tools for now. Do not merge distinct high-level
+  operations such as click/drag/scroll, screenshot/window-state/zoom, or
+  window discovery/observation/management without concrete agent-usage evidence.
 
 ### P2: Useful, But Not Blocking
 
@@ -484,7 +519,7 @@ uv run cua-win stop
   content, minimized windows, GPU apps, WebView2/Electron, and multi-monitor DPI
   behavior.
 - Keep UIA and MSAA as parallel observation passes. MSAA is cheap enough to run
-  alongside UIA, and it preserves legacy roles that UIA providers often lose.
+  alongside UIA, and it preserves classic Win32 roles that UIA providers often lose.
   Continue attaching MSAA-specific metadata to nodes instead of collapsing it
   into generic UIA fields.
 - Explore MSAA-backed actions only where the action contract is verifiable.

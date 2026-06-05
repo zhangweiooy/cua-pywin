@@ -102,7 +102,7 @@ async def status():
         "features": features,
         "mcp_endpoint": "/mcp",
         "http_api": "mcp_only",
-        "note": "Legacy /ws and /commands APIs have been removed; use MCP at /mcp.",
+        "note": "Use MCP at /mcp.",
     }
     if os.environ.get(DAEMON_TOKEN_ENV):
         result.update(

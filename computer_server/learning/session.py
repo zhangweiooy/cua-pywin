@@ -18,8 +18,8 @@ class LearningError(Enum):
     """Errors specific to learning mode operations."""
 
     INPUT_MONITORING_NOT_GRANTED = "Input Monitoring permission not granted"
-    ALREADY_RECORDING = "Learning is already in progress. Call learn_stop first."
-    NOT_RECORDING = "No learning session is active. Call learn_start first."
+    ALREADY_RECORDING = "Learning is already in progress. Call computer_learn(action='stop') first."
+    NOT_RECORDING = "No learning session is active. Call computer_learn(action='start') first."
     HOOK_CREATION_FAILED = "Failed to create Windows hook. Permissions may be stale."
     NO_ACTIONS_RECORDED = "No actions were recorded during the learning session."
     UIA_UNAVAILABLE = "UI Automation COM service is not available."
@@ -30,10 +30,10 @@ class LearningError(Enum):
                 "On Windows, ensure the application has standard user privileges. "
                 "Low-level hooks (WH_KEYBOARD_LL) do not require admin.",
             LearningError.ALREADY_RECORDING:
-                "Call computer_learn_stop to end the current session, "
-                "or computer_learn_status to check.",
+                "Call computer_learn(action='stop') to end the current session, "
+                "or computer_learn(action='status') to check.",
             LearningError.NOT_RECORDING:
-                "Call computer_learn_start to begin recording.",
+                "Call computer_learn(action='start') to begin recording.",
             LearningError.HOOK_CREATION_FAILED:
                 "Try restarting the application. If the issue persists, check that "
                 "no other application is blocking global hooks.",

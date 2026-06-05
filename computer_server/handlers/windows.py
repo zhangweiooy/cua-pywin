@@ -49,7 +49,7 @@ from pynput.mouse import Controller as MouseController
 logger = logging.getLogger(__name__)
 _CLIPBOARD_LOCK = threading.Lock()
 
-# pyautogui removed in favor of pynput
+# Input injection uses pynput.
 
 # Try to import Windows-specific modules
 try:

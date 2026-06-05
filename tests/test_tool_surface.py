@@ -15,6 +15,7 @@ class _FakeAutomation:
         self.mouse = SimpleNamespace(position=(0, 0), scroll=lambda _x, _y: None)
         self.moves = []
         self.mouse_events = []
+        self.key_events = []
 
     async def move_cursor(self, x: int, y: int):
         self.moves.append((x, y))
@@ -46,13 +47,42 @@ class _FakeAutomation:
     async def hotkey(self, keys):
         return {"success": True, "keys": keys}
 
+    async def press_key(self, key):
+        return {"success": True, "key": key}
+
+    async def key_down(self, key):
+        self.key_events.append(("down", key))
+        return {"success": True, "key": key, "action": "down"}
+
+    async def key_up(self, key):
+        self.key_events.append(("up", key))
+        return {"success": True, "key": key, "action": "up"}
+
     async def type_text(self, text: str):
         return {"success": True, "text": text}
 
 
 class _FakeWindow:
+    async def get_current_window_id(self):
+        return {"success": True, "window_id": 456, "name": "Target Window"}
+
     async def activate_window(self, window_id: int):
         return {"success": True, "window_id": window_id}
+
+    async def minimize_window(self, window_id: int):
+        return {"success": True, "window_id": window_id}
+
+    async def maximize_window(self, window_id: int):
+        return {"success": True, "window_id": window_id}
+
+    async def close_window(self, window_id: int):
+        return {"success": True, "window_id": window_id}
+
+    async def set_window_size(self, window_id: int, width: int, height: int):
+        return {"success": True, "window_id": window_id, "width": width, "height": height}
+
+    async def set_window_position(self, window_id: int, x: int, y: int):
+        return {"success": True, "window_id": window_id, "x": x, "y": y}
 
     async def get_application_windows(self, app: str):
         assert app == "Target"
@@ -64,21 +94,31 @@ class _FakeWindow:
         }
 
 
-REMOVED_PUBLIC_TOOLS = {
-    "computer_file_read",
-    "computer_file_write",
-    "computer_file_exists",
-    "computer_directory_exists",
-    "computer_list_directory",
-    "computer_create_directory",
-    "computer_delete_file",
-    "computer_delete_directory",
-    "computer_get_file_size",
-    "computer_run_command",
-    "computer_set_wallpaper",
-    "computer_clipboard_get",
-    "computer_clipboard_set",
-    "computer_open",
+EXPECTED_PUBLIC_TOOLS = {
+    "computer_screenshot",
+    "computer_get_screen_size",
+    "computer_get_cursor_position",
+    "computer_click",
+    "computer_mouse",
+    "computer_drag",
+    "computer_scroll",
+    "computer_type",
+    "computer_press_key",
+    "computer_release_all_inputs",
+    "computer_set_value",
+    "computer_open_url",
+    "computer_launch_app",
+    "computer_get_window",
+    "computer_manage_window",
+    "computer_list_apps",
+    "computer_list_windows",
+    "computer_get_desktop_environment",
+    "computer_get_window_state",
+    "computer_zoom",
+    "computer_page",
+    "computer_recording",
+    "computer_replay_trajectory",
+    "computer_learn",
 }
 
 
@@ -88,10 +128,7 @@ async def test_agent_native_tools_are_not_exposed():
     tools = await mcp.list_tools()
     names = {tool.name for tool in tools}
 
-    assert len(names) == 43
-    assert names.isdisjoint(REMOVED_PUBLIC_TOOLS)
-    assert "computer_get_window" in names
-    assert "computer_open_url" in names
+    assert names == EXPECTED_PUBLIC_TOOLS
 
 
 @pytest.mark.asyncio
@@ -204,7 +241,7 @@ async def test_click_expand_requires_element_index():
 
 
 @pytest.mark.asyncio
-async def test_get_app_windows_returns_canonical_window(monkeypatch):
+async def test_get_window_active_returns_canonical_window(monkeypatch):
     import computer_server.mcp_server as mcp_module
 
     monkeypatch.setattr(
@@ -214,16 +251,157 @@ async def test_get_app_windows_returns_canonical_window(monkeypatch):
     )
 
     result = await create_mcp_server().call_tool(
-        "computer_get_app_windows",
-        {"app": "Target"},
+        "computer_get_window",
+        {"active": True},
     )
 
-    window_record = result.structured_content["windows"][0]
+    window_record = result.structured_content
     assert window_record["id"] == 456
     assert window_record["window_id"] == 456
     assert window_record["window"]["id"] == 456
     assert window_record["window"]["window_id"] == 456
     assert window_record["window"]["title"] == "Target Window"
+
+
+@pytest.mark.asyncio
+async def test_manage_window_activates_and_resizes(monkeypatch):
+    import computer_server.mcp_server as mcp_module
+
+    monkeypatch.setattr(
+        mcp_module,
+        "_handlers",
+        SimpleNamespace(window=_FakeWindow()),
+    )
+
+    mcp = create_mcp_server()
+    activate_result = await mcp.call_tool(
+        "computer_manage_window",
+        {"window": {"id": 456, "pid": 123}, "action": "activate"},
+    )
+    resize_result = await mcp.call_tool(
+        "computer_manage_window",
+        {"window_id": 456, "action": "resize", "width": 800, "height": 600},
+    )
+
+    assert activate_result.structured_content["success"] is True
+    assert activate_result.structured_content["action"] == "activate"
+    assert resize_result.structured_content["success"] is True
+    assert resize_result.structured_content["window_id"] == 456
+    assert resize_result.structured_content["width"] == 800
+    assert resize_result.structured_content["height"] == 600
+    assert resize_result.structured_content["action"] == "resize"
+
+
+@pytest.mark.asyncio
+async def test_mouse_accepts_move_and_button_actions(monkeypatch):
+    import computer_server.mcp_server as mcp_module
+
+    fake = _FakeAutomation()
+
+    async def noop_animate(_x: int, _y: int) -> None:
+        return None
+
+    monkeypatch.setattr(
+        mcp_module,
+        "_handlers",
+        SimpleNamespace(automation=fake),
+    )
+    monkeypatch.setattr(mcp_module, "_animate_cursor_to", noop_animate)
+
+    mcp = create_mcp_server()
+    move_result = await mcp.call_tool(
+        "computer_mouse",
+        {"action": "move", "x": 10, "y": 20},
+    )
+    down_result = await mcp.call_tool(
+        "computer_mouse",
+        {"action": "down", "x": 10, "y": 20, "button": "right"},
+    )
+
+    assert move_result.structured_content == {"success": True, "x": 10, "y": 20}
+    assert down_result.structured_content == {
+        "success": True,
+        "x": 10,
+        "y": 20,
+        "button": "right",
+    }
+    assert fake.moves == [(10, 20)]
+    assert fake.mouse_events == [("down", 10, 20, "right")]
+
+
+@pytest.mark.asyncio
+async def test_press_key_accepts_hotkey_string(monkeypatch):
+    import computer_server.mcp_server as mcp_module
+
+    monkeypatch.setattr(
+        mcp_module,
+        "_handlers",
+        SimpleNamespace(automation=_FakeAutomation()),
+    )
+
+    result = await create_mcp_server().call_tool(
+        "computer_press_key",
+        {"key": "Control_L+s"},
+    )
+
+    assert result.structured_content == {"success": True, "keys": ["Control_L", "s"]}
+
+
+@pytest.mark.asyncio
+async def test_press_key_accepts_down_and_up_actions(monkeypatch):
+    import computer_server.mcp_server as mcp_module
+
+    fake = _FakeAutomation()
+    monkeypatch.setattr(
+        mcp_module,
+        "_handlers",
+        SimpleNamespace(automation=fake),
+    )
+
+    mcp = create_mcp_server()
+    down_result = await mcp.call_tool(
+        "computer_press_key",
+        {"key": "Shift", "action": "down"},
+    )
+    up_result = await mcp.call_tool(
+        "computer_press_key",
+        {"key": "Shift", "action": "up"},
+    )
+
+    assert down_result.structured_content == {
+        "success": True,
+        "key": "Shift",
+        "action": "down",
+    }
+    assert up_result.structured_content == {
+        "success": True,
+        "key": "Shift",
+        "action": "up",
+    }
+    assert fake.key_events == [("down", "Shift"), ("up", "Shift")]
+
+
+@pytest.mark.asyncio
+async def test_recording_status_uses_merged_tool():
+    result = await create_mcp_server().call_tool(
+        "computer_recording",
+        {"action": "status"},
+    )
+
+    assert result.structured_content == {"active": False, "turn_count": 0}
+
+
+@pytest.mark.asyncio
+async def test_learn_status_uses_merged_tool():
+    result = await create_mcp_server().call_tool(
+        "computer_learn",
+        {"action": "status"},
+    )
+
+    assert result.structured_content == {
+        "success": True,
+        "data": {"recording": False, "action_count": 0, "duration_seconds": 0},
+    }
 
 
 @pytest.mark.asyncio
@@ -843,44 +1021,6 @@ async def test_zoom_uses_screenshot_id_capture_metadata(monkeypatch):
 
     assert result.structured_content["success"] is True
     assert result.structured_content["parent_screenshot_id"] == screenshot_id
-
-
-@pytest.mark.asyncio
-async def test_accessibility_tree_uses_protected_service(monkeypatch):
-    import computer_server.services.window_state_service as window_state_service
-
-    async def fake_get_accessibility_tree_snapshot(window_id, *, gate, timeout_s=30.0):
-        assert window_id == 123
-        assert gate is not None
-        return {
-            "success": True,
-            "tree_markdown": "ok",
-            "tree_quality": "poor",
-            "node_count": 1,
-        }
-
-    monkeypatch.setattr(
-        window_state_service,
-        "get_accessibility_tree_snapshot",
-        fake_get_accessibility_tree_snapshot,
-    )
-
-    result = await create_mcp_server().call_tool(
-        "computer_get_accessibility_tree",
-        {"window_id": 123},
-    )
-
-    assert {
-        key: result.structured_content[key]
-        for key in ("success", "tree_markdown", "tree_quality", "node_count")
-    } == {
-        "success": True,
-        "tree_markdown": "ok",
-        "tree_quality": "poor",
-        "node_count": 1,
-    }
-    assert result.structured_content["window"]["id"] == 123
-    assert result.structured_content["window"]["window_id"] == 123
 
 
 @pytest.mark.asyncio

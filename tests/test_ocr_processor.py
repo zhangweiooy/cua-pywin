@@ -55,7 +55,7 @@ def test_rapidocr_object_result_is_normalized(monkeypatch):
     ]
 
 
-def test_rapidocr_legacy_list_result_is_supported(monkeypatch):
+def test_rapidocr_list_result_is_supported(monkeypatch):
     _reset_ocr_processor()
 
     class FakeRapidOCR:

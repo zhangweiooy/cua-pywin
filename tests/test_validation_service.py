@@ -117,7 +117,7 @@ def test_validate_javascript_requires_explicit_allow_flag():
     assert validate_javascript("document.title", allow_javascript=True) == "document.title"
 
 
-def test_resolve_coordinate_space_preserves_legacy_inference():
+def test_resolve_coordinate_space_preserves_default_inference():
     assert resolve_coordinate_space(None, element_index=1) == "element"
     assert resolve_coordinate_space(None, element_index=None, from_zoom=True) == "zoom"
     assert (

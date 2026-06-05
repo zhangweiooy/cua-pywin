@@ -355,7 +355,7 @@ def should_collect_msaa(
     """Return whether MSAA fallback should run for a window-state request.
 
     MSAA is cheap enough to collect opportunistically beside UIA, and it can
-    preserve legacy roles that UIA proxies collapse. The returned tree quality
+    preserve classic Win32 roles that UIA proxies collapse. The returned tree quality
     is still only promoted when MSAA contributes usable indexed nodes.
     """
     return os.getenv("CUA_DISABLE_MSAA_FALLBACK") != "1"

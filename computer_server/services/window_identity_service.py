@@ -191,32 +191,32 @@ def resolve_window_input(
     pid: Optional[int] = None,
     window_id: Optional[int] = None,
 ) -> ResolvedWindow:
-    """Resolve legacy ``pid/window_id`` and new ``window`` inputs.
+    """Resolve top-level ``pid/window_id`` and ``window`` inputs.
 
-    The new ``window`` object is additive.  Legacy top-level values remain valid,
+    The ``window`` object is additive.  Top-level values remain valid,
     but when both forms are present they must identify the same target.
     """
-    legacy_pid = _coerce_optional_int("pid", pid)
-    legacy_window_id = _coerce_optional_int("window_id", window_id)
+    top_level_pid = _coerce_optional_int("pid", pid)
+    top_level_window_id = _coerce_optional_int("window_id", window_id)
     window_pid, window_hwnd = normalize_window_input(window)
 
-    if legacy_pid is not None and window_pid is not None and legacy_pid != window_pid:
+    if top_level_pid is not None and window_pid is not None and top_level_pid != window_pid:
         raise ValidationError(
-            f"window.pid mismatch: window has pid={window_pid}, got pid={legacy_pid}"
+            f"window.pid mismatch: window has pid={window_pid}, got pid={top_level_pid}"
         )
     if (
-        legacy_window_id is not None
+        top_level_window_id is not None
         and window_hwnd is not None
-        and legacy_window_id != window_hwnd
+        and top_level_window_id != window_hwnd
     ):
         raise ValidationError(
             "window.window_id mismatch: "
-            f"window has window_id={window_hwnd}, got window_id={legacy_window_id}"
+            f"window has window_id={window_hwnd}, got window_id={top_level_window_id}"
         )
 
-    resolved_pid = legacy_pid if legacy_pid is not None else window_pid
+    resolved_pid = top_level_pid if top_level_pid is not None else window_pid
     resolved_window_id = (
-        legacy_window_id if legacy_window_id is not None else window_hwnd
+        top_level_window_id if top_level_window_id is not None else window_hwnd
     )
     if resolved_pid is None and resolved_window_id is not None:
         resolved_pid = _get_pid_for_window(resolved_window_id)
@@ -288,7 +288,7 @@ def build_window(
 
 
 def add_window_field(record: Dict[str, Any]) -> Dict[str, Any]:
-    """Attach a canonical ``window`` object to a legacy window-shaped record."""
+    """Attach a canonical ``window`` object to a window-shaped record."""
     window_id = record.get("window_id", record.get("id"))
     pid = record.get("pid")
     title = record.get("title", record.get("name"))

@@ -51,7 +51,7 @@ def test_resolve_replay_drag_adjusts_both_points(monkeypatch):
     }
 
 
-def test_resolve_replay_move_adjusts_coordinates_without_window_id(monkeypatch):
+def test_resolve_replay_mouse_move_adjusts_coordinates_without_window_id(monkeypatch):
     monkeypatch.setattr(
         replay_resolver,
         "resolve_live_window",
@@ -59,12 +59,12 @@ def test_resolve_replay_move_adjusts_coordinates_without_window_id(monkeypatch):
     )
 
     resolved = replay_resolver.resolve_replay_args(
-        "computer_move",
-        {"x": 120, "y": 130},
+        "computer_mouse",
+        {"action": "move", "x": 120, "y": 130},
         window_ref={"window_id": 100, "origin_x": 100, "origin_y": 100},
     )
 
-    assert resolved == {"x": 320, "y": 430}
+    assert resolved == {"action": "move", "x": 320, "y": 430}
 
 
 def test_resolve_replay_mouse_down_preserves_current_cursor_mode(monkeypatch):
@@ -75,15 +75,15 @@ def test_resolve_replay_mouse_down_preserves_current_cursor_mode(monkeypatch):
     )
 
     resolved = replay_resolver.resolve_replay_args(
-        "computer_mouse_down",
-        {"x": None, "y": None, "button": "left"},
+        "computer_mouse",
+        {"action": "down", "x": None, "y": None, "button": "left"},
         window_ref={"window_id": 100, "origin_x": 100, "origin_y": 100},
     )
 
-    assert resolved == {"x": None, "y": None, "button": "left"}
+    assert resolved == {"action": "down", "x": None, "y": None, "button": "left"}
 
 
-def test_resolve_replay_activate_window_rewrites_stale_hwnd(monkeypatch):
+def test_resolve_replay_manage_window_rewrites_stale_hwnd(monkeypatch):
     monkeypatch.setattr(
         replay_resolver,
         "resolve_live_window",
@@ -91,11 +91,11 @@ def test_resolve_replay_activate_window_rewrites_stale_hwnd(monkeypatch):
     )
 
     resolved = replay_resolver.resolve_replay_args(
-        "computer_activate_window",
-        {"window_id": "111", "window_title": "title", "process_name": "app.exe"},
+        "computer_manage_window",
+        {"action": "activate", "window_id": "111", "window_title": "title", "process_name": "app.exe"},
     )
 
-    assert resolved == {"window_id": "222"}
+    assert resolved == {"action": "activate", "window_id": "222"}
 
 
 def test_resolve_replay_click_relocates_cached_element(monkeypatch):

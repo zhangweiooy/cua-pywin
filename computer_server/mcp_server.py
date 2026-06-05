@@ -635,7 +635,7 @@ def create_mcp_server() -> FastMCP:
         pid: Optional[int],
         window_id: Optional[int],
     ) -> Tuple[Optional[int], Optional[int], Optional[Dict[str, Any]]]:
-        """Resolve the public window object plus legacy pid/window_id args."""
+        """Resolve the public window object plus top-level pid/window_id args."""
         from computer_server.services.validation_service import error_result
         from computer_server.services.window_identity_service import resolve_window_input
 
@@ -1597,7 +1597,7 @@ def create_mcp_server() -> FastMCP:
             return {
                 "success": False,
                 "error": f"force_frontmost click failed: {exc}",
-                "suggestion": "Try without force_frontmost=True, or use computer_hotkey to bring the window to front first",
+                "suggestion": "Try without force_frontmost=True, or use computer_press_key with a hotkey to bring the window to front first",
             }
 
     async def _perform_pixel_click(
@@ -1665,7 +1665,7 @@ def create_mcp_server() -> FastMCP:
         - coordinate_space='zoom': x/y are zoom-image coordinates.
         - coordinate_space='element': element_index addresses a cached node.
 
-        If coordinate_space is omitted, legacy inference is preserved:
+        If coordinate_space is omitted, default inference is preserved:
         element_index -> element, zoom args -> zoom, pid/window_id ->
         window_resized, otherwise screen.
 
@@ -1674,8 +1674,8 @@ def create_mcp_server() -> FastMCP:
             y: Y coordinate in pixels (ignored when element_index is set)
             button: Mouse button - 'left', 'right', or 'middle' (default: 'left')
             element_index: Index from get_window_state nodes to click via element cache
-            window_id: Legacy window ID (required with element_index)
-            pid: Legacy process ID (required with element_index)
+            window_id: Top-level window ID (required with element_index)
+            pid: Top-level process ID (required with element_index)
             window: Canonical window object from list/get_window_state output.
             snapshot_id: Snapshot id returned by computer_get_window_state.
             screenshot_id: Screenshot id returned by computer_get_window_state for bound coordinate conversion.
@@ -1902,37 +1902,88 @@ def create_mcp_server() -> FastMCP:
         return result
 
     @mcp.tool(annotations={"readOnlyHint": False, "destructiveHint": True, "idempotentHint": False, "openWorldHint": True})
-    async def computer_move(x: int, y: int) -> Any:
-        """
-        Move the mouse cursor to (x, y) screen coordinates.
+    async def computer_mouse(
+        action: str,
+        x: Optional[int] = None,
+        y: Optional[int] = None,
+        button: str = "left",
+    ) -> Any:
+        """Run a low-level mouse primitive: move, down, or up.
 
-        Use this for positioning the cursor before a click, drag, or scroll.
+        Higher-level callers should prefer computer_click, computer_drag, and
+        computer_scroll. Use this only for explicit primitive sequences.
 
         Args:
-            x: X coordinate in screen pixels
-            y: Y coordinate in screen pixels
+            action: move|down|up.
+            x/y: Screen coordinates. Required for move; optional for down/up.
+            button: Mouse button for down/up.
         """
         from computer_server.services.validation_service import (
             error_result,
-            validate_coordinate,
+            validate_choice,
+            validate_mouse_button,
+            validate_optional_coordinate,
         )
 
         try:
-            x = validate_coordinate("x", x)
-            y = validate_coordinate("y", y)
+            normalized_action = validate_choice("action", action, {"move", "down", "up"})
+            button = validate_mouse_button(button)
+            x = validate_optional_coordinate("x", x)
+            y = validate_optional_coordinate("y", y)
         except ValueError as e:
             return error_result(e)
 
-        actual_x, actual_y = _scale_to_actual(x, y)
-        await _animate_cursor_to(actual_x, actual_y)
+        if normalized_action == "move" and (x is None or y is None):
+            return {"success": False, "error": "x and y are required for action=move"}
+        if normalized_action in {"down", "up"} and ((x is None) != (y is None)):
+            return {"success": False, "error": "x and y must be provided together"}
+
         automation_handler = _get_handlers().automation
-        result = await automation_handler.move_cursor(actual_x, actual_y)
-        wr = _build_window_ref(None, None, actual_x, actual_y)
+        actual_x: Optional[int] = None
+        actual_y: Optional[int] = None
+        if x is not None and y is not None:
+            actual_x, actual_y = _scale_to_actual(x, y)
+            await _animate_cursor_to(actual_x, actual_y)
+
+        if normalized_action == "move":
+            result = await automation_handler.move_cursor(actual_x, actual_y)
+        elif normalized_action == "down":
+            already_held = button in context.held_mouse_buttons
+            suppression_active = False if already_held else _begin_learning_input_suppression()
+            try:
+                result = await automation_handler.mouse_down(actual_x, actual_y, button=button)
+            except Exception:
+                if suppression_active:
+                    _end_learning_input_suppression(suppression_active)
+                raise
+            if result.get("success") is not False:
+                context.held_mouse_buttons.add(button)
+            elif suppression_active:
+                _end_learning_input_suppression(suppression_active)
+        else:
+            _suppress_learning_input(1.0)
+            was_held = button in context.held_mouse_buttons
+            result = await automation_handler.mouse_up(actual_x, actual_y, button=button)
+            if result.get("success") is not False:
+                context.held_mouse_buttons.discard(button)
+                if was_held:
+                    _end_learning_input_suppression(True)
+
+        click_point = (
+            (actual_x, actual_y)
+            if actual_x is not None and actual_y is not None
+            else None
+        )
+        wr = (
+            _build_window_ref(None, None, actual_x, actual_y)
+            if actual_x is not None and actual_y is not None
+            else None
+        )
         await _recording_hook(_recorded_turn(
-            "computer_move",
-            {"x": x, "y": y},
+            "computer_mouse",
+            {"action": normalized_action, "x": x, "y": y, "button": button},
             result,
-            click_point=(actual_x, actual_y),
+            click_point=click_point,
             window_ref=wr,
         ))
         return result
@@ -1967,8 +2018,8 @@ def create_mcp_server() -> FastMCP:
             button: Mouse button to use (default: 'left')
             duration: Duration of the drag in seconds (default: 0.5)
             element_index: Index from get_window_state to use as drag source
-            window_id: Legacy window ID (required with element_index or from_zoom)
-            pid: Legacy process ID (required with element_index)
+            window_id: Top-level window ID (required with element_index or from_zoom)
+            pid: Top-level process ID (required with element_index)
             window: Canonical window object from list/get_window_state output.
             snapshot_id: Snapshot id returned by computer_get_window_state.
             screenshot_id: Screenshot id returned by computer_get_window_state for bound coordinate conversion.
@@ -2057,7 +2108,7 @@ def create_mcp_server() -> FastMCP:
         if start_x is None or start_y is None or end_x is None or end_y is None:
             return {"success": False, "error": "start_x, start_y, end_x, end_y are required", "suggestion": "Provide all four coordinates: start_x, start_y (from cursor position or element), and end_x, end_y (target position)"}
 
-        # Convert explicit/legacy non-screen spaces to absolute screen coords.
+        # Convert explicit/default non-screen spaces to absolute screen coords.
         if element_index is None and coordinate_space == "window_resized":
             capture_geometry = (
                 screenshot_ctx.capture_geometry if screenshot_ctx is not None else None
@@ -2211,8 +2262,8 @@ def create_mcp_server() -> FastMCP:
             smooth: When True, emit scroll as many small wheel ticks with 15ms spacing
                 for human-like smooth scrolling (default: True).
             element_index: Index from get_window_state to scroll on
-            window_id: Legacy window ID (required with element_index)
-            pid: Legacy process ID (required with element_index)
+            window_id: Top-level window ID (required with element_index)
+            pid: Top-level process ID (required with element_index)
             window: Canonical window object from list/get_window_state output.
             snapshot_id: Snapshot id returned by computer_get_window_state.
             screenshot_id: Screenshot id returned by computer_get_window_state for bound coordinate conversion.
@@ -2305,9 +2356,9 @@ def create_mcp_server() -> FastMCP:
             except ValueError as e:
                 return {"success": False, "error": str(e), "suggestion": f"Call get_window_state(pid={pid}, window_id={window_id}) to refresh the element cache"}
 
-        # Convert explicit/legacy non-screen spaces to absolute screen coords.
+        # Convert explicit/default non-screen spaces to absolute screen coords.
         # Scroll only uses (x, y) when both are provided; partial coords go
-        # through as-is to preserve legacy "scroll current cursor" behavior.
+        # through as-is to preserve "scroll current cursor" behavior.
         if (
             element_index is None
             and x is not None
@@ -2434,115 +2485,6 @@ def create_mcp_server() -> FastMCP:
 
         return result
 
-    @mcp.tool(annotations={"readOnlyHint": False, "destructiveHint": True, "idempotentHint": False, "openWorldHint": True})
-    async def computer_mouse_down(
-        x: Optional[int] = None, y: Optional[int] = None, button: str = "left"
-    ) -> Any:
-        """
-        Press and hold a mouse button.
-
-        Args:
-            x: Optional X coordinate (uses current position if not specified)
-            y: Optional Y coordinate (uses current position if not specified)
-            button: Mouse button - 'left', 'right', or 'middle' (default: 'left')
-        """
-        from computer_server.services.validation_service import (
-            error_result,
-            validate_mouse_button,
-            validate_optional_coordinate,
-        )
-
-        try:
-            button = validate_mouse_button(button)
-            x = validate_optional_coordinate("x", x)
-            y = validate_optional_coordinate("y", y)
-        except ValueError as e:
-            return error_result(e)
-
-        actual_x, actual_y = None, None
-        if x is not None and y is not None:
-            actual_x, actual_y = _scale_to_actual(x, y)
-            await _animate_cursor_to(actual_x, actual_y)
-        automation_handler = _get_handlers().automation
-        already_held = button in context.held_mouse_buttons
-        suppression_active = False if already_held else _begin_learning_input_suppression()
-        try:
-            result = await automation_handler.mouse_down(actual_x, actual_y, button=button)
-        except Exception:
-            if suppression_active:
-                _end_learning_input_suppression(suppression_active)
-            raise
-        if result.get("success") is not False:
-            context.held_mouse_buttons.add(button)
-        elif suppression_active:
-            _end_learning_input_suppression(suppression_active)
-        click_point = (actual_x, actual_y) if actual_x is not None and actual_y is not None else None
-        wr = (
-            _build_window_ref(None, None, actual_x, actual_y)
-            if actual_x is not None and actual_y is not None
-            else None
-        )
-        await _recording_hook(_recorded_turn(
-            "computer_mouse_down",
-            {"x": x, "y": y, "button": button},
-            result,
-            click_point=click_point,
-            window_ref=wr,
-        ))
-        return result
-
-    @mcp.tool(annotations={"readOnlyHint": False, "destructiveHint": True, "idempotentHint": False, "openWorldHint": True})
-    async def computer_mouse_up(
-        x: Optional[int] = None, y: Optional[int] = None, button: str = "left"
-    ) -> Any:
-        """
-        Release a mouse button.
-
-        Args:
-            x: Optional X coordinate (uses current position if not specified)
-            y: Optional Y coordinate (uses current position if not specified)
-            button: Mouse button - 'left', 'right', or 'middle' (default: 'left')
-        """
-        from computer_server.services.validation_service import (
-            error_result,
-            validate_mouse_button,
-            validate_optional_coordinate,
-        )
-
-        try:
-            button = validate_mouse_button(button)
-            x = validate_optional_coordinate("x", x)
-            y = validate_optional_coordinate("y", y)
-        except ValueError as e:
-            return error_result(e)
-
-        actual_x, actual_y = None, None
-        if x is not None and y is not None:
-            actual_x, actual_y = _scale_to_actual(x, y)
-            await _animate_cursor_to(actual_x, actual_y)
-        automation_handler = _get_handlers().automation
-        _suppress_learning_input(1.0)
-        was_held = button in context.held_mouse_buttons
-        result = await automation_handler.mouse_up(actual_x, actual_y, button=button)
-        if result.get("success") is not False:
-            context.held_mouse_buttons.discard(button)
-            if was_held:
-                _end_learning_input_suppression(True)
-        click_point = (actual_x, actual_y) if actual_x is not None and actual_y is not None else None
-        wr = (
-            _build_window_ref(None, None, actual_x, actual_y)
-            if actual_x is not None and actual_y is not None
-            else None
-        )
-        await _recording_hook(_recorded_turn(
-            "computer_mouse_up",
-            {"x": x, "y": y, "button": button},
-            result,
-            click_point=click_point,
-            window_ref=wr,
-        ))
-        return result
-
     # ============================================================
     # KEYBOARD ACTIONS
     # ============================================================
@@ -2587,75 +2529,89 @@ def create_mcp_server() -> FastMCP:
         return result
 
     @mcp.tool(annotations={"readOnlyHint": False, "destructiveHint": True, "idempotentHint": False, "openWorldHint": True})
-    async def computer_press_key(key: str) -> Any:
+    async def computer_press_key(
+        key: Optional[str] = None,
+        keys: Optional[List[str]] = None,
+        action: str = "press",
+    ) -> Any:
         """
-        Press a single key.
+        Press, hold, or release a key. Also supports key combinations.
 
         Args:
-            key: The key to press (e.g., 'enter', 'tab', 'escape', 'a', 'b', etc.)
+            key: Key or '+'-separated key combination, e.g. 'Return' or 'Control_L+s'.
+            keys: Optional list form for a key combination, e.g. ['ctrl', 's'].
+            action: press|down|up. Key combinations only support action=press.
         """
-        automation_handler = _get_handlers().automation
-        _suppress_learning_input(1.0)
-        result = await automation_handler.press_key(key)
-        await _recording_hook(_recorded_turn("computer_press_key", {"key": key}, result))
-        return result
+        from computer_server.services.validation_service import error_result, validate_choice
 
-    @mcp.tool(annotations={"readOnlyHint": False, "destructiveHint": True, "idempotentHint": False, "openWorldHint": True})
-    async def computer_hotkey(keys: List[str]) -> Any:
-        """
-        Press a key combination (hotkey).
-
-        Args:
-            keys: List of keys to press together (e.g., ['ctrl', 'c'] for copy,
-                  ['ctrl', 'c'] for copy, ['ctrl', 'v'] for paste, ['alt', 'tab'] for window switch)
-        """
-        automation_handler = _get_handlers().automation
-        _suppress_learning_input(1.0)
-        result = await automation_handler.hotkey(keys)
-        await _recording_hook(_recorded_turn("computer_hotkey", {"keys": keys}, result))
-        return result
-
-    @mcp.tool(annotations={"readOnlyHint": False, "destructiveHint": True, "idempotentHint": False, "openWorldHint": True})
-    async def computer_key_down(key: str) -> Any:
-        """
-        Press and hold a key.
-
-        Args:
-            key: The key to hold down
-        """
-        automation_handler = _get_handlers().automation
-        already_held = key in context.held_keys
-        suppression_active = False if already_held else _begin_learning_input_suppression()
         try:
-            result = await automation_handler.key_down(key)
-        except Exception:
-            if suppression_active:
-                _end_learning_input_suppression(suppression_active)
-            raise
-        if result.get("success") is not False:
-            context.held_keys.add(key)
-        elif suppression_active:
-            _end_learning_input_suppression(suppression_active)
-        await _recording_hook(_recorded_turn("computer_key_down", {"key": key}, result))
-        return result
+            normalized_action = validate_choice("action", action, {"press", "down", "up"})
+        except ValueError as e:
+            return error_result(e)
 
-    @mcp.tool(annotations={"readOnlyHint": False, "destructiveHint": True, "idempotentHint": False, "openWorldHint": True})
-    async def computer_key_up(key: str) -> Any:
-        """
-        Release a held key.
-
-        Args:
-            key: The key to release
-        """
         automation_handler = _get_handlers().automation
-        _suppress_learning_input(1.0)
-        was_held = key in context.held_keys
-        result = await automation_handler.key_up(key)
-        if result.get("success") is not False:
-            context.held_keys.discard(key)
-            if was_held:
-                _end_learning_input_suppression(True)
-        await _recording_hook(_recorded_turn("computer_key_up", {"key": key}, result))
+        if keys is not None:
+            if normalized_action != "press":
+                return {"success": False, "error": "keys can only be used with action=press"}
+            if not isinstance(keys, list) or not keys or not all(isinstance(k, str) and k.strip() for k in keys):
+                return {"success": False, "error": "keys must be a non-empty list of strings"}
+            _suppress_learning_input(1.0)
+            normalized_keys = [k.strip() for k in keys]
+            result = await automation_handler.hotkey(normalized_keys)
+            await _recording_hook(_recorded_turn(
+                "computer_press_key",
+                {"action": "press", "keys": normalized_keys},
+                result,
+            ))
+            return result
+        if key is None or not isinstance(key, str) or not key.strip():
+            return {"success": False, "error": "key or keys is required"}
+        normalized_key = key.strip()
+        if "+" in normalized_key:
+            if normalized_action != "press":
+                return {"success": False, "error": "'+' key combinations can only be used with action=press"}
+            normalized_keys = [part.strip() for part in normalized_key.split("+") if part.strip()]
+            if len(normalized_keys) < 2:
+                return {"success": False, "error": "key combination must contain at least two keys"}
+            _suppress_learning_input(1.0)
+            result = await automation_handler.hotkey(normalized_keys)
+            await _recording_hook(_recorded_turn(
+                "computer_press_key",
+                {"action": "press", "key": normalized_key, "keys": normalized_keys},
+                result,
+            ))
+            return result
+
+        if normalized_action == "press":
+            _suppress_learning_input(1.0)
+            result = await automation_handler.press_key(normalized_key)
+        elif normalized_action == "down":
+            already_held = normalized_key in context.held_keys
+            suppression_active = False if already_held else _begin_learning_input_suppression()
+            try:
+                result = await automation_handler.key_down(normalized_key)
+            except Exception:
+                if suppression_active:
+                    _end_learning_input_suppression(suppression_active)
+                raise
+            if result.get("success") is not False:
+                context.held_keys.add(normalized_key)
+            elif suppression_active:
+                _end_learning_input_suppression(suppression_active)
+        else:
+            _suppress_learning_input(1.0)
+            was_held = normalized_key in context.held_keys
+            result = await automation_handler.key_up(normalized_key)
+            if result.get("success") is not False:
+                context.held_keys.discard(normalized_key)
+                if was_held:
+                    _end_learning_input_suppression(True)
+
+        await _recording_hook(_recorded_turn(
+            "computer_press_key",
+            {"action": normalized_action, "key": normalized_key},
+            result,
+        ))
         return result
 
     @mcp.tool(annotations={"readOnlyHint": False, "destructiveHint": True, "idempotentHint": True, "openWorldHint": True})
@@ -2663,8 +2619,9 @@ def create_mcp_server() -> FastMCP:
         """
         Release all keys and mouse buttons currently tracked as held down.
 
-        Use this after interrupted key_down/mouse_down sequences or failed
-        replay runs to return input state to neutral.
+        Use this after interrupted computer_press_key(action="down") or
+        computer_mouse(action="down") sequences, or failed replay runs, to
+        return input state to neutral.
         """
         _suppress_learning_input(1.0)
         result = await _release_tracked_inputs()
@@ -2699,8 +2656,8 @@ def create_mcp_server() -> FastMCP:
         Args:
             element_index: Index from get_window_state nodes.
             value: New value to set.
-            window_id: Legacy window ID.
-            pid: Legacy process ID.
+            window_id: Top-level window ID.
+            pid: Top-level process ID.
             window: Canonical window object from list/get_window_state output.
             sensitive: When True, redact value in result and recording metadata.
             snapshot_id: Snapshot id returned by computer_get_window_state.
@@ -2915,17 +2872,12 @@ def create_mcp_server() -> FastMCP:
         return result
 
     @mcp.tool(annotations={"readOnlyHint": True, "destructiveHint": False, "idempotentHint": True, "openWorldHint": True})
-    async def computer_get_active_window() -> Any:
-        """Get the currently active window ID."""
-        window_handler = _get_handlers().window
-        result = await window_handler.get_current_window_id()
-        if result.get("success"):
-            _add_window_field(result)
-        return result
-
-    @mcp.tool(annotations={"readOnlyHint": True, "destructiveHint": False, "idempotentHint": True, "openWorldHint": True})
-    async def computer_get_window(id: int, app: Optional[str] = None) -> Any:
-        """Rehydrate a current canonical window object by window id.
+    async def computer_get_window(
+        id: Optional[int] = None,
+        app: Optional[str] = None,
+        active: bool = False,
+    ) -> Any:
+        """Get a canonical window object by id or for the active window.
 
         Use this after stale handles, lost bindings, or context resets. The
         optional app value is a carry-forward hint only; it is not used as a
@@ -2934,6 +2886,7 @@ def create_mcp_server() -> FastMCP:
         Args:
             id: Window id / HWND from a previously returned window object.
             app: Optional app hint from a previously returned window object.
+            active: When True, return the currently active window.
 
         Returns:
             Dictionary with success status and a canonical `window` object.
@@ -2941,127 +2894,143 @@ def create_mcp_server() -> FastMCP:
         from computer_server.services.validation_service import error_result
         from computer_server.services.window_identity_service import rehydrate_window
 
+        if active:
+            window_handler = _get_handlers().window
+            result = await window_handler.get_current_window_id()
+            if result.get("success"):
+                if "id" not in result and "window_id" in result:
+                    result["id"] = result["window_id"]
+                _add_window_field(result)
+            return result
+        if id is None:
+            return {
+                "success": False,
+                "error": "id is required unless active=True",
+            }
         try:
             return rehydrate_window(id, app=app)
         except ValueError as e:
             return error_result(e)
 
-    @mcp.tool(annotations={"readOnlyHint": True, "destructiveHint": False, "idempotentHint": True, "openWorldHint": True})
-    async def computer_get_window_name(window_id: str) -> Any:
-        """Get the title/name of a window."""
-        window_handler = _get_handlers().window
-        return await window_handler.get_window_name(window_id)
-
-    @mcp.tool(annotations={"readOnlyHint": True, "destructiveHint": False, "idempotentHint": True, "openWorldHint": True})
-    async def computer_get_window_size(window_id: str) -> Any:
-        """Get the size of a window."""
-        window_handler = _get_handlers().window
-        return await window_handler.get_window_size(window_id)
-
-    @mcp.tool(annotations={"readOnlyHint": True, "destructiveHint": False, "idempotentHint": True, "openWorldHint": True})
-    async def computer_get_window_position(window_id: str) -> Any:
-        """Get the position of a window."""
-        window_handler = _get_handlers().window
-        return await window_handler.get_window_position(window_id)
-
     @mcp.tool(annotations={"readOnlyHint": False, "destructiveHint": True, "idempotentHint": False, "openWorldHint": True})
-    async def computer_set_window_size(window_id: str, width: int, height: int) -> Any:
-        """Set the size of a window."""
-        from computer_server.services.validation_service import error_result, validate_int_range
-
-        try:
-            width = validate_int_range("width", width, 1, 20000)
-            height = validate_int_range("height", height, 1, 20000)
-        except ValueError as e:
-            return error_result(e)
-
-        window_handler = _get_handlers().window
-        return await window_handler.set_window_size(window_id, width, height)
-
-    @mcp.tool(annotations={"readOnlyHint": False, "destructiveHint": True, "idempotentHint": False, "openWorldHint": True})
-    async def computer_set_window_position(window_id: str, x: int, y: int) -> Any:
-        """Set the position of a window."""
-        from computer_server.services.validation_service import error_result, validate_coordinate
-
-        try:
-            x = validate_coordinate("x", x)
-            y = validate_coordinate("y", y)
-        except ValueError as e:
-            return error_result(e)
-
-        window_handler = _get_handlers().window
-        return await window_handler.set_window_position(window_id, x, y)
-
-    @mcp.tool(annotations={"readOnlyHint": False, "destructiveHint": True, "idempotentHint": False, "openWorldHint": True})
-    async def computer_activate_window(window_id: str) -> Any:
-        """Bring a window to the foreground and focus it.
-
-        If the window is minimized, it is restored to normal size first
-        (SW_RESTORE), then focused.  Use this instead of maximize_window
-        to bring back a minimized window at its original size.
-        """
-        window_handler = _get_handlers().window
-        result = await window_handler.activate_window(window_id)
-        # Record window title + process name for stale-HWND resolution during replay
-        window_title = ""
-        process_name = ""
-        try:
-            import win32gui, win32process, psutil
-            hwnd = int(window_id)
-            window_title = win32gui.GetWindowText(hwnd) or ""
-            _, pid = win32process.GetWindowThreadProcessId(hwnd)
-            if pid:
-                process_name = psutil.Process(pid).name() or ""
-        except Exception:
-            pass
-        await _recording_hook(_recorded_turn(
-            "computer_activate_window",
-            {"window_id": window_id, "window_title": window_title, "process_name": process_name},
-            result,
-        ))
-        return result
-
-    @mcp.tool(annotations={"readOnlyHint": False, "destructiveHint": True, "idempotentHint": False, "openWorldHint": True})
-    async def computer_minimize_window(window_id: str) -> Any:
-        """Minimize a window."""
-        window_handler = _get_handlers().window
-        return await window_handler.minimize_window(window_id)
-
-    @mcp.tool(annotations={"readOnlyHint": False, "destructiveHint": True, "idempotentHint": False, "openWorldHint": True})
-    async def computer_maximize_window(window_id: str) -> Any:
-        """Maximize a window."""
-        window_handler = _get_handlers().window
-        return await window_handler.maximize_window(window_id)
-
-    @mcp.tool(annotations={"readOnlyHint": False, "destructiveHint": True, "idempotentHint": False, "openWorldHint": True})
-    async def computer_close_window(window_id: str) -> Any:
-        """Close a window."""
-        window_handler = _get_handlers().window
-        return await window_handler.close_window(window_id)
-
-    @mcp.tool(annotations={"readOnlyHint": True, "destructiveHint": False, "idempotentHint": True, "openWorldHint": True})
-    async def computer_get_app_windows(app: str) -> Any:
-        """
-        Find windows by process name, title, or PID.
-
-        A single argument smart-dispatches:
-        - Numeric value → treated as a PID
-        - String value → searched against BOTH window title AND process
-          .exe name (case-insensitive substring match)
+    async def computer_manage_window(
+        action: str,
+        window: Optional[Dict[str, Any]] = None,
+        window_id: Optional[int] = None,
+        pid: Optional[int] = None,
+        x: Optional[int] = None,
+        y: Optional[int] = None,
+        width: Optional[int] = None,
+        height: Optional[int] = None,
+        bounds: Optional[Dict[str, Any]] = None,
+    ) -> Any:
+        """Manage a window: activate, minimize, maximize, close, move, or resize.
 
         Args:
-            app: PID (numeric), process name, or window title substring.
-
-        Returns a list of windows with 'window_id', legacy 'id', and
-        'title' fields so you can identify the main window without extra calls.
+            action: activate|minimize|maximize|close|move|resize.
+            window: Canonical window object from list/get_window_state output.
+            window_id: Top-level window id / HWND.
+            pid: Optional top-level process id for consistency checks with window.
+            x/y: Required for action=move.
+            width/height: Required for action=resize.
+            bounds: Optional object containing x/y/width/height.
         """
+        from computer_server.services.validation_service import (
+            error_result,
+            validate_coordinate,
+            validate_choice,
+            validate_int_range,
+        )
+
+        try:
+            normalized_action = validate_choice(
+                "action",
+                action,
+                {
+                    "activate",
+                    "minimize",
+                    "maximize",
+                    "close",
+                    "move",
+                    "position",
+                    "resize",
+                    "size",
+                },
+            )
+        except ValueError as e:
+            return error_result(e)
+
+        if bounds is not None:
+            if not isinstance(bounds, dict):
+                return {"success": False, "error": "bounds must be an object"}
+            x = bounds.get("x", x)
+            y = bounds.get("y", y)
+            width = bounds.get("width", width)
+            height = bounds.get("height", height)
+
+        pid, resolved_window_id, ref_error = _resolve_window_arg(window, pid, window_id)
+        if ref_error is not None:
+            return ref_error
+        if resolved_window_id is None:
+            return {"success": False, "error": "window or window_id is required"}
+
         window_handler = _get_handlers().window
-        result = await window_handler.get_application_windows(app)
-        if result.get("success") and isinstance(result.get("windows"), list):
-            result["windows"] = [
-                _add_window_field(dict(window_record))
-                for window_record in result["windows"]
-            ]
+        record_args: Dict[str, Any] = {
+            "action": normalized_action,
+            "window_id": resolved_window_id,
+        }
+        if pid is not None:
+            record_args["pid"] = pid
+        public_window = _build_public_window(pid, resolved_window_id)
+        if public_window is not None:
+            if "title" in public_window:
+                record_args["window_title"] = public_window["title"]
+            if "process_name" in public_window:
+                record_args["process_name"] = public_window["process_name"]
+
+        if normalized_action == "activate":
+            result = await window_handler.activate_window(resolved_window_id)
+        elif normalized_action == "minimize":
+            result = await window_handler.minimize_window(resolved_window_id)
+        elif normalized_action == "maximize":
+            result = await window_handler.maximize_window(resolved_window_id)
+        elif normalized_action == "close":
+            result = await window_handler.close_window(resolved_window_id)
+        elif normalized_action in {"move", "position"}:
+            if x is None or y is None:
+                return {"success": False, "error": "x and y are required for action=move"}
+            try:
+                x = validate_coordinate("x", x)
+                y = validate_coordinate("y", y)
+            except ValueError as e:
+                return error_result(e)
+            record_args.update({"x": x, "y": y})
+            result = await window_handler.set_window_position(resolved_window_id, x, y)
+            normalized_action = "move"
+        else:
+            if width is None or height is None:
+                return {"success": False, "error": "width and height are required for action=resize"}
+            try:
+                width = validate_int_range("width", width, 1, 20000)
+                height = validate_int_range("height", height, 1, 20000)
+            except ValueError as e:
+                return error_result(e)
+            record_args.update({"width": width, "height": height})
+            result = await window_handler.set_window_size(resolved_window_id, width, height)
+            normalized_action = "resize"
+
+        record_args["action"] = normalized_action
+        result.setdefault("action", normalized_action)
+        result.setdefault("window_id", resolved_window_id)
+        if normalized_action != "close":
+            public_window = _build_public_window(pid, resolved_window_id)
+            if public_window is not None:
+                result["window"] = public_window
+        await _recording_hook(_recorded_turn(
+            "computer_manage_window",
+            record_args,
+            result,
+        ))
         return result
 
     # ============================================================
@@ -3123,11 +3092,14 @@ def create_mcp_server() -> FastMCP:
     @mcp.tool(annotations={"readOnlyHint": True, "destructiveHint": False, "idempotentHint": True, "openWorldHint": True})
     async def computer_list_windows(
         pid: Optional[int] = None,
+        app: Optional[str] = None,
+        title: Optional[str] = None,
+        query: Optional[str] = None,
         on_screen_only: bool = False,
         include_xaml: bool = False,
     ) -> Any:
         """
-        List all windows, optionally filtered by process ID.
+        List windows, optionally filtered by process ID, app/process, title, or query.
 
         Windows 11 XAML popups (Start menu, notifications, settings
         flyouts) don't use traditional HWNDs and are invisible to
@@ -3136,6 +3108,9 @@ def create_mcp_server() -> FastMCP:
 
         Args:
             pid: Optional process ID to filter by.
+            app: Optional process/app substring. Numeric app values are treated as PID.
+            title: Optional title substring.
+            query: Optional smart substring across title, app/process name, class, and id.
             on_screen_only: When True, only return windows on screen.
             include_xaml: When True, also detect XAML popups via UIA.
 
@@ -3150,6 +3125,33 @@ def create_mcp_server() -> FastMCP:
             import win32process
             import win32con
             from computer_server.handlers.generic import _is_meaningful_window
+
+            app_text = app.strip() if isinstance(app, str) else ""
+            if app_text:
+                try:
+                    app_pid = int(app_text)
+                    if pid is None:
+                        pid = app_pid
+                except (TypeError, ValueError):
+                    pass
+            app_filter = app_text.lower() if app_text and not app_text.isdigit() else None
+            title_filter = title.lower() if isinstance(title, str) and title else None
+            query_filter = query.lower() if isinstance(query, str) and query else None
+
+            def _matches_filters(record: Dict[str, Any]) -> bool:
+                record_title = str(record.get("title") or "").lower()
+                record_app = str(record.get("app") or record.get("process_name") or "").lower()
+                record_class = str(record.get("class_name") or "").lower()
+                record_id = str(record.get("window_id") or record.get("id") or "").lower()
+                if app_filter and app_filter not in record_app and app_filter not in record_title:
+                    return False
+                if title_filter and title_filter not in record_title:
+                    return False
+                if query_filter:
+                    haystack = " ".join((record_title, record_app, record_class, record_id))
+                    if query_filter not in haystack:
+                        return False
+                return True
 
             windows: List[Dict[str, Any]] = []
 
@@ -3169,7 +3171,7 @@ def create_mcp_server() -> FastMCP:
                     title = win32gui.GetWindowText(hwnd) or ""
                     rect = win32gui.GetWindowRect(hwnd)
                     w, h = rect[2] - rect[0], rect[3] - rect[1]
-                    windows.append(_add_window_field({
+                    record = _add_window_field({
                         "id": hwnd,
                         "window_id": hwnd,
                         "pid": win_pid,
@@ -3180,7 +3182,9 @@ def create_mcp_server() -> FastMCP:
                         "height": h,
                         "is_on_screen": visible,
                         "minimized": rect[0] < -32000 or rect[1] < -32000,
-                    }))
+                    })
+                    if _matches_filters(record):
+                        windows.append(record)
                 except Exception:
                     pass
                 return True
@@ -3211,7 +3215,7 @@ def create_mcp_server() -> FastMCP:
                             if pid is not None:
                                 if child.ProcessId != pid:
                                     continue
-                            windows.append(_add_window_field({
+                            record = _add_window_field({
                                 "id": hwnd or 0,
                                 "window_id": hwnd or 0,
                                 "pid": child.ProcessId or 0,
@@ -3221,7 +3225,9 @@ def create_mcp_server() -> FastMCP:
                                 "is_on_screen": True,
                                 "minimized": False,
                                 "source": "uia_xaml",
-                            }))
+                            })
+                            if _matches_filters(record):
+                                windows.append(record)
                         except Exception:
                             pass
                 except ImportError:
@@ -3242,52 +3248,6 @@ def create_mcp_server() -> FastMCP:
         """Get information about the current desktop environment."""
         desktop_handler = _get_handlers().desktop
         return await desktop_handler.get_desktop_environment()
-
-    # ============================================================
-    # ACCESSIBILITY
-    # ============================================================
-
-    @mcp.tool(annotations={"readOnlyHint": True, "destructiveHint": False, "idempotentHint": True, "openWorldHint": True})
-    async def computer_get_accessibility_tree(
-        window_id: int = 0,
-        pid: Optional[int] = None,
-        window: Optional[Dict[str, Any]] = None,
-    ) -> Any:
-        """
-        Get the UIA accessibility tree for a window.
-
-        Uses UI Automation — works with UWP/XAML, Electron, Qt, and
-        classic Win32 apps.  Returns a markdown tree and element count.
-
-        Args:
-            window_id: Legacy target window handle. Defaults to 0 = foreground window.
-            pid: Optional process ID for consistency checks with window.
-            window: Canonical window object from list/get_window_state output.
-
-        Returns:
-            Dictionary with 'tree_markdown', 'node_count', 'tree_quality'.
-        """
-        from computer_server.services.window_state_service import get_accessibility_tree_snapshot
-
-        legacy_window_id = None if window_id == 0 else window_id
-        pid, resolved_window_id, ref_error = _resolve_window_arg(
-            window,
-            pid,
-            legacy_window_id,
-        )
-        if ref_error is not None:
-            return ref_error
-        target_window_id = resolved_window_id if resolved_window_id is not None else window_id
-
-        result = await get_accessibility_tree_snapshot(
-            target_window_id,
-            gate=context.uia_walk_gate,
-        )
-        if result.get("success") and target_window_id:
-            public_window = _build_public_window(pid, target_window_id)
-            if public_window is not None:
-                result["window"] = public_window
-        return result
 
     # ============================================================
     # RICH WINDOW STATE OBSERVATION (Element Cache + UIA + Vision)
@@ -3312,8 +3272,8 @@ def create_mcp_server() -> FastMCP:
         computer_click, computer_double_click, computer_scroll, etc.
 
         Args:
-            pid: Legacy process ID of the target application.
-            window_id: Legacy window ID to snapshot.
+            pid: Top-level process ID of the target application.
+            window_id: Top-level window ID to snapshot.
             window: Canonical window object from list/get_window_state output.
             query: Optional substring filter for the debug tree markdown and returned nodes.
             screenshot_out_file: Optional path to write screenshot PNG (skips inline base64).
@@ -3420,8 +3380,8 @@ def create_mcp_server() -> FastMCP:
         same pid and window_id to target coordinates within the zoomed image.
 
         Args:
-            pid: Legacy process ID — must match a prior computer_get_window_state call.
-            window_id: Legacy window ID — must match the same window used in the prior
+            pid: Top-level process ID — must match a prior computer_get_window_state call.
+            window_id: Top-level window ID — must match the same window used in the prior
                 computer_get_window_state call.
             window: Canonical window object from list/get_window_state output.
             screenshot_id: Screenshot id returned by computer_get_window_state.
@@ -3712,22 +3672,22 @@ def create_mcp_server() -> FastMCP:
     # ============================================================
 
     @mcp.tool(annotations={"readOnlyHint": False, "destructiveHint": True, "idempotentHint": False, "openWorldHint": True})
-    async def computer_set_recording(
-        enabled: bool,
+    async def computer_recording(
+        action: str,
         output_dir: Optional[str] = None,
         capture_screenshots: bool = True,
         screenshot_every_n: int = 1,
     ) -> Any:
         """
-        Start or stop recording tool invocations to turn folders.
+        Manage recording tool invocations to turn folders.
 
-        When enabled, every action tool call (click, type, scroll, etc.)
+        When started, every action tool call (click, type, scroll, etc.)
         writes a turn-NNNNN/ folder to output_dir containing action.json,
         screenshot.png, and click.png (for click actions).
 
         Args:
-            enabled: True to start recording, False to stop.
-            output_dir: Directory for turn folders (required when enabled=True).
+            action: start|stop|status.
+            output_dir: Directory for turn folders (required when action=start).
             capture_screenshots: Include screenshots in turn folders.
             screenshot_every_n: Capture one screenshot every N turns.
 
@@ -3735,16 +3695,27 @@ def create_mcp_server() -> FastMCP:
             Dictionary with recording state summary.
         """
         from computer_server.recording.session import RecordingSession
-        from computer_server.services.validation_service import error_result, validate_int_range
+        from computer_server.services.validation_service import (
+            error_result,
+            validate_choice,
+            validate_int_range,
+        )
 
         try:
+            normalized_action = validate_choice("action", action, {"start", "stop", "status"})
             screenshot_every_n = validate_int_range("screenshot_every_n", screenshot_every_n, 1, 1000)
         except ValueError as e:
             return error_result(e)
 
-        if enabled:
+        if normalized_action == "status":
+            session = context.recording_session
+            if session is None:
+                return {"active": False, "turn_count": 0}
+            return session.state
+
+        if normalized_action == "start":
             if not output_dir:
-                return {"success": False, "error": "output_dir is required when enabled=True"}
+                return {"success": False, "error": "output_dir is required when action=start"}
             import os
             output_dir = os.path.expanduser(output_dir)
             session = RecordingSession(
@@ -3755,26 +3726,13 @@ def create_mcp_server() -> FastMCP:
             session.start()
             context.recording_session = session
             return {"success": True, **session.state}
-        else:
-            session = context.recording_session
-            if session is not None:
-                summary = session.stop()
-                context.recording_session = None
-                return {"success": True, **summary}
-            return {"success": True, "message": "Recording was not active"}
 
-    @mcp.tool(annotations={"readOnlyHint": True, "destructiveHint": False, "idempotentHint": True, "openWorldHint": True})
-    async def computer_get_recording_state() -> Any:
-        """
-        Get the current recording state.
-
-        Returns:
-            Dictionary with active flag, turn count, output directory, and duration.
-        """
         session = context.recording_session
-        if session is None:
-            return {"active": False, "turn_count": 0}
-        return session.state
+        if session is not None:
+            summary = session.stop()
+            context.recording_session = None
+            return {"success": True, **summary}
+        return {"success": True, "message": "Recording was not active"}
 
     @mcp.tool(annotations={"readOnlyHint": False, "destructiveHint": True, "idempotentHint": False, "openWorldHint": True})
     async def computer_replay_trajectory(
@@ -3874,90 +3832,96 @@ def create_mcp_server() -> FastMCP:
     # ============================================================
 
     @mcp.tool(annotations={"readOnlyHint": False, "destructiveHint": True, "idempotentHint": False, "openWorldHint": True})
-    async def computer_learn_start(
+    async def computer_learn(
+        action: str,
         task_description: Optional[str] = None,
         output_dir: Optional[str] = None,
     ) -> Any:
-        """
-        Start observing the user's actions for workflow learning.
+        """Manage human workflow learning: start, stop, or status.
 
-        Records keyboard typing, mouse clicks, and scroll events enriched
-        with UI Automation (UIA) element metadata at interaction points.
-        Password/sensitive fields are automatically redacted.
-
-        Results are saved to output_dir/session.json and screenshot.png
-        when computer_learn_stop is called.
-
-        Windows only — requires pynput + uiautomation + pywin32 + psutil.
-        Auto-stops after 10 minutes (safety limit).
+        Start records keyboard typing, mouse clicks, and scroll events enriched
+        with UI Automation (UIA) element metadata. Stop returns the action
+        sequence. Status returns current listener state.
 
         Args:
-            task_description: Brief description of what the user is about to do.
-            output_dir: Directory for saved results (default: %TEMP%/cua-learn-<timestamp>).
+            action: start|stop|status.
+            task_description: Description for action=start.
+            output_dir: Directory for saved results on action=start.
         """
+        from computer_server.services.validation_service import error_result, validate_choice
+
         try:
-            from computer_server.learning.recorder import LearningRecorder
-            from computer_server.learning.session import LearningError
-        except ImportError as e:
+            normalized_action = validate_choice("action", action, {"start", "stop", "status"})
+        except ValueError as e:
+            return error_result(e)
+
+        if normalized_action == "status":
+            recorder = context.learning_recorder
+            if recorder is None:
+                return {
+                    "success": True,
+                    "data": {"recording": False, "action_count": 0, "duration_seconds": 0},
+                }
+
+            is_rec, count, duration, app, healthy = recorder.status()
+            data: Dict[str, Any] = {
+                "recording": is_rec,
+                "action_count": count,
+                "duration_seconds": int(duration),
+            }
+            if app:
+                data["current_app"] = app
+            if healthy is not None:
+                data["listener_healthy"] = healthy
+            return {"success": True, "data": data}
+
+        if normalized_action == "start":
+            try:
+                from computer_server.learning.recorder import LearningRecorder
+            except ImportError as e:
+                return {
+                    "success": False,
+                    "error": f"Learning module unavailable: {e}",
+                    "suggestion": "Install Windows dependencies: pip install pynput uiautomation pywin32 psutil",
+                }
+
+            recorder = context.learning_recorder
+            if recorder is None:
+                recorder = LearningRecorder()
+                context.learning_recorder = recorder
+
+            import os, time as _time
+            if not output_dir:
+                output_dir = os.path.join(
+                    os.environ.get("TEMP", os.path.expanduser("~")),
+                    f"cua-learn-{_time.strftime('%Y%m%d-%H%M%S')}",
+                )
+            else:
+                output_dir = os.path.expanduser(output_dir)
+
+            error = recorder.start(task_description=task_description, output_dir=output_dir)
+            if error is not None:
+                return {
+                    "success": False,
+                    "error": error.value,
+                    "suggestion": error.suggestion(),
+                }
             return {
-                "success": False,
-                "error": f"Learning module unavailable: {e}",
-                "suggestion": "Install Windows dependencies: pip install pynput uiautomation pywin32 psutil",
+                "success": True,
+                "data": {
+                    "status": "recording",
+                    "output_dir": output_dir,
+                    "message": "Recording started. The user can now perform the task. "
+                               "Call computer_learn(action='stop') when done.",
+                },
             }
 
-        recorder = context.learning_recorder
-        if recorder is None:
-            recorder = LearningRecorder()
-            context.learning_recorder = recorder
-
-        import os, time as _time
-        if not output_dir:
-            output_dir = os.path.join(
-                os.environ.get("TEMP", os.path.expanduser("~")),
-                f"cua-learn-{_time.strftime('%Y%m%d-%H%M%S')}",
-            )
-        else:
-            output_dir = os.path.expanduser(output_dir)
-
-        error = recorder.start(task_description=task_description, output_dir=output_dir)
-        if error is not None:
-            return {
-                "success": False,
-                "error": error.value,
-                "suggestion": error.suggestion(),
-            }
-        return {
-            "success": True,
-            "data": {
-                "status": "recording",
-                "output_dir": output_dir,
-                "message": "Recording started. The user can now perform the task. "
-                           "Call computer_learn_stop when done.",
-            },
-        }
-
-    @mcp.tool(annotations={"readOnlyHint": False, "destructiveHint": True, "idempotentHint": False, "openWorldHint": True})
-    async def computer_learn_stop() -> Any:
-        """
-        Stop observing and return the recorded action sequence.
-
-        Each action includes UIA-enriched element context (role, title,
-        identifier, parent_role). Password fields are auto-redacted as
-        SECURE_FIELD entries.
-
-        The returned actions can be fed to an AI agent to synthesize a
-        parameterized, replayable workflow (recipe).
-
-        Returns:
-            Dictionary with task_description, duration_seconds, action_count,
-            apps, urls, and the full actions list.
-        """
         recorder = context.learning_recorder
         if recorder is None:
             return {
                 "success": False,
                 "error": "No learning session is active",
-                "suggestion": "Call computer_learn_start first to begin recording.",
+                "suggestion": "Call computer_learn(action='start') first to begin recording.",
             }
 
         success, result = recorder.stop()
@@ -3987,33 +3951,6 @@ def create_mcp_server() -> FastMCP:
                 "actions": serialized,
             },
         }
-
-    @mcp.tool(annotations={"readOnlyHint": True, "destructiveHint": False, "idempotentHint": True, "openWorldHint": True})
-    async def computer_learn_status() -> Any:
-        """
-        Check if learning mode is active and get recording stats.
-
-        Returns recording status, action count, duration, current
-        foreground app, and listener health.
-        """
-        recorder = context.learning_recorder
-        if recorder is None:
-            return {
-                "success": True,
-                "data": {"recording": False, "action_count": 0, "duration_seconds": 0},
-            }
-
-        is_rec, count, duration, app, healthy = recorder.status()
-        data: Dict[str, Any] = {
-            "recording": is_rec,
-            "action_count": count,
-            "duration_seconds": int(duration),
-        }
-        if app:
-            data["current_app"] = app
-        if healthy is not None:
-            data["listener_healthy"] = healthy
-        return {"success": True, "data": data}
 
     # Pre-warm SOM OmniParser in background so first get_window_state is fast.
     # Skip when CUA_SKIP_SOM_WARMUP=1 (e.g. one-shot test invocations where

@@ -14,12 +14,10 @@ REPLAY_COORD_TOOLS = frozenset({
     "computer_click",
     "computer_drag",
     "computer_scroll",
-    "computer_move",
-    "computer_mouse_down",
-    "computer_mouse_up",
+    "computer_mouse",
 })
 REPLAY_WINDOW_ID_ARG_TOOLS = frozenset({"computer_click", "computer_drag", "computer_scroll"})
-REPLAY_WINDOW_TOOLS = frozenset({"computer_activate_window"})
+REPLAY_WINDOW_TOOLS = frozenset({"computer_manage_window"})
 REPLAY_ELEMENT_TOOLS = frozenset({
     "computer_click",
     "computer_drag",

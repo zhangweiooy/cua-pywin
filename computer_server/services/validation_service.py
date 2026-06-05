@@ -150,7 +150,7 @@ def resolve_coordinate_space(
 ) -> str:
     """Return the effective coordinate space for pointer-style tools.
 
-    ``None`` preserves the legacy behavior:
+    ``None`` preserves the default behavior:
     element index -> element, zoom args -> zoom, pid/window_id -> window_resized,
     otherwise screen.
     """

@@ -88,7 +88,7 @@ class RuntimePermissionPolicy:
 
     def require_run_command(self) -> None:
         if not self.run_command_enabled:
-            raise PermissionDenied("computer_run_command is disabled by CUA_DISABLE_RUN_COMMAND")
+            raise PermissionDenied("run command is disabled by CUA_DISABLE_RUN_COMMAND")
 
     def require_local_open(self, path: str) -> Path:
         if not self.local_open_enabled:
