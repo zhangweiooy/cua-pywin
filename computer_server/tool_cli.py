@@ -18,6 +18,7 @@ import time
 import urllib.error
 import urllib.parse
 import urllib.request
+from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Sequence
@@ -45,6 +46,14 @@ COMMANDS = {
     "list-tools",
     "describe",
     "call",
+}
+LIGHTWEIGHT_INPROCESS_TOOLS = {
+    "computer_get_screen_size",
+    "computer_get_cursor_position",
+    "computer_get_window",
+    "computer_list_apps",
+    "computer_list_windows",
+    "computer_get_desktop_environment",
 }
 
 DEPENDENCY_CHECKS = (
@@ -354,6 +363,31 @@ def _parse_tool_arguments(raw: str | None) -> dict[str, Any]:
     return parsed
 
 
+def _is_lightweight_inprocess_call(tool_name: str, tool_args: dict[str, Any]) -> bool:
+    if tool_name in LIGHTWEIGHT_INPROCESS_TOOLS:
+        return True
+    if tool_name in {"computer_recording", "computer_learn"}:
+        return tool_args.get("action") == "status"
+    return False
+
+
+@contextmanager
+def _mcp_import_mode(*, lightweight: bool):
+    names = ("CUA_LIGHTWEIGHT_MCP_IMPORT", "CUA_SKIP_SOM_WARMUP")
+    previous = {name: os.environ.get(name) for name in names}
+    if lightweight:
+        for name in names:
+            os.environ[name] = "1"
+    try:
+        yield
+    finally:
+        for name, value in previous.items():
+            if value is None:
+                os.environ.pop(name, None)
+            else:
+                os.environ[name] = value
+
+
 def _json_print(payload: Any, compact: bool = False) -> None:
     if compact:
         print(json.dumps(payload, ensure_ascii=False, separators=(",", ":")))
@@ -582,10 +616,11 @@ def _format_call(payload: dict[str, Any], json_mode: bool) -> None:
 
 
 async def _inprocess_list_tools() -> dict[str, Any]:
-    from .mcp_server import create_mcp_server
+    with _mcp_import_mode(lightweight=True):
+        from .mcp_server import create_mcp_server
 
-    mcp = create_mcp_server()
-    tools = [_tool_to_json(tool) for tool in await mcp.list_tools()]
+        mcp = create_mcp_server()
+        tools = [_tool_to_json(tool) for tool in await mcp.list_tools()]
     return {"tools": tools, "count": len(tools), "mode": "in-process"}
 
 
@@ -598,10 +633,12 @@ async def _inprocess_describe(tool_name: str) -> dict[str, Any]:
 
 
 async def _inprocess_call(tool_name: str, tool_args: dict[str, Any]) -> dict[str, Any]:
-    from .mcp_server import create_mcp_server
+    lightweight = _is_lightweight_inprocess_call(tool_name, tool_args)
+    with _mcp_import_mode(lightweight=lightweight):
+        from .mcp_server import create_mcp_server
 
-    mcp = create_mcp_server()
-    result = await mcp.call_tool(tool_name, tool_args)
+        mcp = create_mcp_server()
+        result = await mcp.call_tool(tool_name, tool_args)
     payload = _call_result_to_json(result)
     payload.update({"tool": tool_name, "mode": "in-process"})
     return payload

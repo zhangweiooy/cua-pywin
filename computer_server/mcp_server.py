@@ -13,6 +13,8 @@ import logging
 import os
 import sys
 
+_LIGHTWEIGHT_MCP_IMPORT = os.environ.get("CUA_LIGHTWEIGHT_MCP_IMPORT") == "1"
+
 # Pre-import heavy C-extension modules at module level.
 #
 # In FastMCP's stdio transport, importing C-extension modules for
@@ -25,30 +27,31 @@ import sys
 # C-extension imports from inside a tool handler deadlock permanently.
 # torch + cv2 + ultralytics add ~4-9 s to startup; warm_up() loads
 # the actual model weights in the background after that.
-import numpy as np  # noqa: F401
+if not _LIGHTWEIGHT_MCP_IMPORT:
+    import numpy as np  # noqa: F401
 
-try:
-    from computer_server.handlers.som_bridge import is_available as _pre_som_avail
-    _pre_som_avail()  # triggers from som.detect import OmniParser → torch + cv2 + ultralytics
-except Exception:
-    pass
-try:
-    # Transformers/tokenizers/safetensors can import native extensions.
-    # Import them before FastMCP's anyio event loop starts; model weights are
-    # still loaded by the background warm-up thread.
-    from transformers import CLIPModel as _pre_clip_model  # noqa: F401
-    from transformers import CLIPProcessor as _pre_clip_processor  # noqa: F401
-    import safetensors.torch as _pre_safetensors_torch  # noqa: F401
-except Exception:
-    pass
-try:
-    # PyWinRT loads native extensions. Import before the anyio loop so WGC can
-    # be used safely from get_window_state without first-time DLL loading there.
-    from computer_server.handlers.windows_wgc import is_available as _pre_wgc_avail
+    try:
+        from computer_server.handlers.som_bridge import is_available as _pre_som_avail
+        _pre_som_avail()  # triggers from som.detect import OmniParser → torch + cv2 + ultralytics
+    except Exception:
+        pass
+    try:
+        # Transformers/tokenizers/safetensors can import native extensions.
+        # Import them before FastMCP's anyio event loop starts; model weights are
+        # still loaded by the background warm-up thread.
+        from transformers import CLIPModel as _pre_clip_model  # noqa: F401
+        from transformers import CLIPProcessor as _pre_clip_processor  # noqa: F401
+        import safetensors.torch as _pre_safetensors_torch  # noqa: F401
+    except Exception:
+        pass
+    try:
+        # PyWinRT loads native extensions. Import before the anyio loop so WGC can
+        # be used safely from get_window_state without first-time DLL loading there.
+        from computer_server.handlers.windows_wgc import is_available as _pre_wgc_avail
 
-    _pre_wgc_avail()
-except Exception:
-    pass
+        _pre_wgc_avail()
+    except Exception:
+        pass
 from typing import Any, Dict, List, Optional, Tuple
 
 if sys.platform != "win32":
@@ -464,7 +467,7 @@ def create_mcp_server() -> FastMCP:
         name="cua-pywin",
         instructions="""You are connected to a computer control server that provides low-level
         primitives for interacting with a desktop computer. You can take screenshots, click,
-        type text, press keys, scroll, manage windows, read/write files, and run commands.
+        type text, press keys, scroll, manage windows, inspect UI state, and control browser pages.
 
         Always take a screenshot first to see the current state before performing actions.
         After performing actions, take another screenshot to verify the result.""",
@@ -3956,7 +3959,7 @@ def create_mcp_server() -> FastMCP:
     # Skip when CUA_SKIP_SOM_WARMUP=1 (e.g. one-shot test invocations where
     # the heavy ML imports would contend with the asyncio event loop for the
     # GIL and import lock, causing tool-call timeouts).
-    if not os.environ.get("CUA_SKIP_SOM_WARMUP"):
+    if not _LIGHTWEIGHT_MCP_IMPORT and not os.environ.get("CUA_SKIP_SOM_WARMUP"):
         try:
             from computer_server.handlers.som_bridge import warm_up as _warm_som
 

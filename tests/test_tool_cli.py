@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import os
+
 import pytest
 
 from computer_server.tool_cli import (
@@ -7,6 +9,8 @@ from computer_server.tool_cli import (
     _call_result_to_json,
     _collect_doctor_checks,
     _doctor_summary,
+    _is_lightweight_inprocess_call,
+    _mcp_import_mode,
     _parse_tool_arguments,
     _rewrite_implicit_call,
     _tool_to_json,
@@ -29,6 +33,26 @@ def test_parse_tool_arguments_requires_object() -> None:
 
     with pytest.raises(SystemExit, match="tool arguments must be a JSON object"):
         _parse_tool_arguments("[1, 2, 3]")
+
+
+def test_lightweight_inprocess_calls_are_explicit() -> None:
+    assert _is_lightweight_inprocess_call("computer_get_screen_size", {})
+    assert _is_lightweight_inprocess_call("computer_recording", {"action": "status"})
+    assert _is_lightweight_inprocess_call("computer_learn", {"action": "status"})
+    assert not _is_lightweight_inprocess_call("computer_recording", {"action": "start"})
+    assert not _is_lightweight_inprocess_call("computer_get_window_state", {})
+
+
+def test_mcp_import_mode_restores_environment(monkeypatch) -> None:
+    monkeypatch.delenv("CUA_LIGHTWEIGHT_MCP_IMPORT", raising=False)
+    monkeypatch.setenv("CUA_SKIP_SOM_WARMUP", "existing")
+
+    with _mcp_import_mode(lightweight=True):
+        assert os.environ["CUA_LIGHTWEIGHT_MCP_IMPORT"] == "1"
+        assert os.environ["CUA_SKIP_SOM_WARMUP"] == "1"
+
+    assert "CUA_LIGHTWEIGHT_MCP_IMPORT" not in os.environ
+    assert os.environ["CUA_SKIP_SOM_WARMUP"] == "existing"
 
 
 def test_call_result_to_json() -> None:

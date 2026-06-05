@@ -124,7 +124,7 @@ cua-win serve --host 0.0.0.0 --port 8000 \
 
 普通 HTTP 服务暴露 `/status` 与 `/mcp`；`cua-win` daemon 复用同一个 app，并额外启用 token 保护的 `/tools`、`/call`、`/shutdown` JSON RPC 路由。CORS 仅放行 `localhost / 127.0.0.1 / [::1]` origin。
 
-`cua-win` 是面向人和脚本的 CLI。默认启动同一个本机 HTTP app，并通过 token 保护的 JSON RPC 路由调用 MCP 工具，因此 `computer_get_window_state` 这类高频重工具只在 daemon 启动时预热一次；`--no-daemon` 会强制单次进程内调用，适合调试但不适合高频使用。
+`cua-win` 是面向人和脚本的 CLI。默认启动同一个本机 HTTP app，并通过 token 保护的 JSON RPC 路由调用 MCP 工具，因此 `computer_get_window_state` 这类高频重工具只在 daemon 启动时预热一次。`--no-daemon` 会强制单次进程内调用；`list-tools`、`describe` 和明确安全的只读状态调用使用轻量导入，不会启动 SOM/TinyCLIP/RapidOCR 预热。桌面控制和视觉调用仍推荐复用 daemon。
 `cua-win <tool> '<json>'` 会自动等价转换为 `cua-win call <tool> '<json>'`。
 PowerShell 调用 native command 时会剥离 JSON 内层双引号，示例中因此使用
 `'{\"key\":\"value\"}'` 写法。
@@ -379,8 +379,10 @@ and `/shutdown` JSON RPC routes. CORS only allows
 `cua-win` is the human/script-facing CLI. It starts the same local HTTP app by
 default and calls MCP tools through token-protected JSON RPC routes, so heavy
 high-frequency tools such as `computer_get_window_state` pay warm-up once per
-daemon process. `--no-daemon` forces a one-shot in-process call and is intended
-for debugging rather than frequent use.
+daemon process. `--no-daemon` forces a one-shot in-process call. `list-tools`,
+`describe`, and explicitly safe read-only status calls use a lightweight import
+path that skips SOM/TinyCLIP/RapidOCR warm-up. Desktop-control and vision calls
+should still reuse the daemon.
 `cua-win <tool> '<json>'` is rewritten to `cua-win call <tool> '<json>'`.
 PowerShell strips inner JSON quotes when launching native commands, so CLI
 examples use `'{\"key\":\"value\"}'`.

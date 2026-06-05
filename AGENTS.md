@@ -422,6 +422,10 @@ functions. When the SDK is upgraded past the fix:
   `cua-win stop`, process exit, logout, or reboot. Restart it after code changes.
 - Subprocess environments should set `PYTHONIOENCODING=utf-8` to avoid GBK output
   issues.
+- One-shot `cua-win --no-daemon` schema queries and explicitly safe read-only
+  calls use `CUA_LIGHTWEIGHT_MCP_IMPORT=1` internally. This skips vision/WGC
+  native pre-imports and SOM warm-up. Do not use lightweight mode for
+  `computer_get_window_state` or other tools that can enter the vision stack.
 
 ## Testing
 
@@ -446,18 +450,6 @@ uv run cua-win stop
    fixed.
 
 ## Current Priorities
-
-### Immediate Closeout
-
-- Commit the current 24-tool surface consolidation as one coherent change after
-  full tests and CLI smoke checks remain green.
-- Stop one-shot read-only CLI commands such as `list-tools`, `describe`, and
-  status calls from starting unnecessary SOM/TinyCLIP/RapidOCR warm-up work.
-  Their output should also remain free of model initialization/shutdown noise.
-- Run real Windows desktop smoke tests for the consolidated entry points:
-  `computer_mouse`, `computer_press_key`, and `computer_manage_window`.
-- Add an end-to-end recording/replay test that records the consolidated tool
-  names and confirms replay resolves and invokes those same current tools.
 
 ### P1: High-Value API Stabilization
 
