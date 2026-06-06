@@ -16,6 +16,7 @@ from computer_server.services.window_state_service import (
     filter_nodes_by_query,
     get_accessibility_tree_snapshot,
     get_window_state_snapshot,
+    list_related_transient_windows,
     node_matches_query,
     prepare_direct_window_snapshot_image,
     prepare_window_snapshot_image,
@@ -115,6 +116,64 @@ def test_prepare_window_snapshot_records_resize_metadata():
     assert geometry.screen_height == 500
     assert geometry.compression_ratio == 2.0
     assert geometry.to_zoom_metadata()["compression_ratio"] == 2.0
+
+
+def test_list_related_transient_windows_filters_same_process_main_windows(
+    monkeypatch,
+):
+    import win32con
+    import win32gui
+    import win32process
+
+    ordered_windows = [300, 200, 100]
+    rects = {
+        300: (50, 50, 250, 180),
+        200: (0, 0, 1000, 800),
+        100: (0, 0, 1000, 800),
+    }
+
+    monkeypatch.setattr(
+        win32gui,
+        "EnumWindows",
+        lambda callback, lparam: [
+            callback(hwnd, lparam) for hwnd in ordered_windows
+        ],
+    )
+    monkeypatch.setattr(win32gui, "IsWindowVisible", lambda _hwnd: True)
+    monkeypatch.setattr(win32gui, "IsIconic", lambda _hwnd: False)
+    monkeypatch.setattr(win32gui, "GetWindowRect", lambda hwnd: rects[hwnd])
+    monkeypatch.setattr(win32gui, "GetWindowText", lambda hwnd: f"Window {hwnd}")
+    monkeypatch.setattr(win32gui, "GetClassName", lambda hwnd: f"Class{hwnd}")
+    monkeypatch.setattr(
+        win32gui,
+        "GetWindow",
+        lambda hwnd, _flag: 100 if hwnd == 300 else 0,
+    )
+    monkeypatch.setattr(
+        win32gui,
+        "GetAncestor",
+        lambda hwnd, _flag: 100 if hwnd == 300 else hwnd,
+    )
+    monkeypatch.setattr(
+        win32gui,
+        "GetWindowLong",
+        lambda hwnd, index: (
+            win32con.WS_POPUP
+            if hwnd == 300 and index == win32con.GWL_STYLE
+            else 0
+        ),
+    )
+    monkeypatch.setattr(
+        win32process,
+        "GetWindowThreadProcessId",
+        lambda _hwnd: (1, 123),
+    )
+
+    candidates = list_related_transient_windows(123, 100)
+
+    assert [candidate["window_id"] for candidate in candidates] == [300]
+    assert candidates[0]["owner_window_id"] == 100
+    assert candidates[0]["z_index"] == 2
 
 
 def test_node_matches_query_checks_common_node_fields():

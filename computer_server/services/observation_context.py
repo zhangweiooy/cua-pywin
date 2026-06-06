@@ -81,22 +81,55 @@ class ObservationContextRegistry:
             unfiltered_node_count=int(unfiltered_node_count),
             created_at=created_at,
         )
+        self._snapshots[snapshot_id] = ctx
+        self._latest_by_window[(ctx.pid, ctx.window_id)] = snapshot_id
+        self._store_screenshot(
+            ScreenshotContext(
+                screenshot_id=screenshot_id,
+                snapshot_id=snapshot_id,
+                pid=ctx.pid,
+                window_id=ctx.window_id,
+                screen_width=int(screen_width or 0),
+                screen_height=int(screen_height or 0),
+                capture_geometry=dict(capture_geometry or {}),
+                capture_metadata=dict(capture_metadata or {}),
+                created_at=created_at,
+            )
+        )
+        return ctx
+
+    def create_screenshot(
+        self,
+        *,
+        snapshot_id: str,
+        pid: int,
+        window_id: int,
+        screen_width: int = 0,
+        screen_height: int = 0,
+        capture_geometry: Optional[Dict[str, Any]] = None,
+        capture_metadata: Optional[Dict[str, Any]] = None,
+    ) -> ScreenshotContext:
+        """Register an additional screenshot captured during an observation."""
+        self._expire_old()
         screenshot = ScreenshotContext(
-            screenshot_id=screenshot_id,
+            screenshot_id=f"shot-{uuid.uuid4().hex}",
             snapshot_id=snapshot_id,
-            pid=ctx.pid,
-            window_id=ctx.window_id,
+            pid=int(pid),
+            window_id=int(window_id),
             screen_width=int(screen_width or 0),
             screen_height=int(screen_height or 0),
             capture_geometry=dict(capture_geometry or {}),
             capture_metadata=dict(capture_metadata or {}),
-            created_at=created_at,
+            created_at=time.monotonic(),
         )
-        self._snapshots[snapshot_id] = ctx
-        self._screenshots[screenshot_id] = screenshot
-        self._latest_by_window[(ctx.pid, ctx.window_id)] = snapshot_id
-        self._latest_screenshot_by_window[(ctx.pid, ctx.window_id)] = screenshot_id
-        return ctx
+        self._store_screenshot(screenshot)
+        return screenshot
+
+    def _store_screenshot(self, screenshot: ScreenshotContext) -> None:
+        self._screenshots[screenshot.screenshot_id] = screenshot
+        self._latest_screenshot_by_window[
+            (screenshot.pid, screenshot.window_id)
+        ] = screenshot.screenshot_id
 
     def get_snapshot(self, snapshot_id: str) -> Optional[SnapshotContext]:
         self._expire_old()

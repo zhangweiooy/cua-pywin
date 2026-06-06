@@ -722,6 +722,22 @@ def create_mcp_server() -> FastMCP:
             result["window"] = public_window
         result["target_window_activated"] = activated
 
+    def _attach_explicit_window_activation(
+        result: Dict[str, Any],
+        pid: Optional[int],
+        window_id: Optional[int],
+        *,
+        activated: bool,
+    ) -> None:
+        """Expose explicit-window activation without changing legacy calls."""
+        if not activated:
+            return
+        _attach_input_window(result, pid, window_id, activated=True)
+        result["used_foreground"] = True
+        action_path = result.get("action_path")
+        if isinstance(action_path, dict):
+            action_path["used_foreground"] = True
+
     def _build_element_ref(
         pid: Optional[int],
         window_id: Optional[int],
@@ -930,6 +946,7 @@ def create_mcp_server() -> FastMCP:
                 return {"success": False, "error": fresh.get("error", "get_window_state returned success=False")}
             return {
                 "screenshot": fresh.get("screenshot"),
+                "screenshots": fresh.get("screenshots", []),
                 "screenshot_id": fresh.get("screenshot_id"),
                 "capture": fresh.get("capture"),
                 "capture_metadata": fresh.get("capture_metadata"),
@@ -1730,6 +1747,17 @@ def create_mcp_server() -> FastMCP:
         if coordinate_space == "zoom":
             from_zoom = True
 
+        explicit_window_activated = False
+        if window is not None:
+            pid, window_id, ref_error = await _activate_input_window(
+                window,
+                pid,
+                window_id,
+            )
+            if ref_error is not None:
+                return ref_error
+            explicit_window_activated = True
+
         element_result, element_x, element_y, recorded_element_ref = await _resolve_click_element(
             pid,
             window_id,
@@ -1740,6 +1768,12 @@ def create_mcp_server() -> FastMCP:
             require_verification,
         )
         if element_result is not None:
+            _attach_explicit_window_activation(
+                element_result,
+                pid,
+                window_id,
+                activated=explicit_window_activated,
+            )
             return element_result
         if element_x is not None and element_y is not None:
             x, y = element_x, element_y
@@ -1796,6 +1830,12 @@ def create_mcp_server() -> FastMCP:
                 ),
             )
             if result is not None:
+                _attach_explicit_window_activation(
+                    result,
+                    pid,
+                    window_id,
+                    activated=explicit_window_activated,
+                )
                 return result
 
         # Animate cursor overlay to click point
@@ -1832,6 +1872,12 @@ def create_mcp_server() -> FastMCP:
             capture_coordinate_space=(
                 coordinate_space if screenshot_ctx is not None else None
             ),
+        )
+        _attach_explicit_window_activation(
+            result,
+            pid,
+            window_id,
+            activated=explicit_window_activated,
         )
         await _attach_post_action_observation(
             result,
@@ -2212,6 +2258,17 @@ def create_mcp_server() -> FastMCP:
         if coordinate_space == "zoom":
             from_zoom = True
 
+        explicit_window_activated = False
+        if window is not None:
+            pid, window_id, ref_error = await _activate_input_window(
+                window,
+                pid,
+                window_id,
+            )
+            if ref_error is not None:
+                return ref_error
+            explicit_window_activated = True
+
         recorded_element_ref = None
 
         if element_index is not None:
@@ -2339,6 +2396,12 @@ def create_mcp_server() -> FastMCP:
             ),
             capture_coordinate_space=coordinate_space if screenshot_ctx is not None else None,
         )
+        _attach_explicit_window_activation(
+            result,
+            pid,
+            window_id,
+            activated=explicit_window_activated,
+        )
         wr = _build_window_ref(pid, window_id, actual_start_x, actual_start_y)
         await _recording_hook(_recorded_turn(
             "computer_drag",
@@ -2462,6 +2525,17 @@ def create_mcp_server() -> FastMCP:
         if coordinate_space == "zoom":
             from_zoom = True
 
+        explicit_window_activated = False
+        if window is not None:
+            pid, window_id, ref_error = await _activate_input_window(
+                window,
+                pid,
+                window_id,
+            )
+            if ref_error is not None:
+                return ref_error
+            explicit_window_activated = True
+
         if direction:
             if direction == "up":
                 scroll_y = amount
@@ -2575,6 +2649,12 @@ def create_mcp_server() -> FastMCP:
                 else None
             ),
             capture_coordinate_space=coordinate_space if screenshot_ctx is not None else None,
+        )
+        _attach_explicit_window_activation(
+            result,
+            pid,
+            window_id,
+            activated=explicit_window_activated,
         )
         if scroll_ax is not None and pid is not None and window_id is not None:
             wr = _build_window_ref(pid, window_id, scroll_ax, scroll_ay)
@@ -3511,6 +3591,7 @@ def create_mcp_server() -> FastMCP:
         )
         if result.get("success"):
             capture_geometry = result.pop("_capture_geometry", None)
+            related_screenshots = result.pop("_related_screenshots", [])
             snapshot = context.observations.create_snapshot(
                 pid=pid,
                 window_id=window_id,
@@ -3528,9 +3609,92 @@ def create_mcp_server() -> FastMCP:
             result["screenshot_id"] = snapshot.screenshot_id
             result["snapshot_latest"] = True
             screenshot = context.observations.get_screenshot(snapshot.screenshot_id)
-            if screenshot is not None:
-                result["capture"] = _public_capture_from_screenshot(screenshot)
             public_window = _build_public_window(pid, window_id)
+            screenshots: List[Dict[str, Any]] = []
+            if screenshot is not None:
+                public_capture = _public_capture_from_screenshot(screenshot)
+                result["capture"] = public_capture
+                screenshots.append(
+                    {
+                        "id": screenshot.screenshot_id,
+                        "screenshot_id": screenshot.screenshot_id,
+                        "snapshot_id": snapshot.snapshot_id,
+                        "role": "target",
+                        "zIndex": 0,
+                        "pid": pid,
+                        "window_id": window_id,
+                        "window": public_window,
+                        "screenshot": result.get("screenshot"),
+                        "path": result.get("screenshot"),
+                        "width": screenshot.screen_width,
+                        "height": screenshot.screen_height,
+                        "originX": int(
+                            screenshot.capture_geometry.get(
+                                "crop_origin_screen_x",
+                                screenshot.capture_geometry.get("window_origin_x", 0),
+                            )
+                            or 0
+                        ),
+                        "originY": int(
+                            screenshot.capture_geometry.get(
+                                "crop_origin_screen_y",
+                                screenshot.capture_geometry.get("window_origin_y", 0),
+                            )
+                            or 0
+                        ),
+                        "capture": public_capture,
+                    }
+                )
+            for related in related_screenshots:
+                related_geometry = related.pop("_capture_geometry", {})
+                related_screenshot = context.observations.create_screenshot(
+                    snapshot_id=snapshot.snapshot_id,
+                    pid=related["pid"],
+                    window_id=related["window_id"],
+                    screen_width=related.get("screen_width", 0),
+                    screen_height=related.get("screen_height", 0),
+                    capture_geometry=related_geometry,
+                    capture_metadata=related.get("capture_metadata", {}),
+                )
+                related_window = _build_public_window(
+                    related["pid"],
+                    related["window_id"],
+                )
+                screenshots.append(
+                    {
+                        "id": related_screenshot.screenshot_id,
+                        "screenshot_id": related_screenshot.screenshot_id,
+                        "snapshot_id": snapshot.snapshot_id,
+                        "role": "transient",
+                        "zIndex": int(related.get("z_index", 1) or 1),
+                        "pid": related["pid"],
+                        "window_id": related["window_id"],
+                        "window": related_window,
+                        "parent_window_id": window_id,
+                        "screenshot": related.get("screenshot"),
+                        "path": related.get("screenshot"),
+                        "width": related_screenshot.screen_width,
+                        "height": related_screenshot.screen_height,
+                        "originX": int(
+                            related_geometry.get(
+                                "crop_origin_screen_x",
+                                related_geometry.get("window_origin_x", 0),
+                            )
+                            or 0
+                        ),
+                        "originY": int(
+                            related_geometry.get(
+                                "crop_origin_screen_y",
+                                related_geometry.get("window_origin_y", 0),
+                            )
+                            or 0
+                        ),
+                        "capture": _public_capture_from_screenshot(
+                            related_screenshot
+                        ),
+                    }
+                )
+            result["screenshots"] = screenshots
             if public_window is not None:
                 result["window"] = public_window
             window_ref = _build_window_ref(pid, window_id, 0, 0)

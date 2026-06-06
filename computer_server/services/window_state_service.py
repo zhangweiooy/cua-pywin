@@ -692,10 +692,138 @@ def filter_nodes_by_query(
     return [node for node in nodes if node_matches_query(node, query)]
 
 
+def _rects_overlap(
+    first: Tuple[int, int, int, int],
+    second: Tuple[int, int, int, int],
+) -> bool:
+    return (
+        min(first[2], second[2]) > max(first[0], second[0])
+        and min(first[3], second[3]) > max(first[1], second[1])
+    )
+
+
+def list_related_transient_windows(
+    pid: int,
+    window_id: int,
+    *,
+    limit: int = 4,
+) -> List[Dict[str, Any]]:
+    """List visible same-process popup/owned windows above the target."""
+    try:
+        import sys
+
+        if sys.platform != "win32":
+            return []
+        import win32con
+        import win32gui
+        import win32process
+
+        target_rect = tuple(int(value) for value in win32gui.GetWindowRect(window_id))
+        target_area = max(
+            1,
+            (target_rect[2] - target_rect[0]) * (target_rect[3] - target_rect[1]),
+        )
+        enumerated: List[Dict[str, Any]] = []
+
+        def _enum_window(hwnd: int, _lparam: Any) -> bool:
+            if not win32gui.IsWindowVisible(hwnd) or win32gui.IsIconic(hwnd):
+                return True
+            try:
+                rect = tuple(int(value) for value in win32gui.GetWindowRect(hwnd))
+                width = rect[2] - rect[0]
+                height = rect[3] - rect[1]
+                if width <= 1 or height <= 1:
+                    return True
+                _, found_pid = win32process.GetWindowThreadProcessId(hwnd)
+                owner = int(win32gui.GetWindow(hwnd, win32con.GW_OWNER) or 0)
+                root_owner = int(
+                    win32gui.GetAncestor(hwnd, win32con.GA_ROOTOWNER) or 0
+                )
+                style = int(win32gui.GetWindowLong(hwnd, win32con.GWL_STYLE))
+                ex_style = int(win32gui.GetWindowLong(hwnd, win32con.GWL_EXSTYLE))
+                enumerated.append(
+                    {
+                        "window_id": int(hwnd),
+                        "pid": int(found_pid),
+                        "title": win32gui.GetWindowText(hwnd) or "",
+                        "class_name": win32gui.GetClassName(hwnd) or "",
+                        "rect": rect,
+                        "width": width,
+                        "height": height,
+                        "owner_window_id": owner or None,
+                        "root_owner_window_id": root_owner or None,
+                        "is_popup": bool(style & win32con.WS_POPUP),
+                        "is_tool_window": bool(ex_style & win32con.WS_EX_TOOLWINDOW),
+                        "enum_index": len(enumerated),
+                    }
+                )
+            except Exception:
+                logger.debug(
+                    "Transient-window candidate inspection failed for hwnd=%s",
+                    hwnd,
+                    exc_info=True,
+                )
+            return True
+
+        win32gui.EnumWindows(_enum_window, None)
+        target = next(
+            (
+                candidate
+                for candidate in enumerated
+                if candidate["window_id"] == int(window_id)
+            ),
+            None,
+        )
+        if target is None:
+            return []
+
+        candidates: List[Dict[str, Any]] = []
+        for candidate in enumerated:
+            if candidate["window_id"] == int(window_id):
+                continue
+            if candidate["pid"] != int(pid):
+                continue
+            if candidate["enum_index"] >= target["enum_index"]:
+                continue
+
+            owner_related = (
+                candidate["owner_window_id"] == int(window_id)
+                or candidate["root_owner_window_id"] == int(window_id)
+            )
+            candidate_area = candidate["width"] * candidate["height"]
+            overlap_related = (
+                _rects_overlap(candidate["rect"], target_rect)
+                and candidate_area < target_area * 0.95
+            )
+            if not (
+                owner_related
+                or candidate["is_popup"]
+                or candidate["is_tool_window"]
+                or overlap_related
+            ):
+                continue
+
+            left, top, _, _ = candidate.pop("rect")
+            candidate["x"] = left
+            candidate["y"] = top
+            candidate["z_index"] = (
+                target["enum_index"] - candidate["enum_index"]
+            )
+            candidate.pop("enum_index", None)
+            candidates.append(candidate)
+
+        candidates.sort(key=lambda candidate: candidate["z_index"])
+        return candidates[: max(0, int(limit))]
+    except Exception:
+        logger.debug("Transient-window detection failed", exc_info=True)
+        return []
+
+
 def detect_popover_candidates(
     pid: int,
     window_id: int,
     seen_popovers: Dict[int, set[int]],
+    candidates: Optional[List[Dict[str, Any]]] = None,
 ) -> str:
     """Return markdown for unseen same-pid popover windows.
 
@@ -707,37 +835,15 @@ def detect_popover_candidates(
 
         if sys.platform != "win32":
             return ""
-        import win32gui
-        import win32process
-
         seen = seen_popovers.setdefault(pid, set())
-        candidates: List[Dict[str, Any]] = []
-
-        def _enum_popover(hwnd: int, _lparam: Any) -> bool:
-            if hwnd == window_id or not win32gui.IsWindowVisible(hwnd):
-                return True
-            _, found_pid = win32process.GetWindowThreadProcessId(hwnd)
-            if found_pid != pid:
-                return True
-            r = win32gui.GetWindowRect(hwnd)
-            w, h = r[2] - r[0], r[3] - r[1]
-            if w <= 1 or h <= 1:
-                return True
-            if hwnd in seen:
-                return True
-            seen.add(hwnd)
-            candidates.append({
-                "window_id": hwnd,
-                "title": win32gui.GetWindowText(hwnd),
-                "x": r[0],
-                "y": r[1],
-                "width": w,
-                "height": h,
-            })
-            return True
-
-        win32gui.EnumWindows(_enum_popover, None)
-        if not candidates:
+        unseen = []
+        for candidate in candidates or list_related_transient_windows(pid, window_id):
+            candidate_window_id = int(candidate["window_id"])
+            if candidate_window_id in seen:
+                continue
+            seen.add(candidate_window_id)
+            unseen.append(candidate)
+        if not unseen:
             return ""
 
         text = (
@@ -747,7 +853,7 @@ def detect_popover_candidates(
             "search popovers, context menus, or dialogs; call "
             "`get_window_state(pid={}, window_id=<id>)` to inspect:\n\n"
         ).format(pid)
-        for c in candidates:
+        for c in unseen:
             text += '- window_id={} "{}" at ({},{}) {}x{}\n'.format(
                 c["window_id"],
                 c["title"] or "(no title)",
@@ -760,6 +866,112 @@ def detect_popover_candidates(
     except Exception:
         logger.debug("Popover detection failed", exc_info=True)
         return ""
+
+
+async def capture_related_window_screenshots(
+    automation_handler: Any,
+    candidates: List[Dict[str, Any]],
+    *,
+    max_image_dimension: int,
+) -> List[Dict[str, Any]]:
+    """Capture related transient windows without activating their owner."""
+    if not candidates:
+        return []
+
+    from PIL import Image as PILImage
+
+    desktop_image = None
+    desktop_origin = (0, 0)
+    captures: List[Dict[str, Any]] = []
+    for candidate in candidates:
+        child_pid = int(candidate["pid"])
+        child_window_id = int(candidate["window_id"])
+        bounds = {
+            "x": int(candidate["x"]),
+            "y": int(candidate["y"]),
+            "width": int(candidate["width"]),
+            "height": int(candidate["height"]),
+        }
+        window_state = inspect_window_capture_state(
+            child_pid,
+            child_window_id,
+            bounds,
+        )
+        try:
+            from computer_server.handlers.windows_wgc import capture_window_with_wgc
+
+            wgc_capture = await capture_window_with_wgc(child_window_id)
+            img, geometry = prepare_direct_window_snapshot_image(
+                wgc_capture.image,
+                bounds,
+                max_image_dimension,
+            )
+            capture_metadata = build_wgc_window_capture_metadata(
+                pid=child_pid,
+                window_id=child_window_id,
+                bounds=bounds,
+                geometry=geometry,
+                window_state=window_state,
+                wgc_metadata=wgc_capture.metadata,
+            )
+        except Exception as wgc_error:
+            if desktop_image is None:
+                screenshot_result = await automation_handler.screenshot(
+                    format="png",
+                    quality=95,
+                )
+                if not screenshot_result.get("success"):
+                    logger.debug(
+                        "Transient screenshot fallback failed: %s",
+                        screenshot_result.get("error", "unknown error"),
+                    )
+                    break
+                desktop_bytes = base64.b64decode(screenshot_result["image_data"])
+                desktop_image = PILImage.open(BytesIO(desktop_bytes))
+                desktop_image.load()
+                origin = screenshot_result.get("origin") or {}
+                desktop_origin = (
+                    int(origin.get("x", 0) or 0),
+                    int(origin.get("y", 0) or 0),
+                )
+            img, geometry = prepare_window_snapshot_image(
+                desktop_image.copy(),
+                bounds,
+                desktop_origin,
+                max_image_dimension,
+            )
+            capture_metadata = build_window_capture_metadata(
+                pid=child_pid,
+                window_id=child_window_id,
+                screenshot_result={"capture_metadata": {"capture_source": "pil_imagegrab"}},
+                bounds=bounds,
+                geometry=geometry,
+                window_state=window_state,
+                fallback_reason=str(wgc_error),
+                fallback_backend="wgc",
+            )
+
+        capture_metadata["related_window"] = True
+        screenshot_path = save_window_state_screenshot(
+            img,
+            child_pid,
+            child_window_id,
+            None,
+        )
+        captures.append(
+            {
+                "screenshot": screenshot_path,
+                "pid": child_pid,
+                "window_id": child_window_id,
+                "title": candidate.get("title") or "",
+                "z_index": int(candidate["z_index"]),
+                "screen_width": geometry.screen_width,
+                "screen_height": geometry.screen_height,
+                "capture_metadata": capture_metadata,
+                "_capture_geometry": geometry.to_zoom_metadata(),
+            }
+        )
+    return captures
 
 
 def merge_som_vision(
@@ -1171,6 +1383,13 @@ async def get_window_state_snapshot(
         zoom_entry["capture_backend"] = capture_metadata.get("capture_backend")
         zoom_metadata[(pid, window_id)] = zoom_entry
 
+        related_window_candidates = list_related_transient_windows(pid, window_id)
+        related_screenshots = await capture_related_window_screenshots(
+            automation_handler,
+            related_window_candidates,
+            max_image_dimension=max_image_dimension,
+        )
+
         cache = get_element_cache()
         cache.set_window_origin(
             pid,
@@ -1230,7 +1449,10 @@ async def get_window_state_snapshot(
         cache.set_quality(pid, window_id, tree_quality)
 
         popover_candidates_text = detect_popover_candidates(
-            pid, window_id, seen_popovers
+            pid,
+            window_id,
+            seen_popovers,
+            related_window_candidates,
         )
 
         if force_som or tree_quality in ("poor", "empty"):
@@ -1295,6 +1517,7 @@ async def get_window_state_snapshot(
                 "y": geometry.screenshot_origin_y,
             },
             "_capture_geometry": dict(zoom_entry),
+            "_related_screenshots": related_screenshots,
         }
         if popover_candidates_text:
             response["popover_candidates_text"] = popover_candidates_text

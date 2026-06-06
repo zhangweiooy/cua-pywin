@@ -50,3 +50,28 @@ def test_observation_registry_expires_old_snapshots():
 
     assert registry.get_snapshot(snapshot.snapshot_id) is None
     assert registry.get_screenshot(snapshot.screenshot_id) is None
+
+
+def test_observation_registry_registers_related_screenshot():
+    registry = ObservationContextRegistry()
+    snapshot = registry.create_snapshot(
+        pid=1,
+        window_id=2,
+        node_count=0,
+        unfiltered_node_count=0,
+    )
+
+    related = registry.create_screenshot(
+        snapshot_id=snapshot.snapshot_id,
+        pid=1,
+        window_id=3,
+        screen_width=40,
+        screen_height=20,
+        capture_geometry={"crop_origin_screen_x": 10},
+        capture_metadata={"capture_backend": "wgc"},
+    )
+
+    assert registry.get_screenshot(related.screenshot_id) == related
+    assert registry.is_latest_screenshot(related.screenshot_id) is True
+    assert related.snapshot_id == snapshot.snapshot_id
+    assert related.window_id == 3

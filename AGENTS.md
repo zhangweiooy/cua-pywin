@@ -12,7 +12,7 @@ Windows UI automation MCP server — 25 tools for computer control.
 
 ```
 computer_server/
-  mcp_server.py             — 24 MCP tools via FastMCP; tool wrappers,
+  mcp_server.py             — 25 MCP tools via FastMCP; tool wrappers,
                               recording/replay/learning entrypoints
   main.py                   — Shared HTTP app: /status, /mcp, and
                               token-protected cua-win JSON RPC routes
@@ -178,6 +178,9 @@ Merged public entry points:
   text/key input activates and verifies the target first. Calls without a
   window preserve current-focus behavior, while key-up skips activation so a
   held key can always be released.
+- `computer_click`, `computer_drag`, and `computer_scroll` activate and verify
+  an explicitly supplied canonical `window` before mouse input. Legacy
+  top-level `pid/window_id` calls preserve their prior foreground behavior.
 - Keyboard down/up primitives use
   `computer_press_key({"key":"Shift","action":"down|up"})`.
 - Mouse move/down/up primitives use `computer_mouse({"action":"move|down|up"})`.
@@ -281,6 +284,12 @@ is internal replay metadata.
   input flags, visibility requirements, coordinate source) so callers can tell
   whether the action used UIA Invoke, force-frontmost mouse events, or normal
   pixel click.
+- `computer_get_window_state` returns an additive `screenshots` array. The
+  target has `role="target"` and `zIndex=0`; visible related same-process
+  menus, popovers, or dialogs can appear as `role="transient"` entries with
+  independent `window`, `screenshot_id`, screen origin, capture metadata, and
+  positive `zIndex`. Top-level `screenshot` and `screenshot_id` remain the
+  target capture for compatibility.
 - `computer_perform_secondary_action` is the narrow entry point for
   non-primary node actions. It currently supports only the observable MSAA
   dropdown/splitbutton `expand` path and activates the target before input.
@@ -476,9 +485,6 @@ uv run cua-win stop
 
 ### P1: High-Value API Stabilization
 
-- Make `computer_get_window_state` more explicit and cheaper through
-  request flags such as screenshot, text/tree, nodes, and vision inclusion.
-  Preserve current compatibility defaults until callers migrate.
 - Defer `CUA_TOOL_PROFILE=core|full` until the merged 25-tool surface has had
   enough real agent usage to show which low-level primitives should stay hidden
   by default.
@@ -498,6 +504,9 @@ uv run cua-win stop
 
 ### P3: Defer Until Evidence Accumulates
 
+- Consider request flags for screenshot, tree, nodes, and vision only if real
+  usage shows `computer_get_window_state` response cost or payload size is a
+  recurring problem. Current latency does not justify the added API complexity.
 - Isolate UIA/MSAA COM work in disposable worker processes only if leaked
   provider calls become an observed operational problem.
 - Add a CDP WebSocket connection pool only if browser page tools become

@@ -227,6 +227,9 @@ handle、绑定丢失或上下文重置后重新获取当前窗口对象；使�
 窗口时，会先激活并验证前台窗口，再发送文本、热键、按键或 key-down；不传
 `window/window_id` 时继续作用于当前焦点。key-up 为保证能释放全局按键状态，
 不会重新激活目标窗口。
+`computer_click`、`computer_drag` 和 `computer_scroll` 在显式传入 `window`
+时也会先激活并验证目标窗口；激活失败时不会发送鼠标输入。仅使用旧的顶层
+`pid/window_id` 时保留原行为，不隐式改变前台窗口。
 
 合并后的入口约定：热键通过 `computer_press_key({"keys":[...]})` 或
 `computer_press_key({"key":"Control_L+s"})` 执行；窗口激活、最小化、最大化、
@@ -247,6 +250,11 @@ handle、绑定丢失或上下文重置后重新获取当前窗口对象；使�
 `screenshot_id` 绑定该次截图的 crop origin、resize ratio 和 capture backend。
 当 `computer_click`、`computer_drag`、`computer_scroll` 或 `computer_zoom` 的坐标来自
 返回截图时，传入 `screenshot_id` 可以避免后续截图刷新覆盖全局几何状态。
+`computer_get_window_state` 还返回 `screenshots` 数组：第一项是
+`role="target", zIndex=0` 的主截图；当前可见的同应用关联菜单、弹层或对话框会
+作为 `role="transient"` 项返回。每项都有独立的 `window`、`screenshot_id`、
+屏幕原点和 `zIndex`，可直接用于后续窗口坐标动作。旧的顶层 `screenshot`
+与 `screenshot_id` 字段继续表示主截图。
 
 ### 关键设计
 
@@ -302,7 +310,7 @@ uv run python scripts/wgc_smoke.py --live-only --app chrome --app dingtalk --rep
 
 ### Highlights
 
-- **24 MCP tools** — screenshots, mouse, keyboard, window management; duplicate wrappers merged into higher-level entries
+- **25 MCP tools** — screenshots, mouse, keyboard, window management; duplicate wrappers merged into higher-level entries
 - **Recording / Replay** — record MCP tool invocations to disk with full replay (coordinate recalculation + stale-window resolution)
 - **Learning mode** — record human actions (pynput global hooks + UIA element enrichment + PaddleOCR ONNX vision)
 - **SOM vision detection** — OmniParser YOLO + PaddleOCR ONNX (Chinese + English) + TinyCLIP icon labels, automatic fallback when UIA is unavailable
@@ -314,7 +322,7 @@ uv run python scripts/wgc_smoke.py --live-only --app chrome --app dingtalk --rep
 ```
 cua-pywin/
 ├─ computer_server/          ← Main package
-│  ├─ mcp_server.py          ← 24 MCP tools (thin wrappers; logic in services/)
+│  ├─ mcp_server.py          ← 25 MCP tools (thin wrappers; logic in services/)
 │  ├─ main.py                ← Local HTTP server (/status + /mcp + cua-win JSON RPC)
 │  ├─ tool_cli.py            ← cua-win CLI / HTTP server launcher
 │  ├─ server_context.py      ← Per-instance state (recording / learning /
@@ -537,6 +545,10 @@ Targeted text, hotkey, key-press, and key-down calls activate and verify that
 window before sending input. Calls without `window/window_id` preserve
 current-focus behavior. Key-up skips activation so globally held input can
 always be released.
+`computer_click`, `computer_drag`, and `computer_scroll` also activate and
+verify the target when canonical `window` is explicitly supplied. Activation
+failure prevents mouse input. Legacy top-level `pid/window_id` calls preserve
+their prior foreground behavior.
 
 Merged entry points: hotkeys use `computer_press_key({"keys":[...]})` or
 `computer_press_key({"key":"Control_L+s"})`; activate/minimize/maximize/close,
@@ -561,6 +573,12 @@ origin, resize ratio, and backend. Pass `screenshot_id` to
 `computer_click`, `computer_drag`, `computer_scroll`, or `computer_zoom` when
 coordinates come from a returned screenshot, so later observations cannot
 overwrite the geometry used for coordinate conversion.
+`computer_get_window_state` also returns a `screenshots` array. The first item
+is the target (`role="target", zIndex=0`); visible related menus, popovers, and
+dialogs are returned as `role="transient"` items. Each item has its own
+`window`, `screenshot_id`, screen origin, and `zIndex` for follow-up coordinate
+actions. The existing top-level `screenshot` and `screenshot_id` remain the
+primary target capture.
 
 ### Key Design Decisions
 
