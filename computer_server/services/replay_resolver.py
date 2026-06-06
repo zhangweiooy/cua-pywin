@@ -18,6 +18,7 @@ REPLAY_COORD_TOOLS = frozenset({
 })
 REPLAY_WINDOW_ID_ARG_TOOLS = frozenset({"computer_click", "computer_drag", "computer_scroll"})
 REPLAY_WINDOW_TOOLS = frozenset({"computer_manage_window"})
+REPLAY_TARGET_WINDOW_TOOLS = frozenset({"computer_type", "computer_press_key"})
 REPLAY_ELEMENT_TOOLS = frozenset({
     "computer_click",
     "computer_drag",
@@ -74,6 +75,34 @@ def resolve_replay_args(
                 tool_name,
                 window_ref,
                 )
+
+    if window_ref and tool_name in REPLAY_TARGET_WINDOW_TOOLS:
+        resolved_hwnd = resolve_live_window(window_ref)
+        if resolved_hwnd is not None:
+            hwnd, _rect = resolved_hwnd
+            resolved["window_id"] = hwnd
+            resolved.pop("window", None)
+            try:
+                from computer_server.services.window_identity_service import build_window
+
+                public_window = build_window(hwnd)
+                if public_window is not None and public_window.get("pid") is not None:
+                    resolved["pid"] = public_window["pid"]
+                else:
+                    resolved.pop("pid", None)
+            except Exception:
+                resolved.pop("pid", None)
+            logger.info(
+                "Replay resolved target window to %s for %s",
+                hwnd,
+                tool_name,
+            )
+        else:
+            logger.warning(
+                "Replay: could not resolve target window for %s (window_ref=%s)",
+                tool_name,
+                window_ref,
+            )
 
     if element_ref and tool_name in REPLAY_ELEMENT_TOOLS:
         resolved = resolve_replay_element_args(tool_name, resolved, element_ref)

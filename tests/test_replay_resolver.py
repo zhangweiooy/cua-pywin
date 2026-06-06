@@ -98,6 +98,37 @@ def test_resolve_replay_manage_window_rewrites_stale_hwnd(monkeypatch):
     assert resolved == {"action": "activate", "window_id": "222"}
 
 
+def test_resolve_replay_keyboard_action_rebinds_target_window(monkeypatch):
+    import computer_server.services.window_identity_service as window_identity
+
+    monkeypatch.setattr(
+        replay_resolver,
+        "resolve_live_window",
+        lambda source: (222, (0, 0, 100, 100)),
+    )
+    monkeypatch.setattr(
+        window_identity,
+        "build_window",
+        lambda window_id: {"id": window_id, "window_id": window_id, "pid": 999},
+    )
+
+    resolved = replay_resolver.resolve_replay_args(
+        "computer_press_key",
+        {
+            "key": "Return",
+            "window_id": 111,
+            "pid": 123,
+        },
+        window_ref={"window_id": 111, "process_name": "app.exe"},
+    )
+
+    assert resolved == {
+        "key": "Return",
+        "window_id": 222,
+        "pid": 999,
+    }
+
+
 def test_resolve_replay_click_relocates_cached_element(monkeypatch):
     cache = get_element_cache()
     cache.clear()

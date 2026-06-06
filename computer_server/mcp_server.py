@@ -669,6 +669,59 @@ def create_mcp_server() -> FastMCP:
 
         return build_window(window_id, pid=pid)
 
+    async def _activate_input_window(
+        window: Optional[Dict[str, Any]],
+        pid: Optional[int],
+        window_id: Optional[int],
+        *,
+        activate: bool = True,
+    ) -> Tuple[Optional[int], Optional[int], Optional[Dict[str, Any]]]:
+        """Resolve an optional target window and activate it before input."""
+        resolved_pid, resolved_window_id, ref_error = _resolve_window_arg(
+            window,
+            pid,
+            window_id,
+        )
+        if ref_error is not None:
+            return resolved_pid, resolved_window_id, ref_error
+        if window is not None and resolved_window_id is None:
+            return resolved_pid, resolved_window_id, {
+                "success": False,
+                "error": "window.id or window.window_id is required for targeted input",
+            }
+        if resolved_window_id is None or not activate:
+            return resolved_pid, resolved_window_id, None
+
+        activation = await _get_handlers().window.activate_window(resolved_window_id)
+        if activation.get("success") is False:
+            return resolved_pid, resolved_window_id, {
+                "success": False,
+                "error": (
+                    f"Failed to activate target window {resolved_window_id}: "
+                    f"{activation.get('error', 'activation failed')}"
+                ),
+                "window_id": resolved_window_id,
+                "activation": activation,
+            }
+        return resolved_pid, resolved_window_id, None
+
+    def _attach_input_window(
+        result: Dict[str, Any],
+        pid: Optional[int],
+        window_id: Optional[int],
+        *,
+        activated: bool = True,
+    ) -> None:
+        if window_id is None:
+            return
+        result["window_id"] = window_id
+        if pid is not None:
+            result["pid"] = pid
+        public_window = _build_public_window(pid, window_id)
+        if public_window is not None:
+            result["window"] = public_window
+        result["target_window_activated"] = activated
+
     def _build_element_ref(
         pid: Optional[int],
         window_id: Optional[int],
@@ -2509,6 +2562,7 @@ def create_mcp_server() -> FastMCP:
         capture_after: bool = False,
         pid: Optional[int] = None,
         window_id: Optional[int] = None,
+        window: Optional[Dict[str, Any]] = None,
         sensitive: bool = False,
     ) -> Any:
         """
@@ -2521,19 +2575,43 @@ def create_mcp_server() -> FastMCP:
         Args:
             text: The text to type
             capture_after: When True, take a fresh screenshot + nodes after the action.
-            pid: Process ID for capture_after look-up.
-            window_id: Window ID for capture_after look-up.
+            pid: Top-level process ID for the target/capture_after look-up.
+            window_id: Top-level window ID to activate before typing.
+            window: Canonical window object from list/get_window_state output.
             sensitive: When True, redact text in recording metadata.
         """
+        pid, window_id, ref_error = await _activate_input_window(
+            window,
+            pid,
+            window_id,
+        )
+        if ref_error is not None:
+            return ref_error
+
         automation_handler = _get_handlers().automation
         estimated_seconds = min(60.0, max(1.0, (len(text) / 3.0) * 0.12 + 0.75))
         _suppress_learning_input(estimated_seconds)
         result = await automation_handler.type_text(text)
+        _attach_input_window(result, pid, window_id)
         recorded_text = "<redacted>" if sensitive else text
+        record_args: Dict[str, Any] = {
+            "text": recorded_text,
+            "sensitive": sensitive,
+        }
+        if window_id is not None:
+            record_args["window_id"] = window_id
+        if pid is not None:
+            record_args["pid"] = pid
+        window_ref = (
+            _build_window_ref(pid, window_id, 0, 0)
+            if window_id is not None
+            else None
+        )
         await _recording_hook(_recorded_turn(
             "computer_type",
-            {"text": recorded_text, "sensitive": sensitive},
+            record_args,
             result,
+            window_ref=window_ref,
         ))
 
         # capture_after
@@ -2547,6 +2625,9 @@ def create_mcp_server() -> FastMCP:
         key: Optional[str] = None,
         keys: Optional[List[str]] = None,
         action: str = "press",
+        pid: Optional[int] = None,
+        window_id: Optional[int] = None,
+        window: Optional[Dict[str, Any]] = None,
     ) -> Any:
         """
         Press, hold, or release a key. Also supports key combinations.
@@ -2555,6 +2636,9 @@ def create_mcp_server() -> FastMCP:
             key: Key or '+'-separated key combination, e.g. 'Return' or 'Control_L+s'.
             keys: Optional list form for a key combination, e.g. ['ctrl', 's'].
             action: press|down|up. Key combinations only support action=press.
+            pid: Top-level process ID of the target window.
+            window_id: Top-level window ID to activate before key input.
+            window: Canonical window object from list/get_window_state output.
         """
         from computer_server.services.validation_service import error_result, validate_choice
 
@@ -2563,40 +2647,40 @@ def create_mcp_server() -> FastMCP:
         except ValueError as e:
             return error_result(e)
 
-        automation_handler = _get_handlers().automation
+        normalized_key: Optional[str] = None
+        normalized_keys: Optional[List[str]] = None
         if keys is not None:
             if normalized_action != "press":
                 return {"success": False, "error": "keys can only be used with action=press"}
             if not isinstance(keys, list) or not keys or not all(isinstance(k, str) and k.strip() for k in keys):
                 return {"success": False, "error": "keys must be a non-empty list of strings"}
-            _suppress_learning_input(1.0)
             normalized_keys = [k.strip() for k in keys]
-            result = await automation_handler.hotkey(normalized_keys)
-            await _recording_hook(_recorded_turn(
-                "computer_press_key",
-                {"action": "press", "keys": normalized_keys},
-                result,
-            ))
-            return result
-        if key is None or not isinstance(key, str) or not key.strip():
+        elif key is None or not isinstance(key, str) or not key.strip():
             return {"success": False, "error": "key or keys is required"}
-        normalized_key = key.strip()
-        if "+" in normalized_key:
+        else:
+            normalized_key = key.strip()
+
+        if normalized_key is not None and "+" in normalized_key:
             if normalized_action != "press":
                 return {"success": False, "error": "'+' key combinations can only be used with action=press"}
             normalized_keys = [part.strip() for part in normalized_key.split("+") if part.strip()]
             if len(normalized_keys) < 2:
                 return {"success": False, "error": "key combination must contain at least two keys"}
+
+        pid, window_id, ref_error = await _activate_input_window(
+            window,
+            pid,
+            window_id,
+            activate=normalized_action != "up",
+        )
+        if ref_error is not None:
+            return ref_error
+
+        automation_handler = _get_handlers().automation
+        if normalized_keys is not None:
             _suppress_learning_input(1.0)
             result = await automation_handler.hotkey(normalized_keys)
-            await _recording_hook(_recorded_turn(
-                "computer_press_key",
-                {"action": "press", "key": normalized_key, "keys": normalized_keys},
-                result,
-            ))
-            return result
-
-        if normalized_action == "press":
+        elif normalized_action == "press":
             _suppress_learning_input(1.0)
             result = await automation_handler.press_key(normalized_key)
         elif normalized_action == "down":
@@ -2621,10 +2705,31 @@ def create_mcp_server() -> FastMCP:
                 if was_held:
                     _end_learning_input_suppression(True)
 
+        _attach_input_window(
+            result,
+            pid,
+            window_id,
+            activated=normalized_action != "up",
+        )
+        record_args: Dict[str, Any] = {"action": normalized_action}
+        if normalized_key is not None:
+            record_args["key"] = normalized_key
+        if normalized_keys is not None:
+            record_args["keys"] = normalized_keys
+        if window_id is not None:
+            record_args["window_id"] = window_id
+        if pid is not None:
+            record_args["pid"] = pid
+        window_ref = (
+            _build_window_ref(pid, window_id, 0, 0)
+            if window_id is not None
+            else None
+        )
         await _recording_hook(_recorded_turn(
             "computer_press_key",
-            {"action": normalized_action, "key": normalized_key},
+            record_args,
             result,
+            window_ref=window_ref,
         ))
         return result
 

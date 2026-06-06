@@ -15,6 +15,7 @@ class _Automation:
     def __init__(self) -> None:
         self.mouse_events: list[tuple[str, str]] = []
         self.key_events: list[tuple[str, str]] = []
+        self.typed_text: list[str] = []
 
     async def mouse_down(self, x=None, y=None, button: str = "left"):
         self.mouse_events.append(("down", button))
@@ -26,6 +27,10 @@ class _Automation:
 
     async def press_key(self, key: str):
         self.key_events.append(("press", key))
+        return {"success": True}
+
+    async def type_text(self, text: str):
+        self.typed_text.append(text)
         return {"success": True}
 
     async def key_up(self, key: str):
@@ -84,7 +89,11 @@ async def test_recording_replay_uses_current_consolidated_tool_names(
     )
     await mcp.call_tool(
         "computer_press_key",
-        {"key": "shift"},
+        {"key": "shift", "window": {"id": 456, "pid": 123}},
+    )
+    await mcp.call_tool(
+        "computer_type",
+        {"text": "hello", "window": {"id": 456, "pid": 123}},
     )
     await mcp.call_tool(
         "computer_manage_window",
@@ -103,11 +112,16 @@ async def test_recording_replay_uses_current_consolidated_tool_names(
         "computer_mouse",
         "computer_mouse",
         "computer_press_key",
+        "computer_type",
         "computer_manage_window",
     ]
+    keyboard_actions = actions[2:4]
+    assert [action["args"]["window_id"] for action in keyboard_actions] == [456, 456]
+    assert [action["args"]["pid"] for action in keyboard_actions] == [123, 123]
 
     automation.mouse_events.clear()
     automation.key_events.clear()
+    automation.typed_text.clear()
     window.actions.clear()
 
     replay = await mcp.call_tool(
@@ -119,12 +133,17 @@ async def test_recording_replay_uses_current_consolidated_tool_names(
     )
 
     assert replay.structured_content == {
-        "turns_replayed": 4,
+        "turns_replayed": 5,
         "turns_failed": 0,
-        "turns_total": 4,
+        "turns_total": 5,
         "completed": True,
         "errors": [],
     }
     assert automation.mouse_events == [("down", "left"), ("up", "left")]
     assert automation.key_events == [("press", "shift")]
-    assert window.actions == [("activate", 456)]
+    assert automation.typed_text == ["hello"]
+    assert window.actions == [
+        ("activate", 456),
+        ("activate", 456),
+        ("activate", 456),
+    ]

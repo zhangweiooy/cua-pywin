@@ -16,6 +16,7 @@ class _FakeAutomation:
         self.moves = []
         self.mouse_events = []
         self.key_events = []
+        self.typed_text = []
 
     async def move_cursor(self, x: int, y: int):
         self.moves.append((x, y))
@@ -45,9 +46,11 @@ class _FakeAutomation:
         return {"success": True, "scroll_x": scroll_x, "scroll_y": scroll_y}
 
     async def hotkey(self, keys):
+        self.key_events.append(("hotkey", list(keys)))
         return {"success": True, "keys": keys}
 
     async def press_key(self, key):
+        self.key_events.append(("press", key))
         return {"success": True, "key": key}
 
     async def key_down(self, key):
@@ -59,14 +62,19 @@ class _FakeAutomation:
         return {"success": True, "key": key, "action": "up"}
 
     async def type_text(self, text: str):
+        self.typed_text.append(text)
         return {"success": True, "text": text}
 
 
 class _FakeWindow:
+    def __init__(self):
+        self.activations = []
+
     async def get_current_window_id(self):
         return {"success": True, "window_id": 456, "name": "Target Window"}
 
     async def activate_window(self, window_id: int):
+        self.activations.append(window_id)
         return {"success": True, "window_id": window_id}
 
     async def minimize_window(self, window_id: int):
@@ -345,6 +353,99 @@ async def test_press_key_accepts_hotkey_string(monkeypatch):
     )
 
     assert result.structured_content == {"success": True, "keys": ["Control_L", "s"]}
+
+
+@pytest.mark.asyncio
+async def test_type_activates_target_window_before_input(monkeypatch):
+    import computer_server.mcp_server as mcp_module
+
+    events = []
+
+    class Automation(_FakeAutomation):
+        async def type_text(self, text: str):
+            events.append(("type", text))
+            return {"success": True}
+
+    class Window(_FakeWindow):
+        async def activate_window(self, window_id: int):
+            events.append(("activate", window_id))
+            return {"success": True}
+
+    monkeypatch.setattr(
+        mcp_module,
+        "_handlers",
+        SimpleNamespace(automation=Automation(), window=Window()),
+    )
+
+    result = await create_mcp_server().call_tool(
+        "computer_type",
+        {
+            "text": "你好",
+            "window": {"id": 456, "pid": 123},
+        },
+    )
+
+    assert result.structured_content["success"] is True
+    assert result.structured_content["window_id"] == 456
+    assert result.structured_content["pid"] == 123
+    assert result.structured_content["target_window_activated"] is True
+    assert events == [("activate", 456), ("type", "你好")]
+
+
+@pytest.mark.asyncio
+async def test_press_key_does_not_send_input_when_activation_fails(monkeypatch):
+    import computer_server.mcp_server as mcp_module
+
+    automation = _FakeAutomation()
+
+    class Window(_FakeWindow):
+        async def activate_window(self, window_id: int):
+            return {"success": False, "error": "foreground denied"}
+
+    monkeypatch.setattr(
+        mcp_module,
+        "_handlers",
+        SimpleNamespace(automation=automation, window=Window()),
+    )
+
+    result = await create_mcp_server().call_tool(
+        "computer_press_key",
+        {
+            "key": "Return",
+            "window": {"id": 456, "pid": 123},
+        },
+    )
+
+    assert result.structured_content["success"] is False
+    assert "Failed to activate target window 456" in result.structured_content["error"]
+    assert automation.key_events == []
+
+
+@pytest.mark.asyncio
+async def test_press_key_up_releases_without_reactivating_window(monkeypatch):
+    import computer_server.mcp_server as mcp_module
+
+    automation = _FakeAutomation()
+    window = _FakeWindow()
+    monkeypatch.setattr(
+        mcp_module,
+        "_handlers",
+        SimpleNamespace(automation=automation, window=window),
+    )
+
+    result = await create_mcp_server().call_tool(
+        "computer_press_key",
+        {
+            "key": "Shift",
+            "action": "up",
+            "window": {"id": 456, "pid": 123},
+        },
+    )
+
+    assert result.structured_content["success"] is True
+    assert result.structured_content["target_window_activated"] is False
+    assert window.activations == []
+    assert automation.key_events == [("up", "Shift")]
 
 
 @pytest.mark.asyncio

@@ -174,6 +174,10 @@ Merged public entry points:
 
 - Hotkeys use `computer_press_key({"keys":[...]})` or
   `computer_press_key({"key":"Control_L+s"})`.
+- `computer_type` and `computer_press_key` accept canonical `window`; targeted
+  text/key input activates and verifies the target first. Calls without a
+  window preserve current-focus behavior, while key-up skips activation so a
+  held key can always be released.
 - Keyboard down/up primitives use
   `computer_press_key({"key":"Shift","action":"down|up"})`.
 - Mouse move/down/up primitives use `computer_mouse({"action":"move|down|up"})`.
@@ -463,8 +467,6 @@ uv run cua-win stop
 - Make `computer_get_window_state` more explicit and cheaper through
   request flags such as screenshot, text/tree, nodes, and vision inclusion.
   Preserve current compatibility defaults until callers migrate.
-- Extend `window` input support to remaining keyboard tools where it improves
-  focus safety, especially `computer_type` and `computer_press_key`.
 - Defer `CUA_TOOL_PROFILE=core|full` until the merged 24-tool surface has had
   enough real agent usage to show which low-level primitives should stay hidden
   by default.

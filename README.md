@@ -202,6 +202,10 @@ CLI 进程中通过常驻 daemon 顺序执行。条目可以是
 handle、绑定丢失或上下文重置后重新获取当前窗口对象；使用
 `computer_get_window({"active":true})` 获取当前前台窗口。
 `window_ref` 仅用于 recording/replay 的内部窗口身份快照，不要求调用方构造。
+`computer_type` 和 `computer_press_key` 也支持 canonical `window`。传入目标
+窗口时，会先激活并验证前台窗口，再发送文本、热键、按键或 key-down；不传
+`window/window_id` 时继续作用于当前焦点。key-up 为保证能释放全局按键状态，
+不会重新激活目标窗口。
 
 合并后的入口约定：热键通过 `computer_press_key({"keys":[...]})` 或
 `computer_press_key({"key":"Control_L+s"})` 执行；窗口激活、最小化、最大化、
@@ -478,6 +482,11 @@ stale handles, lost bindings, or context resets. Use
 `computer_get_window({"active":true})` for the current foreground window.
 `window_ref` is internal recording/replay identity metadata and should not be
 hand-authored.
+`computer_type` and `computer_press_key` also accept canonical `window`.
+Targeted text, hotkey, key-press, and key-down calls activate and verify that
+window before sending input. Calls without `window/window_id` preserve
+current-focus behavior. Key-up skips activation so globally held input can
+always be released.
 
 Merged entry points: hotkeys use `computer_press_key({"keys":[...]})` or
 `computer_press_key({"key":"Control_L+s"})`; activate/minimize/maximize/close,
