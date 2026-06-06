@@ -4,7 +4,7 @@ This file provides guidance to coding agents working in this repository.
 
 # cua-pywin
 
-Windows UI automation MCP server — 24 tools for computer control.
+Windows UI automation MCP server — 25 tools for computer control.
 
 **Priority: Windows + Chinese UI is the highest-guarantee target.**
 
@@ -232,8 +232,10 @@ MSAA nodes carry source-specific metadata such as `msaa_role`,
 `msaa_role_id`, `msaa_role_hex`, `msaa_default_action`, `msaa_state`,
 `msaa_child_id`, and `msaa_has_location`. Dropdown-style MSAA roles
 (`BUTTONDROPDOWN`, `BUTTONMENU`, `BUTTONDROPDOWNGRID`, `SPLITBUTTON`) expose
-`actions=["invoke","expand"]`; `computer_click(action="expand")` clicks the
-right edge of the cached MSAA rect to target the dropdown half.
+`actions=["invoke","expand"]`; `computer_perform_secondary_action` with
+`action="expand"` clicks the right edge of the cached MSAA rect to target the
+dropdown half. Primary actions remain on `computer_click`; window activation
+remains on `computer_manage_window`.
 
 ### Recording Vs Learning
 
@@ -277,8 +279,11 @@ is internal replay metadata.
   for HID-level clicks needed by some WebView2/UWP targets.
 - `computer_click` returns action-path metadata (`method`, foreground/system
   input flags, visibility requirements, coordinate source) so callers can tell
-  whether the action used UIA Invoke, activation, force-frontmost mouse events,
-  MSAA expand-edge click, or normal pixel click.
+  whether the action used UIA Invoke, force-frontmost mouse events, or normal
+  pixel click.
+- `computer_perform_secondary_action` is the narrow entry point for
+  non-primary node actions. It currently supports only the observable MSAA
+  dropdown/splitbutton `expand` path and activates the target before input.
 - `computer_click(verify_query=..., require_verification=True)` performs a
   post-action window-state check and marks the result failed when the query is
   not observed. `pid` and `window_id` are required for verification.
@@ -286,7 +291,11 @@ is internal replay metadata.
   a fresh snapshot with `snapshot_id`, `screenshot_id`, and `capture`.
 - Window snapshots include `capture_metadata` with screenshot provenance,
   crop geometry, resize metadata, capture backend, fallback reason, and
-  explicit occlusion-risk warnings. WGC snapshots report
+  explicit occlusion-risk warnings. `capture_metadata.stage_timings` includes
+  bounds lookup, WGC attempt, fallback activation, screen capture, decode,
+  crop/resize, and total capture latency. WGC backend timings additionally
+  split item creation, D3D setup, session setup, frame wait, and texture
+  readback. WGC snapshots report
   `capture_backend="wgc"` and `occlusion_safe=True`; fallback screen crops
   report `capture_backend="screen_crop"` and `occlusion_risk=True`.
 - `computer_zoom` follows the last snapshot backend: WGC snapshots use WGC for
@@ -446,6 +455,7 @@ functions. When the SDK is upgraded past the fix:
 uv run pytest -q
 python -m compileall -q computer_server som
 uv run python scripts/mcp_test_one.py --list
+uv run python scripts/wgc_smoke.py
 uv run cua-win computer_get_screen_size --start-timeout 90
 uv run cua-win stop
 ```
@@ -469,22 +479,22 @@ uv run cua-win stop
 - Make `computer_get_window_state` more explicit and cheaper through
   request flags such as screenshot, text/tree, nodes, and vision inclusion.
   Preserve current compatibility defaults until callers migrate.
-- Defer `CUA_TOOL_PROFILE=core|full` until the merged 24-tool surface has had
+- Defer `CUA_TOOL_PROFILE=core|full` until the merged 25-tool surface has had
   enough real agent usage to show which low-level primitives should stay hidden
   by default.
-- Keep the public surface at 24 tools for now. Do not merge distinct high-level
+- Keep the public surface at 25 tools for now. Do not merge distinct high-level
   operations such as click/drag/scroll, screenshot/window-state/zoom, or
   window discovery/observation/management without concrete agent-usage evidence.
 
 ### P2: Useful, But Not Blocking
 
-- Split non-primary accessibility actions into a dedicated secondary-action
-  tool instead of growing `computer_click(action=...)`.
-- Continue WGC app coverage testing and capture-stage timing so WGC and screen
-  crop can be compared with concrete latency and failure data.
 - Deduplicate EnumWindows search strategies for process/title matching.
 - Explore broader MSAA-backed actions only when the action contract is
   observable and verification-gated.
+- Run the WGC smoke suite on a real mixed-DPI multi-monitor setup. The
+  2026-06-06 controlled run verified occlusion-safe identical frames,
+  minimized-window rejection, and 192-DPI primary-monitor capture; Chrome and
+  DingTalk live samples completed in roughly 172-219 ms per WGC capture.
 
 ### P3: Defer Until Evidence Accumulates
 
@@ -518,9 +528,10 @@ uv run cua-win stop
 
 - Harden the Windows.Graphics.Capture backend with broader Windows-app testing.
   WGC is now the preferred target-window observation path and screen crop is the
-  fallback. Continue testing latency, failure rate, occlusion safety, protected
-  content, minimized windows, GPU apps, WebView2/Electron, and multi-monitor DPI
-  behavior.
+  fallback. `scripts/wgc_smoke.py` now covers controlled occlusion, minimized
+  windows, per-monitor DPI capture, and filtered live-app sampling. Continue
+  collecting protected-content, GPU-app, WebView2/Electron, and mixed-DPI
+  multi-monitor results.
 - Keep UIA and MSAA as parallel observation passes. MSAA is cheap enough to run
   alongside UIA, and it preserves classic Win32 roles that UIA providers often lose.
   Continue attaching MSAA-specific metadata to nodes instead of collapsing it
@@ -534,7 +545,7 @@ uv run cua-win stop
   dispatch can create false success. Revisit only with per-action observability,
   app capability evidence, and verification-gated fallbacks to foreground HID
   input.
-- Track capture-stage timing as part of backend work so WGC can be compared
+- Use `capture_metadata.stage_timings` and the WGC smoke report to compare WGC
   against screen crop with concrete latency and failure-rate data.
 
 ## Future Exploration

@@ -7,6 +7,7 @@ from computer_server.services.window_identity_service import (
     add_window_field,
     build_window,
     build_window_ref,
+    is_window_minimized,
     normalize_window_input,
     rehydrate_window,
     resolve_window_input,
@@ -75,6 +76,43 @@ def test_build_window_keeps_public_ids():
         "app": "Target.exe",
         "process_name": "Target.exe",
         "title": "Target",
+    }
+
+
+def test_is_window_minimized_uses_inclusive_iconic_coordinate_fallback(
+    monkeypatch,
+):
+    import computer_server.services.window_identity_service as identity
+
+    monkeypatch.setattr(
+        identity,
+        "_get_window_rect",
+        lambda _window_id: (-32000, -32000, -31686, -31950),
+    )
+    monkeypatch.setitem(__import__("sys").modules, "win32gui", None)
+
+    assert is_window_minimized(123) is True
+
+
+def test_build_window_uses_is_iconic_state_instead_of_rect_threshold(monkeypatch):
+    import computer_server.services.window_identity_service as identity
+
+    monkeypatch.setattr(
+        identity,
+        "_get_window_rect",
+        lambda _window_id: (-32000, -32000, -31686, -31950),
+    )
+    monkeypatch.setattr(identity, "_is_window_visible", lambda _window_id: True)
+    monkeypatch.setattr(identity, "is_window_minimized", lambda _window_id, _rect: True)
+    monkeypatch.setattr(identity, "_foreground_window_id", lambda: 123)
+
+    window = build_window(123, pid=456, title="Target", app="Target.exe")
+
+    assert window is not None
+    assert window["state"] == {
+        "visible": True,
+        "minimized": True,
+        "foreground": False,
     }
 
 

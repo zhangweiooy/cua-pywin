@@ -171,6 +171,59 @@ def test_resolve_replay_click_relocates_cached_element(monkeypatch):
         cache.clear()
 
 
+def test_resolve_replay_secondary_action_relocates_cached_element(monkeypatch):
+    cache = get_element_cache()
+    cache.clear()
+    monkeypatch.setattr(cache, "_is_window_valid", lambda _window_id: True)
+    try:
+        cache.set_window_origin(11, 22, 100, 200)
+        cache.update(
+            11,
+            22,
+            [
+                CachedElement(
+                    element_index=7,
+                    source="msaa",
+                    center_x=10,
+                    center_y=20,
+                    bbox=(1, 2, 19, 38),
+                    control_type="ButtonDropDown",
+                    name="字体颜色",
+                    actions=["invoke", "expand"],
+                    metadata={"msaa_role_id": 0x38},
+                )
+            ],
+        )
+
+        resolved = replay_resolver.resolve_replay_args(
+            "computer_perform_secondary_action",
+            {
+                "element_index": 3,
+                "action": "expand",
+                "pid": 11,
+                "window_id": 22,
+            },
+            element_ref={
+                "recorded_element_index": 3,
+                "source": "msaa",
+                "control_type": "ButtonDropDown",
+                "name": "字体颜色",
+                "actions": ["invoke", "expand"],
+                "center_x": 12,
+                "center_y": 19,
+            },
+        )
+
+        assert resolved == {
+            "element_index": 7,
+            "action": "expand",
+            "pid": 11,
+            "window_id": 22,
+        }
+    finally:
+        cache.clear()
+
+
 def test_resolve_replay_element_keeps_coordinate_fallback_when_no_match(monkeypatch):
     cache = get_element_cache()
     cache.clear()

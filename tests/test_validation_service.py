@@ -7,7 +7,6 @@ import pytest
 from computer_server.services.validation_service import (
     ValidationError,
     resolve_coordinate_space,
-    validate_click_action,
     validate_click_count,
     validate_drag_duration,
     validate_dom_attributes,
@@ -16,6 +15,7 @@ from computer_server.services.validation_service import (
     validate_page_action,
     validate_port,
     validate_screenshot_request,
+    validate_secondary_action,
     validate_scroll_direction,
     validate_shell,
     validate_tab_index,
@@ -64,12 +64,13 @@ def test_validate_numeric_ranges_reject_non_finite_values():
 
 
 def test_validate_enum_values_are_strict():
-    assert validate_click_action("PRESS") == "press"
-    assert validate_click_action("expand") == "expand"
+    assert validate_secondary_action("EXPAND") == "expand"
     assert validate_shell("cmd") == "cmd"
     assert validate_scroll_direction("down") == "down"
     assert validate_page_action("get_text") == "get_text"
 
+    with pytest.raises(ValidationError):
+        validate_secondary_action("raise")
     with pytest.raises(ValidationError):
         validate_shell("bash")
     with pytest.raises(ValidationError):

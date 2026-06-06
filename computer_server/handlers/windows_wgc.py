@@ -362,6 +362,7 @@ async def capture_window_with_wgc(
         raise WgcUnavailable("Windows.Graphics.Capture is not supported on this system")
 
     started = time.monotonic()
+    item_started = time.monotonic()
     item = create_for_window(hwnd)
     if item is None:
         raise WgcCaptureError("WGC create_for_window returned None")
@@ -369,12 +370,16 @@ async def capture_window_with_wgc(
         raise WgcCaptureError(
             f"WGC item has invalid size: {item.size.width}x{item.size.height}"
         )
+    item_latency = time.monotonic() - item_started
 
+    d3d_started = time.monotonic()
     d3d = _create_d3d_device()
+    d3d_latency = time.monotonic() - d3d_started
     frame_pool = None
     session = None
     frame = None
     try:
+        setup_started = time.monotonic()
         frame_pool = Direct3D11CaptureFramePool.create_free_threaded(
             d3d.winrt_device,
             DirectXPixelFormat.B8_G8_R8_A8_UINT_NORMALIZED,
@@ -391,7 +396,9 @@ async def capture_window_with_wgc(
         except Exception:
             pass
         session.start_capture()
+        session_setup_latency = time.monotonic() - setup_started
 
+        frame_wait_started = time.monotonic()
         deadline = time.monotonic() + max(0.1, timeout_s)
         while time.monotonic() < deadline:
             frame = frame_pool.try_get_next_frame()
@@ -400,14 +407,18 @@ async def capture_window_with_wgc(
             await asyncio.sleep(0.02)
         if frame is None:
             raise WgcCaptureError(f"WGC frame timeout after {timeout_s:.2f}s")
+        frame_wait_latency = time.monotonic() - frame_wait_started
 
+        readback_started = time.monotonic()
         image, texture_metadata = _texture_to_pil_image(
             d3d.device_ptr,
             d3d.context_ptr,
             frame.surface,
         )
+        texture_readback_latency = time.monotonic() - readback_started
         content_size = frame.content_size
-        latency_ms = round((time.monotonic() - started) * 1000.0, 2)
+        total_latency = time.monotonic() - started
+        latency_ms = round(total_latency * 1000.0, 2)
         metadata = {
             "capture_backend": "wgc",
             "capture_source": "windows_graphics_capture",
@@ -426,6 +437,14 @@ async def capture_window_with_wgc(
             "d3d_driver_type": d3d.driver_type,
             "d3d_feature_level": f"0x{d3d.feature_level:x}",
             "latency_ms": latency_ms,
+            "stage_timings": {
+                "wgc_item_latency": item_latency,
+                "wgc_d3d_latency": d3d_latency,
+                "wgc_session_setup_latency": session_setup_latency,
+                "wgc_frame_wait_latency": frame_wait_latency,
+                "wgc_texture_readback_latency": texture_readback_latency,
+                "wgc_total_latency": total_latency,
+            },
             **texture_metadata,
         }
         return WgcWindowCapture(image=image, metadata=metadata)

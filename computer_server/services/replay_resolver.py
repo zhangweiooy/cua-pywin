@@ -12,15 +12,22 @@ logger = logging.getLogger(__name__)
 REPLAY_META_KEYS = frozenset({"window_title", "process_name"})
 REPLAY_COORD_TOOLS = frozenset({
     "computer_click",
+    "computer_perform_secondary_action",
     "computer_drag",
     "computer_scroll",
     "computer_mouse",
 })
-REPLAY_WINDOW_ID_ARG_TOOLS = frozenset({"computer_click", "computer_drag", "computer_scroll"})
+REPLAY_WINDOW_ID_ARG_TOOLS = frozenset({
+    "computer_click",
+    "computer_perform_secondary_action",
+    "computer_drag",
+    "computer_scroll",
+})
 REPLAY_WINDOW_TOOLS = frozenset({"computer_manage_window"})
 REPLAY_TARGET_WINDOW_TOOLS = frozenset({"computer_type", "computer_press_key"})
 REPLAY_ELEMENT_TOOLS = frozenset({
     "computer_click",
+    "computer_perform_secondary_action",
     "computer_drag",
     "computer_scroll",
     "computer_set_value",

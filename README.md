@@ -1,8 +1,8 @@
 # cua-pywin
 
-Windows UI automation MCP server for AI agents — 24 tools for computer control.
+Windows UI automation MCP server for AI agents — 25 tools for computer control.
 <br>
-Windows AI Agent 桌面操控 MCP 服务 — 24 个计算机控制工具。
+Windows AI Agent 桌面操控 MCP 服务 — 25 个计算机控制工具。
 
 ---
 
@@ -14,7 +14,7 @@ Windows AI Agent 桌面操控 MCP 服务 — 24 个计算机控制工具。
 
 ### 亮点
 
-- **24 个 MCP 工具** — 截图、鼠标、键盘、窗口管理；重复 wrapper 已合并为高层入口
+- **25 个 MCP 工具** — 截图、鼠标、键盘、窗口管理；重复 wrapper 已合并为高层入口
 - **录制 / 回放** — 录制 MCP 工具调用序列到磁盘，完整回放（含坐标重算和过期窗口解析）
 - **学习模式** — 录制真人操作（pynput 全局钩子 + UIA 元素标注 + PaddleOCR ONNX 视觉增强）
 - **SOM 视觉检测** — OmniParser YOLO + PaddleOCR ONNX 中文识别 + TinyCLIP 图标语义标签，UIA 不可用时自动回退
@@ -26,7 +26,7 @@ Windows AI Agent 桌面操控 MCP 服务 — 24 个计算机控制工具。
 ```
 cua-pywin/
 ├─ computer_server/          ← 主程序
-│  ├─ mcp_server.py          ← 24 MCP 工具入口（薄 wrapper，业务转交 services/）
+│  ├─ mcp_server.py          ← 25 MCP 工具入口（薄 wrapper，业务转交 services/）
 │  ├─ main.py                ← 本机 HTTP 服务器（/status + /mcp + cua-win JSON RPC）
 │  ├─ tool_cli.py            ← cua-win CLI / HTTP server launcher
 │  ├─ server_context.py      ← 每实例可变状态（录制会话/学习/UIA gate/popover dedup）
@@ -71,7 +71,8 @@ cua-pywin/
 │  ├─ ocr.py                 ← PaddleOCR ONNX / RapidOCR 中文识别
 │  └─ weights/               ← 内置 OmniParser v2 YOLO 图标检测权重
 ├─ scripts/
-│  └─ mcp_test_one.py        ← 单工具测试脚本
+│  ├─ mcp_test_one.py        ← 单工具测试脚本
+│  └─ wgc_smoke.py           ← WGC 遮挡/最小化/显示器 DPI/真实应用 smoke
 ├─ pyproject.toml
 └─ README.md
 ```
@@ -182,7 +183,7 @@ PowerShell 调用 native command 时会剥离 JSON 内层双引号，示例中�
 
 ### MCP 工具
 
-**屏幕与鼠标** — `computer_screenshot` `computer_click` `computer_mouse` `computer_drag` `computer_scroll` `computer_release_all_inputs` `computer_get_screen_size` `computer_get_cursor_position` `computer_get_window_state` `computer_zoom`
+**屏幕与鼠标** — `computer_screenshot` `computer_click` `computer_perform_secondary_action` `computer_mouse` `computer_drag` `computer_scroll` `computer_release_all_inputs` `computer_get_screen_size` `computer_get_cursor_position` `computer_get_window_state` `computer_zoom`
 
 **键盘** — `computer_type` `computer_press_key` `computer_set_value`
 
@@ -236,6 +237,10 @@ handle、绑定丢失或上下文重置后重新获取当前窗口对象；使�
 统一走 `computer_recording({"action":"start|stop|status"})`；学习 start/stop/status
 统一走 `computer_learn({"action":"start|stop|status"})`；辅助树读取统一走
 `computer_get_window_state` 的 `tree_markdown` 和 `nodes`。
+节点的主动作使用 `computer_click`；节点明确暴露的非主动作使用
+`computer_perform_secondary_action`。当前仅支持 MSAA dropdown/splitbutton 的
+`action="expand"`。窗口置前不属于 accessibility action，统一使用
+`computer_manage_window({"action":"activate",...})`。
 
 坐标链路推荐使用 `screenshot_id`。`computer_get_window_state` 同时返回
 `snapshot_id` 和 `screenshot_id`：`snapshot_id` 绑定观察/节点快照，
@@ -245,7 +250,7 @@ handle、绑定丢失或上下文重置后重新获取当前窗口对象；使�
 
 ### 关键设计
 
-**Per-window 截图** — Windows `PrintWindow` 对硬件加速窗口失效。`get_window_state` 优先使用 Windows.Graphics.Capture 捕获目标窗口自身的 DWM 合成帧，避免被前景遮挡窗口污染；失败时回退到 `ImageGrab.grab()` + `GetWindowRect` + PIL `crop()`。`computer_zoom` 会沿用上一次 snapshot backend：WGC snapshot 使用 WGC 做原生 zoom crop，失败才退回 screen crop。多显示器负坐标 + 部分屏外通过 `WindowSnapshotGeometry` 显式区分「真实窗口原点」与「可见裁剪原点」。
+**Per-window 截图** — Windows `PrintWindow` 对硬件加速窗口失效。`get_window_state` 优先使用 Windows.Graphics.Capture 捕获目标窗口自身的 DWM 合成帧，避免被前景遮挡窗口污染；失败时回退到 `ImageGrab.grab()` + `GetWindowRect` + PIL `crop()`。`computer_zoom` 会沿用上一次 snapshot backend：WGC snapshot 使用 WGC 做原生 zoom crop，失败才退回 screen crop。多显示器负坐标 + 部分屏外通过 `WindowSnapshotGeometry` 显式区分「真实窗口原点」与「可见裁剪原点」。`capture_metadata.stage_timings` 报告窗口边界、WGC 尝试、回退激活、全屏捕获、解码、裁剪缩放和 capture 总耗时；WGC 成功时还包含 item、D3D、session setup、frame wait 和 texture readback 分段。
 
 **UIA/MSAA 集成 + Gate** — 直接在 STA 线程内调用 COM（不再 per-property 提交到全局线程池——那会在 UIA provider 挂死时永久泄漏线程）。`UIAWalkGate` / `MSAAWalkGate` / `UIAActionGate`（挂在 `ServerContext`）提供窗口级超时边界：`wait_for + shield + done_callback`，超时时 gate 保持占用并标记不健康冷却，后续请求走 SOM、跳过 MSAA 或回退 pixel/HID，不再叠加 doomed calls。
 
@@ -285,6 +290,10 @@ python -m py_compile computer_server/*.py
 python -m py_compile computer_server/handlers/*.py
 python -m py_compile computer_server/recording/*.py
 python -m py_compile computer_server/learning/*.py
+
+# WGC 受控场景 + 可选真实应用采样
+uv run python scripts/wgc_smoke.py
+uv run python scripts/wgc_smoke.py --live-only --app chrome --app dingtalk --repeat 3
 ```
 
 ---
@@ -480,7 +489,7 @@ Use `cua-win serve --no-cli-rpc` when you only want `/status + /mcp`.
 
 ### MCP Tools
 
-**Screen & Mouse** — `computer_screenshot` `computer_click` `computer_mouse` `computer_drag` `computer_scroll` `computer_release_all_inputs` `computer_get_screen_size` `computer_get_cursor_position` `computer_get_window_state` `computer_zoom`
+**Screen & Mouse** — `computer_screenshot` `computer_click` `computer_perform_secondary_action` `computer_mouse` `computer_drag` `computer_scroll` `computer_release_all_inputs` `computer_get_screen_size` `computer_get_cursor_position` `computer_get_window_state` `computer_zoom`
 
 **Keyboard** — `computer_type` `computer_press_key` `computer_set_value`
 
@@ -539,6 +548,11 @@ start/stop/status uses `computer_recording({"action":"start|stop|status"})`;
 learning start/stop/status uses `computer_learn({"action":"start|stop|status"})`;
 accessibility-tree reads use `computer_get_window_state` `tree_markdown` and
 `nodes`.
+Use `computer_click` for a node's primary action and
+`computer_perform_secondary_action` for an explicitly exposed non-primary
+action. The current secondary action is `action="expand"` for MSAA
+dropdown/splitbutton nodes. Window activation remains
+`computer_manage_window({"action":"activate",...})`.
 
 Prefer `screenshot_id` for coordinate chains. `computer_get_window_state`
 returns both `snapshot_id` and `screenshot_id`: `snapshot_id` binds the
@@ -550,7 +564,7 @@ overwrite the geometry used for coordinate conversion.
 
 ### Key Design Decisions
 
-**Per-window screenshot capture** — `PrintWindow` fails on hardware-accelerated windows. `get_window_state` now prefers Windows.Graphics.Capture for the target window's own DWM-composited frame, avoiding overlapping foreground-window pollution. If WGC fails, it falls back to `ImageGrab.grab()` + `GetWindowRect` + PIL `crop()`. `computer_zoom` follows the last snapshot backend: WGC snapshots use WGC for native zoom crops and fall back to screen crop only when WGC fails. Multi-monitor negative coordinates and partially-offscreen windows are handled by `WindowSnapshotGeometry`, which explicitly separates the real window origin from the visible crop origin.
+**Per-window screenshot capture** — `PrintWindow` fails on hardware-accelerated windows. `get_window_state` now prefers Windows.Graphics.Capture for the target window's own DWM-composited frame, avoiding overlapping foreground-window pollution. If WGC fails, it falls back to `ImageGrab.grab()` + `GetWindowRect` + PIL `crop()`. `computer_zoom` follows the last snapshot backend: WGC snapshots use WGC for native zoom crops and fall back to screen crop only when WGC fails. Multi-monitor negative coordinates and partially-offscreen windows are handled by `WindowSnapshotGeometry`, which explicitly separates the real window origin from the visible crop origin. `capture_metadata.stage_timings` reports window-bounds, WGC attempt, fallback activation, screen capture, decode, crop/resize, and total capture latency. Successful WGC captures additionally expose item, D3D, session setup, frame wait, and texture readback timings.
 
 **UIA/MSAA integration + gates** — COM is called directly inside its STA thread (the previous design submitted each property call to a shared executor and leaked threads when the UIA provider hung). `UIAWalkGate` / `MSAAWalkGate` / `UIAActionGate` (owned by `ServerContext`) provide per-window timeout boundaries with `wait_for + shield + done_callback`. On timeout the gate stays held and the key is marked unhealthy, so fresh requests fall through to SOM, skip MSAA, or use pixel/HID fallback instead of stacking more doomed calls.
 
@@ -612,4 +626,8 @@ python -m py_compile computer_server/*.py
 python -m py_compile computer_server/handlers/*.py
 python -m py_compile computer_server/recording/*.py
 python -m py_compile computer_server/learning/*.py
+
+# Controlled WGC scenarios and optional live-app samples
+uv run python scripts/wgc_smoke.py
+uv run python scripts/wgc_smoke.py --live-only --app chrome --app dingtalk --repeat 3
 ```

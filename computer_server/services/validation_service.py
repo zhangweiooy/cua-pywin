@@ -73,8 +73,8 @@ def validate_mouse_button(button: str) -> str:
     return validate_choice("button", button, {"left", "right", "middle"})
 
 
-def validate_click_action(action: str) -> str:
-    return validate_choice("action", action, {"press", "raise", "expand"})
+def validate_secondary_action(action: str) -> str:
+    return validate_choice("action", action, {"expand"})
 
 
 def validate_optional_query(name: str, value: Optional[str], max_length: int = 256) -> Optional[str]:

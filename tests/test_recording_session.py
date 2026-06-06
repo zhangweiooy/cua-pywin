@@ -6,6 +6,7 @@ from computer_server.recording.session import RECORDABLE_TOOLS, RecordedTurnCont
 
 EXPECTED_RECORDABLE_TOOLS = {
     "computer_click",
+    "computer_perform_secondary_action",
     "computer_mouse",
     "computer_drag",
     "computer_type",

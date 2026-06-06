@@ -1152,64 +1152,6 @@ def create_mcp_server() -> FastMCP:
             return {"x": scaled_x, "y": scaled_y}
         return result
 
-    async def _click_element_raise(
-        pid: int,
-        window_id: int,
-        element_index: int,
-        recorded_element_ref: Optional[Dict[str, Any]],
-        capture_after: bool,
-        verify_query: Optional[str],
-        require_verification: bool,
-    ) -> Dict[str, Any]:
-        """Handle element_index action='raise'."""
-        try:
-            automation_handler = _get_handlers().automation
-            await automation_handler.activate_window(str(window_id))
-            result: Dict[str, Any] = {
-                "success": True,
-                "action": "raise",
-                "element_index": element_index,
-                "window_id": window_id,
-            }
-            _annotate_action_path(
-                result,
-                method="activate_window",
-                used_foreground=True,
-                uses_system_input=False,
-                requires_visible_target=False,
-                coordinate_source="element",
-            )
-            await _attach_post_action_observation(
-                result,
-                pid,
-                window_id,
-                capture_after=capture_after,
-                verify_query=verify_query,
-                require_verification=require_verification,
-            )
-            wr = _build_window_ref(pid, window_id, 0, 0)
-            await _recording_hook(_recorded_turn(
-                "computer_click",
-                {
-                    "element_index": element_index,
-                    "pid": pid,
-                    "window_id": window_id,
-                    "action": "raise",
-                    "verify_query": verify_query,
-                    "require_verification": require_verification,
-                },
-                result,
-                window_ref=wr,
-                element_ref=recorded_element_ref,
-            ))
-            return result
-        except Exception as exc:
-            return {
-                "success": False,
-                "error": f"Raise action failed: {exc}",
-                "suggestion": "Try clicking the element instead with action='press' (the default)",
-            }
-
     async def _click_element_uia_invoke(
         pid: int,
         window_id: int,
@@ -1330,7 +1272,7 @@ def create_mcp_server() -> FastMCP:
         element_index: int,
         el: Any,
     ) -> Tuple[Optional[Dict[str, Any]], Optional[int], Optional[int]]:
-        """Resolve action='expand' for MSAA dropdown-style elements."""
+        """Resolve the expand point for an MSAA dropdown-style element."""
         from computer_server.handlers.element_cache import get_element_cache
 
         metadata = getattr(el, "metadata", {}) or {}
@@ -1339,8 +1281,8 @@ def create_mcp_server() -> FastMCP:
         if getattr(el, "source", None) != "msaa":
             return {
                 "success": False,
-                "error": "action='expand' is currently supported only for MSAA dropdown/splitbutton elements",
-                "suggestion": "Use action='press' for this element",
+                "error": "action='expand' is supported only for MSAA dropdown/splitbutton elements",
+                "suggestion": "Use computer_click for the element's primary action",
             }, None, None
         if role_id not in dropdown_roles:
             return {
@@ -1349,7 +1291,7 @@ def create_mcp_server() -> FastMCP:
                     f"action='expand' requested for MSAA element [{element_index}], "
                     f"but its role ({metadata.get('msaa_role') or el.control_type}) is not a dropdown button"
                 ),
-                "suggestion": "Use action='press' or pick an element whose actions include 'expand'",
+                "suggestion": "Use computer_click or pick an element whose actions include 'expand'",
             }, None, None
 
         bbox = el.bbox or (0, 0, 0, 0)
@@ -1377,7 +1319,6 @@ def create_mcp_server() -> FastMCP:
         pid: Optional[int],
         window_id: Optional[int],
         element_index: Optional[int],
-        action: str,
         from_zoom: bool,
         capture_after: bool,
         verify_query: Optional[str],
@@ -1418,39 +1359,13 @@ def create_mcp_server() -> FastMCP:
             }, None, None, None
 
         recorded_element_ref = _build_element_ref(pid, window_id, element_index)
-        if action == "raise":
-            return (
-                await _click_element_raise(
-                    pid,
-                    window_id,
-                    element_index,
-                    recorded_element_ref,
-                    capture_after,
-                    verify_query,
-                    require_verification,
-                ),
-                None,
-                None,
-                recorded_element_ref,
-            )
-        if action == "expand":
-            expand_error, expand_x, expand_y = _resolve_msaa_expand_point(
-                pid,
-                window_id,
-                element_index,
-                el,
-            )
-            if expand_error is not None:
-                return expand_error, None, None, recorded_element_ref
-            return None, expand_x, expand_y, recorded_element_ref
-
         if el.enabled is False:
             return {
                 "success": False,
                 "error": f"Element [{element_index}] is disabled (enabled=false) — the window may not be frontmost",
                 "suggestion": (
-                    f"Call computer_click(pid={pid}, window_id={window_id}, "
-                    f"element_index={element_index}, action='raise') first to activate the window, then re-snapshot"
+                    f"Call computer_manage_window(action='activate', window_id={window_id}) "
+                    "first, then re-snapshot"
                 ),
             }, None, None, recorded_element_ref
 
@@ -1708,7 +1623,6 @@ def create_mcp_server() -> FastMCP:
         count: int = 1,
         debug_image_out: Optional[str] = None,
         force_frontmost: bool = False,
-        action: str = "press",
         capture_after: bool = False,
         verify_query: Optional[str] = None,
         require_verification: bool = False,
@@ -1746,16 +1660,12 @@ def create_mcp_server() -> FastMCP:
             count: Click count - 1 (single), 2 (double), 3 (triple). Default 1.
             debug_image_out: Optional path to save a debug image with click crosshair.
             force_frontmost: When True, calls SetForegroundWindow before click.
-            action: 'press' (click), 'raise' (bring window to top), or
-                'expand' for MSAA dropdown/splitbutton elements. For
-                element_index only.
             capture_after: When True, take a fresh screenshot + SOM after the action.
             verify_query: Optional query to search in a fresh window snapshot after the action.
             require_verification: When True, return success=False if verify_query is not found.
         """
         from computer_server.services.validation_service import (
             error_result,
-            validate_click_action,
             validate_click_count,
             validate_mouse_button,
             validate_modifiers,
@@ -1766,7 +1676,6 @@ def create_mcp_server() -> FastMCP:
 
         try:
             button = validate_mouse_button(button)
-            action = validate_click_action(action)
             count = validate_click_count(count)
             x = validate_optional_coordinate("x", x)
             y = validate_optional_coordinate("y", y)
@@ -1776,11 +1685,6 @@ def create_mcp_server() -> FastMCP:
                 raise ValueError("require_verification must be a boolean")
             if require_verification and verify_query is None:
                 raise ValueError("require_verification=True requires verify_query")
-            if action != "press" and element_index is None:
-                return {
-                    "success": False,
-                    "error": "action='raise' or action='expand' is only supported with element_index",
-                }
         except ValueError as e:
             return error_result(e)
 
@@ -1830,7 +1734,6 @@ def create_mcp_server() -> FastMCP:
             pid,
             window_id,
             element_index,
-            action,
             from_zoom,
             capture_after,
             verify_query,
@@ -1909,9 +1812,7 @@ def create_mcp_server() -> FastMCP:
             count,
             modifier,
         )
-        if action == "expand":
-            method = "msaa_expand_edge_click"
-        elif element_index is not None:
+        if element_index is not None:
             method = "element_center_pixel_click"
         else:
             method = "pixel_click"
@@ -1959,6 +1860,165 @@ def create_mcp_server() -> FastMCP:
             element_ref=recorded_element_ref,
         ))
 
+        return result
+
+    @mcp.tool(annotations={"readOnlyHint": False, "destructiveHint": True, "idempotentHint": False, "openWorldHint": True})
+    async def computer_perform_secondary_action(
+        element_index: int,
+        action: str,
+        window_id: Optional[int] = None,
+        pid: Optional[int] = None,
+        window: Optional[Dict[str, Any]] = None,
+        snapshot_id: Optional[str] = None,
+        capture_after: bool = False,
+        verify_query: Optional[str] = None,
+        require_verification: bool = False,
+    ) -> Any:
+        """
+        Perform a non-primary action exposed by a cached accessibility node.
+
+        The node must come from computer_get_window_state. Primary actions stay
+        on computer_click; window activation stays on computer_manage_window.
+        Currently supported secondary actions: 'expand' for MSAA
+        dropdown/splitbutton nodes whose actions include 'expand'.
+
+        Args:
+            element_index: Cached node index from computer_get_window_state.
+            action: Secondary action name. Currently only 'expand'.
+            window_id: Top-level window ID associated with the cached node.
+            pid: Top-level process ID associated with the cached node.
+            window: Canonical window object from list/get_window_state output.
+            snapshot_id: Snapshot id used to reject stale node observations.
+            capture_after: Capture a fresh window state after the action.
+            verify_query: Query to verify in the post-action window state.
+            require_verification: Fail when verify_query is not observed.
+        """
+        from computer_server.handlers.element_cache import get_element_cache
+        from computer_server.services.validation_service import (
+            error_result,
+            validate_int_range,
+            validate_optional_query,
+            validate_secondary_action,
+        )
+
+        try:
+            element_index = validate_int_range(
+                "element_index",
+                element_index,
+                0,
+                1_000_000,
+            )
+            action = validate_secondary_action(action)
+            verify_query = validate_optional_query("verify_query", verify_query)
+            if not isinstance(require_verification, bool):
+                raise ValueError("require_verification must be a boolean")
+            if require_verification and verify_query is None:
+                raise ValueError("require_verification=True requires verify_query")
+        except ValueError as exc:
+            return error_result(exc)
+
+        _suppress_learning_input(3.0)
+
+        pid, window_id, ref_error = _resolve_window_arg(window, pid, window_id)
+        if ref_error is not None:
+            return ref_error
+        pid, window_id, ref_error = _resolve_snapshot_ref(snapshot_id, pid, window_id)
+        if ref_error is not None:
+            return ref_error
+        if pid is None or window_id is None:
+            return {
+                "success": False,
+                "error": "pid and window_id are required with element_index",
+                "suggestion": "Pass the window and snapshot_id from computer_get_window_state",
+            }
+
+        element = get_element_cache().get_element(pid, window_id, element_index)
+        if element is None:
+            return {
+                "success": False,
+                "error": f"No cached element at index {element_index} for pid={pid}, window_id={window_id}",
+                "suggestion": "Call computer_get_window_state again and use the new element_index",
+            }
+        if action not in (element.actions or []):
+            return {
+                "success": False,
+                "error": (
+                    f"Element [{element_index}] does not expose secondary action "
+                    f"'{action}'"
+                ),
+                "available_actions": list(element.actions or []),
+            }
+
+        recorded_element_ref = _build_element_ref(pid, window_id, element_index)
+        action_error, target_x, target_y = _resolve_msaa_expand_point(
+            pid,
+            window_id,
+            element_index,
+            element,
+        )
+        if action_error is not None:
+            return action_error
+        if target_x is None or target_y is None:
+            return {"success": False, "error": "internal error: secondary action point was not resolved"}
+
+        activation = await _get_handlers().window.activate_window(window_id)
+        if activation.get("success") is False:
+            return {
+                "success": False,
+                "error": (
+                    f"Failed to activate target window {window_id}: "
+                    f"{activation.get('error', 'activation failed')}"
+                ),
+                "activation": activation,
+            }
+
+        actual_x, actual_y = _scale_to_actual(target_x, target_y)
+        await _animate_cursor_to(actual_x, actual_y)
+        result = await _perform_pixel_click(
+            _get_handlers().automation,
+            actual_x,
+            actual_y,
+            "left",
+            1,
+            None,
+        )
+        result["action"] = action
+        result["element_index"] = element_index
+        result["pid"] = pid
+        result["window_id"] = window_id
+        _annotate_action_path(
+            result,
+            method="msaa_expand_edge_click",
+            used_foreground=True,
+            uses_system_input=True,
+            requires_visible_target=True,
+            coordinate_source="element",
+        )
+        await _attach_post_action_observation(
+            result,
+            pid,
+            window_id,
+            capture_after=capture_after,
+            verify_query=verify_query,
+            require_verification=require_verification,
+        )
+
+        wr = _build_window_ref(pid, window_id, actual_x, actual_y)
+        await _recording_hook(_recorded_turn(
+            "computer_perform_secondary_action",
+            {
+                "element_index": element_index,
+                "action": action,
+                "pid": pid,
+                "window_id": window_id,
+                "verify_query": verify_query,
+                "require_verification": require_verification,
+            },
+            result,
+            click_point=(actual_x, actual_y),
+            window_ref=wr,
+            element_ref=recorded_element_ref,
+        ))
         return result
 
     @mcp.tool(annotations={"readOnlyHint": False, "destructiveHint": True, "idempotentHint": False, "openWorldHint": True})
@@ -3244,6 +3304,9 @@ def create_mcp_server() -> FastMCP:
             import win32process
             import win32con
             from computer_server.handlers.generic import _is_meaningful_window
+            from computer_server.services.window_identity_service import (
+                is_window_minimized,
+            )
 
             app_text = app.strip() if isinstance(app, str) else ""
             if app_text:
@@ -3277,8 +3340,6 @@ def create_mcp_server() -> FastMCP:
             def _enum_windows(hwnd, _):
                 try:
                     visible = win32gui.IsWindowVisible(hwnd)
-                    if on_screen_only and not visible:
-                        return True
                     style = win32gui.GetWindowLong(hwnd, win32con.GWL_STYLE)
                     if not (style & win32con.WS_VISIBLE):
                         return True
@@ -3289,6 +3350,10 @@ def create_mcp_server() -> FastMCP:
                         return True
                     title = win32gui.GetWindowText(hwnd) or ""
                     rect = win32gui.GetWindowRect(hwnd)
+                    minimized = is_window_minimized(hwnd, rect)
+                    is_on_screen = bool(visible and minimized is not True)
+                    if on_screen_only and not is_on_screen:
+                        return True
                     w, h = rect[2] - rect[0], rect[3] - rect[1]
                     record = _add_window_field({
                         "id": hwnd,
@@ -3299,8 +3364,8 @@ def create_mcp_server() -> FastMCP:
                         "y": rect[1],
                         "width": w,
                         "height": h,
-                        "is_on_screen": visible,
-                        "minimized": rect[0] < -32000 or rect[1] < -32000,
+                        "is_on_screen": is_on_screen,
+                        "minimized": minimized,
                     })
                     if _matches_filters(record):
                         windows.append(record)
@@ -3897,6 +3962,7 @@ def create_mcp_server() -> FastMCP:
             resolved = resolve_replay_args(tool_name, args, window_ref=window_ref)
             if element_ref is not None and tool_name in {
                 "computer_click",
+                "computer_perform_secondary_action",
                 "computer_drag",
                 "computer_scroll",
                 "computer_set_value",

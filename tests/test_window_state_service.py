@@ -62,6 +62,24 @@ def test_prepare_direct_window_snapshot_uses_window_origin():
     assert geometry.compression_ratio == 2.0
 
 
+def test_prepare_direct_window_snapshot_uses_capture_pixels_when_dpi_sizes_differ():
+    img = Image.new("RGBA", (1500, 900), "white")
+    bounds = {"x": 1920, "y": 100, "width": 1000, "height": 600}
+
+    resized, geometry = prepare_direct_window_snapshot_image(
+        img,
+        bounds,
+        max_image_dimension=1000,
+    )
+
+    assert resized.size == (1000, 600)
+    assert geometry.window_origin_x == 1920
+    assert geometry.window_origin_y == 100
+    assert geometry.original_width == 1500
+    assert geometry.original_height == 900
+    assert geometry.compression_ratio == 1.5
+
+
 def test_prepare_window_snapshot_uses_virtual_desktop_origin():
     img = Image.new("RGB", (300, 100), "white")
     bounds = {"x": -50, "y": 10, "width": 100, "height": 50}
@@ -248,6 +266,10 @@ async def test_get_window_state_snapshot_prefers_wgc_capture(monkeypatch):
                 "capture_mode": "wgc_window",
                 "occlusion_safe": True,
                 "occlusion_risk": False,
+                "stage_timings": {
+                    "wgc_frame_wait_latency": 0.01,
+                    "wgc_total_latency": 0.02,
+                },
             },
         )
 
@@ -292,6 +314,79 @@ async def test_get_window_state_snapshot_prefers_wgc_capture(monkeypatch):
     assert result["capture_metadata"]["capture_mode"] == "wgc_window"
     assert result["capture_metadata"]["occlusion_safe"] is True
     assert result["capture_metadata"]["occlusion_risk"] is False
+    timings = result["capture_metadata"]["stage_timings"]
+    assert timings["wgc_frame_wait_latency"] == 0.01
+    assert timings["wgc_total_latency"] == 0.02
+    assert timings["wgc_latency"] >= 0
+    assert timings["crop_resize_latency"] >= 0
+    assert timings["capture_total_latency"] >= 0
+
+
+@pytest.mark.asyncio
+async def test_get_window_state_snapshot_reports_minimized_wgc_fallback_timings(
+    monkeypatch,
+):
+    async def fake_capture_window_with_wgc(window_id, *, timeout_s=1.0):
+        raise RuntimeError("target_window_minimized")
+
+    async def fake_collect_uia_nodes(*args, **kwargs):
+        return {
+            "nodes": [],
+            "total_elements": 0,
+            "uia_node_count": 0,
+            "tree_markdown": "",
+            "uia_quality": "ok",
+            "tree_quality": "ok",
+        }
+
+    async def fake_collect_msaa_nodes(*args, **kwargs):
+        return {
+            "nodes": [],
+            "total_elements": 0,
+            "msaa_node_count": 0,
+            "tree_markdown": "",
+            "msaa_quality": "empty",
+        }
+
+    import computer_server.handlers.windows_wgc as windows_wgc
+
+    monkeypatch.setattr(windows_wgc, "capture_window_with_wgc", fake_capture_window_with_wgc)
+    monkeypatch.setattr(
+        window_state_service,
+        "inspect_window_capture_state",
+        lambda pid, window_id, bounds: {
+            "pid": pid,
+            "window_id": window_id,
+            "is_minimized": True,
+            "is_visible": True,
+            "bounds": bounds,
+        },
+    )
+    monkeypatch.setattr(window_state_service, "collect_uia_nodes", fake_collect_uia_nodes)
+    monkeypatch.setattr(window_state_service, "collect_msaa_nodes", fake_collect_msaa_nodes)
+    monkeypatch.setattr(window_state_service, "detect_popover_candidates", lambda *args: "")
+    monkeypatch.setattr(window_state_service, "save_window_state_screenshot", lambda *args: "shot.jpg")
+
+    result = await get_window_state_snapshot(
+        _FakeAutomationHandler(),
+        pid=123,
+        window_id=456,
+    )
+
+    metadata = result["capture_metadata"]
+    assert metadata["capture_backend"] == "screen_crop"
+    assert metadata["fallback"] == {
+        "from_backend": "wgc",
+        "reason": "target_window_minimized",
+    }
+    assert "target_window_minimized" in metadata["warnings"]
+    assert "preferred_capture_backend_failed" in metadata["warnings"]
+    timings = metadata["stage_timings"]
+    assert timings["wgc_latency"] >= 0
+    assert timings["screen_capture_latency"] >= 0
+    assert timings["image_decode_latency"] >= 0
+    assert timings["crop_resize_latency"] >= 0
+    assert timings["capture_total_latency"] >= 0
 
 
 @pytest.mark.asyncio

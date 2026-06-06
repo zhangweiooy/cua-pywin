@@ -105,6 +105,25 @@ def _is_window_visible(window_id: Optional[int]) -> Optional[bool]:
         return None
 
 
+def is_window_minimized(
+    window_id: Optional[int],
+    rect: Optional[Tuple[int, int, int, int]] = None,
+) -> Optional[bool]:
+    """Return the HWND minimized state, with iconic coordinates as fallback."""
+    if window_id is None:
+        return None
+    try:
+        import win32gui
+
+        return bool(win32gui.IsIconic(int(window_id)))
+    except Exception:
+        if rect is None:
+            rect = _get_window_rect(window_id)
+        if rect is None:
+            return None
+        return bool(rect[0] <= -32000 or rect[1] <= -32000)
+
+
 def _foreground_window_id() -> Optional[int]:
     try:
         import win32gui
@@ -254,6 +273,7 @@ def build_window(
     window_title = title or _get_window_title(wid)
     rect = _get_window_rect(wid)
     visible = _is_window_visible(wid)
+    minimized = is_window_minimized(wid, rect)
     foreground = _foreground_window_id()
 
     result: Dict[str, Any] = {
@@ -272,7 +292,6 @@ def build_window(
         result["class_name"] = class_name
     if rect is not None:
         left, top, right, bottom = rect
-        minimized = left < -32000 or top < -32000
         result["bounds"] = {
             "x": left,
             "y": top,
@@ -282,7 +301,11 @@ def build_window(
         result["state"] = {
             "visible": bool(visible) if visible is not None else None,
             "minimized": minimized,
-            "foreground": foreground == wid if foreground is not None else None,
+            "foreground": (
+                foreground == wid and minimized is not True
+                if foreground is not None
+                else None
+            ),
         }
     return result
 

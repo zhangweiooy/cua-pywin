@@ -7,6 +7,7 @@ os.environ["CUA_SKIP_SOM_WARMUP"] = "1"
 
 import pytest
 
+from computer_server.handlers.element_cache import CachedElement, get_element_cache
 from computer_server.mcp_server import create_mcp_server
 
 
@@ -107,6 +108,7 @@ EXPECTED_PUBLIC_TOOLS = {
     "computer_get_screen_size",
     "computer_get_cursor_position",
     "computer_click",
+    "computer_perform_secondary_action",
     "computer_mouse",
     "computer_drag",
     "computer_scroll",
@@ -137,6 +139,12 @@ async def test_agent_native_tools_are_not_exposed():
     names = {tool.name for tool in tools}
 
     assert names == EXPECTED_PUBLIC_TOOLS
+    click = next(tool for tool in tools if tool.name == "computer_click")
+    secondary = next(
+        tool for tool in tools if tool.name == "computer_perform_secondary_action"
+    )
+    assert "action" not in click.parameters["properties"]
+    assert set(secondary.parameters["required"]) == {"element_index", "action"}
 
 
 @pytest.mark.asyncio
@@ -223,29 +231,92 @@ async def test_click_returns_action_path_for_pixel_click(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_click_raise_requires_element_index():
+async def test_secondary_action_requires_window_identity():
     result = await create_mcp_server().call_tool(
-        "computer_click",
-        {"action": "raise"},
+        "computer_perform_secondary_action",
+        {"element_index": 1, "action": "expand"},
     )
 
     assert result.structured_content == {
         "success": False,
-        "error": "action='raise' or action='expand' is only supported with element_index",
+        "error": "pid and window_id are required with element_index",
+        "suggestion": "Pass the window and snapshot_id from computer_get_window_state",
     }
 
 
 @pytest.mark.asyncio
-async def test_click_expand_requires_element_index():
+async def test_secondary_action_rejects_non_secondary_action():
     result = await create_mcp_server().call_tool(
-        "computer_click",
-        {"action": "expand"},
+        "computer_perform_secondary_action",
+        {"element_index": 1, "action": "raise"},
     )
 
     assert result.structured_content == {
         "success": False,
-        "error": "action='raise' or action='expand' is only supported with element_index",
+        "error": "action must be one of: expand",
     }
+
+
+@pytest.mark.asyncio
+async def test_secondary_action_expands_msaa_dropdown(monkeypatch):
+    import computer_server.mcp_server as mcp_module
+
+    cache = get_element_cache()
+    cache.clear()
+    monkeypatch.setattr(cache, "_is_window_valid", lambda _window_id: True)
+
+    async def noop_animate(_x: int, _y: int) -> None:
+        return None
+
+    automation = _FakeAutomation()
+    window = _FakeWindow()
+    monkeypatch.setattr(
+        mcp_module,
+        "_handlers",
+        SimpleNamespace(automation=automation, window=window),
+    )
+    monkeypatch.setattr(mcp_module, "_animate_cursor_to", noop_animate)
+    try:
+        cache.set_window_origin(123, 456, 100, 200)
+        cache.update(
+            123,
+            456,
+            [
+                CachedElement(
+                    element_index=7,
+                    source="msaa",
+                    center_x=40,
+                    center_y=20,
+                    bbox=(20, 10, 60, 30),
+                    control_type="ButtonDropDown",
+                    name="字体颜色",
+                    actions=["invoke", "expand"],
+                    metadata={"msaa_role": "ButtonDropDown", "msaa_role_id": 0x38},
+                )
+            ],
+        )
+
+        result = await create_mcp_server().call_tool(
+            "computer_perform_secondary_action",
+            {
+                "element_index": 7,
+                "action": "expand",
+                "pid": 123,
+                "window_id": 456,
+            },
+        )
+
+        content = result.structured_content
+        assert content["success"] is True
+        assert content["action"] == "expand"
+        assert content["element_index"] == 7
+        assert content["x"] == 156
+        assert content["y"] == 220
+        assert content["method"] == "msaa_expand_edge_click"
+        assert content["action_path"]["coordinate_source"] == "element"
+        assert window.activations == [456]
+    finally:
+        cache.clear()
 
 
 @pytest.mark.asyncio
@@ -298,6 +369,58 @@ async def test_manage_window_activates_and_resizes(monkeypatch):
     assert resize_result.structured_content["width"] == 800
     assert resize_result.structured_content["height"] == 600
     assert resize_result.structured_content["action"] == "resize"
+
+
+@pytest.mark.asyncio
+async def test_list_windows_marks_minimized_window_off_screen(monkeypatch):
+    import win32con
+    import win32gui
+    import win32process
+
+    import computer_server.handlers.generic as generic
+    import computer_server.services.window_identity_service as identity
+
+    monkeypatch.setattr(
+        win32gui,
+        "EnumWindows",
+        lambda callback, extra: callback(456, extra),
+    )
+    monkeypatch.setattr(win32gui, "IsWindowVisible", lambda _hwnd: True)
+    monkeypatch.setattr(
+        win32gui,
+        "GetWindowLong",
+        lambda _hwnd, _index: win32con.WS_VISIBLE,
+    )
+    monkeypatch.setattr(win32gui, "GetWindowText", lambda _hwnd: "Target")
+    monkeypatch.setattr(
+        win32gui,
+        "GetWindowRect",
+        lambda _hwnd: (-32000, -32000, -31686, -31950),
+    )
+    monkeypatch.setattr(
+        win32process,
+        "GetWindowThreadProcessId",
+        lambda _hwnd: (1, 123),
+    )
+    monkeypatch.setattr(generic, "_is_meaningful_window", lambda _hwnd: True)
+    monkeypatch.setattr(
+        identity,
+        "is_window_minimized",
+        lambda _hwnd, _rect=None: True,
+    )
+
+    mcp = create_mcp_server()
+    all_windows = await mcp.call_tool("computer_list_windows", {})
+    on_screen = await mcp.call_tool(
+        "computer_list_windows",
+        {"on_screen_only": True},
+    )
+
+    record = all_windows.structured_content["windows"][0]
+    assert record["minimized"] is True
+    assert record["is_on_screen"] is False
+    assert record["window"]["state"]["minimized"] is True
+    assert on_screen.structured_content["windows"] == []
 
 
 @pytest.mark.asyncio
