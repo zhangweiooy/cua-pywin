@@ -131,13 +131,33 @@ cua-win serve --host 0.0.0.0 --port 8000 \
 PowerShell 调用 native command 时会剥离 JSON 内层双引号，示例中因此使用
 `'{\"key\":\"value\"}'` 写法。
 
-`cua-win batch` 从标准输入、内联 JSON 或 UTF-8 JSON 文件读取动作数组，并在同一
-CLI 进程中通过常驻 daemon 顺序执行。条目可以是
+`cua-win batch` 从标准输入、内联 JSON 或 UTF-8 JSON 文件读取动作数组，或
+`{"defaults":...,"actions":[...]}` 对象，并在同一 CLI 进程中通过常驻 daemon
+顺序执行。条目可以是
 `{"tool":"computer_click","arguments":{...}}`，也可以是
 `{"type":"wait","milliseconds":200}`。默认首个失败即停止；使用
 `--continue-on-error` 可继续后续条目。失败或 Ctrl+C 中断时会尝试调用
 `computer_release_all_inputs`。批处理调用会关闭 agent 鼠标轨迹动画，避免大量连续
 动作在 overlay 动画上产生额外等待；真实鼠标拖拽的 `duration` 仍按动作参数执行。
+
+大量同类操作可用按工具 defaults 减少重复参数。合并是浅合并，单条动作参数优先：
+
+```json
+{
+  "defaults": {
+    "computer_drag": {
+      "window": {"id": 123456, "pid": 8888},
+      "screenshot_id": "shot-123",
+      "coordinate_space": "window_resized",
+      "duration": 0.02
+    }
+  },
+  "actions": [
+    {"tool": "computer_drag", "arguments": {"start_x": 450, "start_y": 300, "end_x": 650, "end_y": 300}},
+    {"tool": "computer_drag", "arguments": {"start_x": 450, "start_y": 302, "end_x": 650, "end_y": 302}}
+  ]
+}
+```
 
 `cua-win doctor` 执行只读本机诊断：平台、Python 版本、依赖可发现性、打包模型文件、状态目录和现有 daemon 可达性。它不会启动 daemon 或调用桌面控制工具。
 
@@ -403,15 +423,36 @@ should still reuse the daemon.
 PowerShell strips inner JSON quotes when launching native commands, so CLI
 examples use `'{\"key\":\"value\"}'`.
 
-`cua-win batch` reads an action array from stdin, inline JSON, or a UTF-8 JSON
-file and executes it sequentially through the same daemon process. Entries may
-be `{"tool":"computer_click","arguments":{...}}` or
+`cua-win batch` reads an action array or a
+`{"defaults":...,"actions":[...]}` object from stdin, inline JSON, or a UTF-8
+JSON file and executes it sequentially through the same daemon process. Entries
+may be `{"tool":"computer_click","arguments":{...}}` or
 `{"type":"wait","milliseconds":200}`. Execution stops on the first failure by
 default; `--continue-on-error` processes the remaining entries. Failures and
 Ctrl+C interruptions trigger a best-effort `computer_release_all_inputs` call.
 Batch calls suppress the agent cursor trajectory overlay so dense action
 sequences do not wait on visual animation; the actual drag `duration` remains
 unchanged.
+
+For repeated operations, `defaults` supplies common arguments per tool. The
+merge is shallow and each action's arguments take precedence:
+
+```json
+{
+  "defaults": {
+    "computer_drag": {
+      "window": {"id": 123456, "pid": 8888},
+      "screenshot_id": "shot-123",
+      "coordinate_space": "window_resized",
+      "duration": 0.02
+    }
+  },
+  "actions": [
+    {"tool": "computer_drag", "arguments": {"start_x": 450, "start_y": 300, "end_x": 650, "end_y": 300}},
+    {"tool": "computer_drag", "arguments": {"start_x": 450, "start_y": 302, "end_x": 650, "end_y": 302}}
+  ]
+}
+```
 
 `cua-win doctor` performs read-only local diagnostics for platform, Python
 version, dependency availability, bundled model files, state directory, and

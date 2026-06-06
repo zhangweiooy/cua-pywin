@@ -425,12 +425,14 @@ functions. When the SDK is upgraded past the fix:
   opens a WebSocket. High-frequency DOM reads may need a connection pool.
 - A running `cua-win` daemon keeps code and model state loaded until
   `cua-win stop`, process exit, logout, or reboot. Restart it after code changes.
-- `cua-win batch` executes a JSON array of mixed MCP tool calls and waits
-  sequentially through one CLI process and one persistent daemon HTTP
-  connection. It is a precomputed batch runner, not a server-side script
-  executor; recording still occurs inside each invoked action tool. Batch
-  requests suppress the agent cursor trajectory overlay while preserving real
-  input timing such as drag duration.
+- `cua-win batch` accepts either a JSON action array or
+  `{"defaults": {...}, "actions": [...]}`. Defaults are keyed by tool name and
+  shallow-merged into each action; action arguments override defaults. It
+  executes mixed MCP calls and waits sequentially through one CLI process and
+  one persistent daemon HTTP connection. It is a precomputed batch runner, not
+  a server-side script executor; recording still occurs inside each invoked
+  action tool. Batch requests suppress the agent cursor trajectory overlay
+  while preserving real input timing such as drag duration.
 - Subprocess environments should set `PYTHONIOENCODING=utf-8` to avoid GBK output
   issues.
 - One-shot `cua-win --no-daemon` schema queries and explicitly safe read-only

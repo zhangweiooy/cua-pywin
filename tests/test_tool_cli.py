@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import argparse
 import io
 import os
 import sys
@@ -55,6 +56,84 @@ def test_parse_batch_actions_accepts_inline_file_and_stdin(tmp_path, monkeypatch
     assert _parse_batch_actions("-") == actions
 
 
+def test_parse_batch_actions_merges_tool_defaults_shallowly() -> None:
+    encoded = """
+    {
+      "defaults": {
+        "computer_drag": {
+          "window": {"id": 1, "pid": 2},
+          "duration": 0.02,
+          "coordinate_space": "window_resized"
+        },
+        "computer_press_key": {
+          "window": {"id": 3, "pid": 4}
+        }
+      },
+      "actions": [
+        {
+          "tool": "computer_drag",
+          "arguments": {
+            "start_x": 10,
+            "start_y": 20,
+            "end_x": 30,
+            "end_y": 40,
+            "duration": 0.05,
+            "window": {"id": 9, "pid": 8}
+          }
+        },
+        {"type": "wait", "milliseconds": 25},
+        {
+          "tool": "computer_press_key",
+          "arguments": {"key": "Return"}
+        }
+      ]
+    }
+    """
+
+    actions = _parse_batch_actions(encoded)
+
+    assert actions == [
+        {
+            "tool": "computer_drag",
+            "arguments": {
+                "window": {"id": 9, "pid": 8},
+                "duration": 0.05,
+                "coordinate_space": "window_resized",
+                "start_x": 10,
+                "start_y": 20,
+                "end_x": 30,
+                "end_y": 40,
+            },
+        },
+        {"type": "wait", "milliseconds": 25},
+        {
+            "tool": "computer_press_key",
+            "arguments": {
+                "window": {"id": 3, "pid": 4},
+                "key": "Return",
+            },
+        },
+    ]
+
+
+def test_parse_batch_actions_rejects_invalid_defaults() -> None:
+    with pytest.raises(
+        SystemExit,
+        match="batch defaults for 'computer_drag' must be an arguments object",
+    ):
+        _parse_batch_actions(
+            '{"defaults":{"computer_drag":1},"actions":[]}'
+        )
+
+    with pytest.raises(
+        SystemExit,
+        match="batch object contains unsupported fields: variables",
+    ):
+        _parse_batch_actions(
+            '{"defaults":{},"actions":[],"variables":{}}'
+        )
+
+
 def test_batch_parser_accepts_minimal_options() -> None:
     args = build_parser().parse_args(
         [
@@ -70,6 +149,52 @@ def test_batch_parser_accepts_minimal_options() -> None:
     assert args.input == "batch.json"
     assert args.continue_on_error is True
     assert args.timeout == 10
+
+
+def test_top_level_help_describes_batch_input_forms() -> None:
+    help_text = " ".join(build_parser().format_help().split())
+
+    assert "execute a JSON action array or {defaults, actions} object" in help_text
+
+
+def test_batch_help_is_self_contained() -> None:
+    parser = build_parser()
+    subparsers_action = next(
+        action
+        for action in parser._actions
+        if isinstance(action, argparse._SubParsersAction)
+    )
+    help_text = subparsers_action.choices["batch"].format_help()
+
+    assert "per-tool defaults" in help_text
+    assert "shallow-merged by tool name" in help_text
+    assert "arguments override its defaults" in help_text
+    assert "Wait entries never use defaults" in help_text
+    assert "stops on the first failure" in help_text
+    assert "suppress the agent cursor trajectory overlay" in help_text
+    assert '"defaults"' in help_text
+    assert '"actions"' in help_text
+    assert "--timeout" in help_text
+    assert "each tool HTTP request" in help_text
+
+
+def test_public_subcommand_arguments_have_help_text() -> None:
+    parser = build_parser()
+    subparsers_action = next(
+        action
+        for action in parser._actions
+        if isinstance(action, argparse._SubParsersAction)
+    )
+
+    missing = []
+    for command, subparser in subparsers_action.choices.items():
+        for action in subparser._actions:
+            if action.dest == "help" or action.help == argparse.SUPPRESS:
+                continue
+            if not isinstance(action.help, str) or not action.help.strip():
+                missing.append(f"{command}:{action.dest}")
+
+    assert missing == []
 
 
 def test_execute_batch_mixes_waits_and_tool_calls(monkeypatch) -> None:

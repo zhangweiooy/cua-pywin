@@ -101,6 +101,13 @@ MAX_BATCH_ACTIONS = 10_000
 MAX_BATCH_WAIT_MS = 600_000
 
 
+class _HelpFormatter(
+    argparse.RawDescriptionHelpFormatter,
+    argparse.ArgumentDefaultsHelpFormatter,
+):
+    """Preserve examples while showing defaults for documented options."""
+
+
 @dataclass(frozen=True)
 class DaemonInfo:
     host: str
@@ -434,7 +441,7 @@ def _parse_batch_actions(raw: str | None) -> list[dict[str, Any]]:
         source = sys.stdin.read()
     else:
         stripped = raw.lstrip()
-        if stripped.startswith("["):
+        if stripped.startswith(("[", "{")):
             source = raw
         else:
             try:
@@ -447,15 +454,65 @@ def _parse_batch_actions(raw: str | None) -> list[dict[str, Any]]:
         parsed = json.loads(source)
     except json.JSONDecodeError as exc:
         raise SystemExit(f"invalid batch JSON: {exc.msg}") from exc
-    if not isinstance(parsed, list):
-        raise SystemExit("batch input must be a JSON array")
-    if len(parsed) > MAX_BATCH_ACTIONS:
+
+    defaults: dict[str, dict[str, Any]] = {}
+    if isinstance(parsed, list):
+        actions = parsed
+    elif isinstance(parsed, dict):
+        unknown_keys = set(parsed) - {"defaults", "actions"}
+        if unknown_keys:
+            raise SystemExit(
+                "batch object contains unsupported fields: "
+                + ", ".join(sorted(unknown_keys))
+            )
+        actions = parsed.get("actions")
+        raw_defaults = parsed.get("defaults", {})
+        if not isinstance(actions, list):
+            raise SystemExit("batch object actions must be a JSON array")
+        if not isinstance(raw_defaults, dict):
+            raise SystemExit("batch defaults must be an object keyed by tool name")
+        for tool, arguments in raw_defaults.items():
+            if not isinstance(tool, str) or not tool.strip():
+                raise SystemExit("batch default tool names must be non-empty strings")
+            if not isinstance(arguments, dict):
+                raise SystemExit(
+                    f"batch defaults for {tool!r} must be an arguments object"
+                )
+            defaults[tool.strip()] = dict(arguments)
+    else:
+        raise SystemExit("batch input must be a JSON array or an object with actions")
+
+    if len(actions) > MAX_BATCH_ACTIONS:
         raise SystemExit(
-            f"batch contains {len(parsed)} actions; maximum is {MAX_BATCH_ACTIONS}"
+            f"batch contains {len(actions)} actions; maximum is {MAX_BATCH_ACTIONS}"
         )
-    if not all(isinstance(item, dict) for item in parsed):
+    if not all(isinstance(item, dict) for item in actions):
         raise SystemExit("every batch item must be a JSON object")
-    return parsed
+
+    normalized: list[dict[str, Any]] = []
+    for item in actions:
+        if item.get("type") == "wait":
+            normalized.append(dict(item))
+            continue
+
+        tool = item.get("tool")
+        if not isinstance(tool, str) or not tool.strip():
+            normalized.append(dict(item))
+            continue
+        tool = tool.strip()
+        action_arguments = item.get("arguments", {})
+        if not isinstance(action_arguments, dict):
+            raise SystemExit("batch tool arguments must be an object")
+        arguments = dict(defaults.get(tool, {}))
+        arguments.update(action_arguments)
+        normalized.append(
+            {
+                **item,
+                "tool": tool,
+                "arguments": arguments,
+            }
+        )
+    return normalized
 
 
 def _batch_payload_failed(payload: dict[str, Any]) -> bool:
@@ -1119,10 +1176,15 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog=CLI_NAME,
         description="CLI for the cua-pywin HTTP server and MCP tool calls.",
+        formatter_class=_HelpFormatter,
     )
     subparsers = parser.add_subparsers(dest="command", required=True)
 
-    serve = subparsers.add_parser("serve", help="run the HTTP server in the foreground")
+    serve = subparsers.add_parser(
+        "serve",
+        help="run the HTTP server in the foreground",
+        formatter_class=_HelpFormatter,
+    )
     serve.add_argument("--width", type=int, help="Target screenshot width for coordinate scaling")
     serve.add_argument("--height", type=int, help="Target screenshot height for coordinate scaling")
     serve.add_argument(
@@ -1130,8 +1192,17 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Auto-detect and log the actual screen resolution at startup",
     )
-    serve.add_argument("--host", default=DEFAULT_HOST)
-    serve.add_argument("--port", type=int, default=DEFAULT_PORT)
+    serve.add_argument(
+        "--host",
+        default=DEFAULT_HOST,
+        help="Host interface to bind.",
+    )
+    serve.add_argument(
+        "--port",
+        type=int,
+        default=DEFAULT_PORT,
+        help="TCP port to bind.",
+    )
     serve.add_argument(
         "--i-know-this-exposes-my-computer",
         action="store_true",
@@ -1141,6 +1212,7 @@ def build_parser() -> argparse.ArgumentParser:
         "--log-level",
         choices=["debug", "info", "warning", "error", "critical"],
         default="info",
+        help="HTTP server log level.",
     )
     serve.add_argument("--ssl-keyfile", help="Path to SSL private key file")
     serve.add_argument("--ssl-certfile", help="Path to SSL certificate file")
@@ -1151,25 +1223,72 @@ def build_parser() -> argparse.ArgumentParser:
     )
     serve.add_argument("--token", help=argparse.SUPPRESS)
     serve.add_argument("--metadata-file", help=argparse.SUPPRESS)
-    serve.add_argument("--quiet", action="store_true")
+    serve.add_argument(
+        "--quiet",
+        action="store_true",
+        help="Suppress normal startup output.",
+    )
     serve.set_defaults(func=_cmd_serve)
 
-    start = subparsers.add_parser("start", help="start the background daemon")
-    start.add_argument("--timeout", type=float, default=DEFAULT_START_TIMEOUT)
-    start.add_argument("--json", action="store_true")
+    start = subparsers.add_parser(
+        "start",
+        help="start the background daemon",
+        formatter_class=_HelpFormatter,
+    )
+    start.add_argument(
+        "--timeout",
+        type=float,
+        default=DEFAULT_START_TIMEOUT,
+        help="Seconds to wait for the daemon to become ready.",
+    )
+    start.add_argument(
+        "--json",
+        action="store_true",
+        help="Print machine-readable JSON.",
+    )
     start.set_defaults(func=_cmd_start)
 
-    status = subparsers.add_parser("status", help="show daemon status")
-    status.add_argument("--json", action="store_true")
+    status = subparsers.add_parser(
+        "status",
+        help="show daemon status",
+        formatter_class=_HelpFormatter,
+    )
+    status.add_argument(
+        "--json",
+        action="store_true",
+        help="Print machine-readable JSON.",
+    )
     status.set_defaults(func=_cmd_status)
 
-    stop = subparsers.add_parser("stop", help="stop the background daemon")
-    stop.add_argument("--timeout", type=float, default=10.0)
+    stop = subparsers.add_parser(
+        "stop",
+        help="stop the background daemon",
+        formatter_class=_HelpFormatter,
+    )
+    stop.add_argument(
+        "--timeout",
+        type=float,
+        default=10.0,
+        help="Seconds to wait for the daemon to exit.",
+    )
     stop.set_defaults(func=_cmd_stop)
 
-    doctor = subparsers.add_parser("doctor", help="diagnose local cua-win runtime health")
-    doctor.add_argument("--json", action="store_true")
-    doctor.add_argument("--timeout", type=float, default=2.0)
+    doctor = subparsers.add_parser(
+        "doctor",
+        help="diagnose local cua-win runtime health",
+        formatter_class=_HelpFormatter,
+    )
+    doctor.add_argument(
+        "--json",
+        action="store_true",
+        help="Print machine-readable JSON.",
+    )
+    doctor.add_argument(
+        "--timeout",
+        type=float,
+        default=2.0,
+        help="Seconds allowed for the daemon health probe.",
+    )
     doctor.add_argument(
         "--no-dependencies",
         action="store_true",
@@ -1182,46 +1301,143 @@ def build_parser() -> argparse.ArgumentParser:
     )
     doctor.set_defaults(func=_cmd_doctor)
 
-    list_tools = subparsers.add_parser("list-tools", help="list MCP tools")
-    list_tools.add_argument("--json", action="store_true")
-    list_tools.add_argument("--timeout", type=float, default=DEFAULT_REQUEST_TIMEOUT)
-    list_tools.add_argument("--start-timeout", type=float, default=DEFAULT_START_TIMEOUT)
-    list_tools.add_argument("--no-daemon", action="store_true")
+    list_tools = subparsers.add_parser(
+        "list-tools",
+        help="list MCP tools",
+        formatter_class=_HelpFormatter,
+    )
+    list_tools.add_argument(
+        "--json",
+        action="store_true",
+        help="Print machine-readable JSON.",
+    )
+    list_tools.add_argument(
+        "--timeout",
+        type=float,
+        default=DEFAULT_REQUEST_TIMEOUT,
+        help="Seconds allowed for the HTTP request.",
+    )
+    list_tools.add_argument(
+        "--start-timeout",
+        type=float,
+        default=DEFAULT_START_TIMEOUT,
+        help="Seconds to wait when auto-starting the daemon.",
+    )
+    list_tools.add_argument(
+        "--no-daemon",
+        action="store_true",
+        help="Run once in-process instead of reusing the daemon.",
+    )
     list_tools.set_defaults(func=_cmd_list_tools)
 
-    describe = subparsers.add_parser("describe", help="show one tool schema")
-    describe.add_argument("tool")
-    describe.add_argument("--timeout", type=float, default=DEFAULT_REQUEST_TIMEOUT)
-    describe.add_argument("--start-timeout", type=float, default=DEFAULT_START_TIMEOUT)
-    describe.add_argument("--no-daemon", action="store_true")
+    describe = subparsers.add_parser(
+        "describe",
+        help="show one tool schema",
+        formatter_class=_HelpFormatter,
+    )
+    describe.add_argument("tool", help="MCP tool name to describe.")
+    describe.add_argument(
+        "--timeout",
+        type=float,
+        default=DEFAULT_REQUEST_TIMEOUT,
+        help="Seconds allowed for the HTTP request.",
+    )
+    describe.add_argument(
+        "--start-timeout",
+        type=float,
+        default=DEFAULT_START_TIMEOUT,
+        help="Seconds to wait when auto-starting the daemon.",
+    )
+    describe.add_argument(
+        "--no-daemon",
+        action="store_true",
+        help="Run once in-process instead of reusing the daemon.",
+    )
     describe.set_defaults(func=_cmd_describe)
 
-    call = subparsers.add_parser("call", help="call one MCP tool")
-    call.add_argument("tool")
-    call.add_argument("arguments", nargs="?", default="{}")
-    call.add_argument("--json", action="store_true")
-    call.add_argument("--timeout", type=float, default=DEFAULT_REQUEST_TIMEOUT)
-    call.add_argument("--start-timeout", type=float, default=DEFAULT_START_TIMEOUT)
-    call.add_argument("--no-daemon", action="store_true")
+    call = subparsers.add_parser(
+        "call",
+        help="call one MCP tool",
+        formatter_class=_HelpFormatter,
+    )
+    call.add_argument("tool", help="MCP tool name to call.")
+    call.add_argument(
+        "arguments",
+        nargs="?",
+        default="{}",
+        help="Tool arguments as a JSON object.",
+    )
+    call.add_argument(
+        "--json",
+        action="store_true",
+        help="Print the full machine-readable call envelope.",
+    )
+    call.add_argument(
+        "--timeout",
+        type=float,
+        default=DEFAULT_REQUEST_TIMEOUT,
+        help="Seconds allowed for the tool HTTP request.",
+    )
+    call.add_argument(
+        "--start-timeout",
+        type=float,
+        default=DEFAULT_START_TIMEOUT,
+        help="Seconds to wait when auto-starting the daemon.",
+    )
+    call.add_argument(
+        "--no-daemon",
+        action="store_true",
+        help=(
+            "Run once in-process instead of reusing the daemon; heavy tools may "
+            "pay model import and warm-up costs."
+        ),
+    )
     call.set_defaults(func=_cmd_call)
 
     batch = subparsers.add_parser(
         "batch",
-        help="execute a JSON array of tool calls and waits sequentially",
+        help="execute a JSON action array or {defaults, actions} object",
+        description="""Execute mixed MCP tool calls and waits sequentially.
+
+Input may be a simple action array or an object containing per-tool defaults
+and an actions array. Defaults are shallow-merged by tool name; each action's
+arguments override its defaults. Wait entries never use defaults.
+
+Execution stops on the first failure unless --continue-on-error is set.
+Batch requests suppress the agent cursor trajectory overlay, while real input
+timing such as computer_drag duration is preserved.""",
+        epilog="""Examples:
+  cua-win batch '[{"tool":"computer_get_screen_size","arguments":{}},{"type":"wait","milliseconds":100}]'
+
+  '{"defaults":{"computer_drag":{"duration":0.02,"coordinate_space":"window_resized"}},"actions":[{"tool":"computer_drag","arguments":{"start_x":10,"start_y":20,"end_x":100,"end_y":20}},{"tool":"computer_drag","arguments":{"start_x":10,"start_y":22,"end_x":100,"end_y":22}}]}' | cua-win batch""",
+        formatter_class=_HelpFormatter,
     )
     batch.add_argument(
         "input",
         nargs="?",
         default="-",
-        help="JSON array, UTF-8 JSON file, or '-' for stdin (default)",
+        help=(
+            "Inline JSON array/object, UTF-8 JSON file path, or '-' to read "
+            "stdin."
+        ),
     )
     batch.add_argument(
         "--continue-on-error",
         action="store_true",
         help="Continue after a failed batch item instead of stopping.",
     )
-    batch.add_argument("--timeout", type=float, default=DEFAULT_REQUEST_TIMEOUT)
-    batch.add_argument("--start-timeout", type=float, default=DEFAULT_START_TIMEOUT)
+    batch.add_argument(
+        "--timeout",
+        type=float,
+        default=DEFAULT_REQUEST_TIMEOUT,
+        help="Seconds allowed for each tool HTTP request.",
+    )
+    batch.add_argument(
+        "--start-timeout",
+        type=float,
+        default=DEFAULT_START_TIMEOUT,
+        help="Seconds to wait when auto-starting the daemon.",
+    )
     batch.set_defaults(func=_cmd_batch)
 
     return parser
