@@ -15,6 +15,9 @@ Usage::
 import logging
 import math
 import threading
+from contextlib import contextmanager
+from contextvars import ContextVar
+from typing import Iterator
 
 from .cursor import AgentCursor
 
@@ -25,6 +28,33 @@ _agent_cursor: AgentCursor | None = None
 _last_target_x: float | None = None
 _last_target_y: float | None = None
 _last_target_lock = threading.Lock()
+_animation_suppressed: ContextVar[bool] = ContextVar(
+    "cursor_animation_suppressed",
+    default=False,
+)
+
+
+def is_animation_suppressed() -> bool:
+    return _animation_suppressed.get()
+
+
+@contextmanager
+def suppress_animation() -> Iterator[None]:
+    token = _animation_suppressed.set(True)
+    try:
+        if _agent_cursor is not None:
+            _agent_cursor.hide()
+        yield
+    finally:
+        _animation_suppressed.reset(token)
+
+
+def set_position_hidden(x: int, y: int) -> None:
+    """Synchronize overlay state without displaying or animating it."""
+    _update_last_target(x, y)
+    if _agent_cursor is not None:
+        _agent_cursor.set_initial_position(x, y)
+        _agent_cursor.hide()
 
 
 def init(enabled: bool = True) -> AgentCursor | None:

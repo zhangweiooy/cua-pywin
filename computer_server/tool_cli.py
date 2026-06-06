@@ -27,6 +27,7 @@ from typing import Any, Sequence
 
 from .tool_rpc import (
     AUTH_HEADER,
+    BATCH_HEADER,
     DAEMON_TOKEN_ENV,
     call_result_to_json as _call_result_to_json,
     tool_to_json as _tool_to_json,
@@ -139,9 +140,11 @@ class _DaemonHttpClient:
         info: DaemonInfo,
         *,
         timeout: float = DEFAULT_REQUEST_TIMEOUT,
+        batch_mode: bool = False,
     ) -> None:
         self._info = info
         self._timeout = timeout
+        self._batch_mode = batch_mode
         self._connection = http.client.HTTPConnection(
             info.host,
             info.port,
@@ -159,6 +162,8 @@ class _DaemonHttpClient:
     ) -> dict[str, Any]:
         body = None
         headers = {AUTH_HEADER: self._info.token, "Accept": "application/json"}
+        if self._batch_mode:
+            headers[BATCH_HEADER] = "1"
         if payload is not None:
             body = json.dumps(payload).encode("utf-8")
             headers["Content-Type"] = "application/json"
@@ -1094,7 +1099,7 @@ def _cmd_call(args: argparse.Namespace) -> int:
 def _cmd_batch(args: argparse.Namespace) -> int:
     actions = _parse_batch_actions(args.input)
     info = _ensure_daemon(timeout=args.start_timeout)
-    client = _DaemonHttpClient(info, timeout=args.timeout)
+    client = _DaemonHttpClient(info, timeout=args.timeout, batch_mode=True)
     try:
         payload = _execute_batch(
             client,

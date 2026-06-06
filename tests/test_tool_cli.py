@@ -7,7 +7,9 @@ import sys
 import pytest
 
 from computer_server.tool_cli import (
+    DaemonInfo,
     DoctorCheck,
+    _DaemonHttpClient,
     _call_result_to_json,
     _collect_doctor_checks,
     _doctor_summary,
@@ -20,6 +22,7 @@ from computer_server.tool_cli import (
     _tool_to_json,
     build_parser,
 )
+from computer_server.tool_rpc import BATCH_HEADER
 
 
 def test_rewrite_implicit_call() -> None:
@@ -145,6 +148,41 @@ def test_execute_batch_stops_and_releases_inputs_after_failure() -> None:
         "computer_click",
         "computer_release_all_inputs",
     ]
+
+
+def test_batch_http_client_marks_requests(monkeypatch) -> None:
+    captured = {}
+
+    class Response:
+        status = 200
+
+        def read(self):
+            return b"{}"
+
+    class Connection:
+        def __init__(self, host, port, timeout):
+            captured["connection"] = (host, port, timeout)
+
+        def request(self, method, path, body=None, headers=None):
+            captured["request"] = (method, path, body, headers)
+
+        def getresponse(self):
+            return Response()
+
+        def close(self):
+            pass
+
+    monkeypatch.setattr(
+        "computer_server.tool_cli.http.client.HTTPConnection",
+        Connection,
+    )
+    client = _DaemonHttpClient(
+        DaemonInfo(host="127.0.0.1", port=1234, token="secret"),
+        batch_mode=True,
+    )
+
+    assert client.request("POST", "/call", {"name": "example"}) == {}
+    assert captured["request"][3][BATCH_HEADER] == "1"
 
 
 def test_lightweight_inprocess_calls_are_explicit() -> None:

@@ -136,7 +136,8 @@ CLI 进程中通过常驻 daemon 顺序执行。条目可以是
 `{"tool":"computer_click","arguments":{...}}`，也可以是
 `{"type":"wait","milliseconds":200}`。默认首个失败即停止；使用
 `--continue-on-error` 可继续后续条目。失败或 Ctrl+C 中断时会尝试调用
-`computer_release_all_inputs`。
+`computer_release_all_inputs`。批处理调用会关闭 agent 鼠标轨迹动画，避免大量连续
+动作在 overlay 动画上产生额外等待；真实鼠标拖拽的 `duration` 仍按动作参数执行。
 
 `cua-win doctor` 执行只读本机诊断：平台、Python 版本、依赖可发现性、打包模型文件、状态目录和现有 daemon 可达性。它不会启动 daemon 或调用桌面控制工具。
 
@@ -404,6 +405,9 @@ be `{"tool":"computer_click","arguments":{...}}` or
 `{"type":"wait","milliseconds":200}`. Execution stops on the first failure by
 default; `--continue-on-error` processes the remaining entries. Failures and
 Ctrl+C interruptions trigger a best-effort `computer_release_all_inputs` call.
+Batch calls suppress the agent cursor trajectory overlay so dense action
+sequences do not wait on visual animation; the actual drag `duration` remains
+unchanged.
 
 `cua-win doctor` performs read-only local diagnostics for platform, Python
 version, dependency availability, bundled model files, state directory, and

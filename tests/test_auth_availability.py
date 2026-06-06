@@ -2,9 +2,14 @@
 
 from __future__ import annotations
 
+from types import SimpleNamespace
+
 from fastapi.testclient import TestClient
 
+import computer_server.main as main_module
+import computer_server.overlay as overlay
 from computer_server.main import app
+from computer_server.tool_rpc import AUTH_HEADER, BATCH_HEADER, DAEMON_TOKEN_ENV
 
 
 def test_status_reports_mcp_only_http_surface():
@@ -63,3 +68,30 @@ def test_cors_rejects_non_localhost_origins():
     resp = client.options("/status", headers=headers)
 
     assert "access-control-allow-origin" not in resp.headers
+
+
+def test_batch_call_suppresses_cursor_animation(monkeypatch):
+    observed = []
+
+    class FakeMcp:
+        async def call_tool(self, name, arguments):
+            observed.append(overlay.is_animation_suppressed())
+            return SimpleNamespace(
+                is_error=False,
+                structured_content={"success": True},
+                content=[],
+            )
+
+    monkeypatch.setenv(DAEMON_TOKEN_ENV, "secret")
+    monkeypatch.setattr(main_module, "_get_mcp_server", lambda: FakeMcp())
+    client = TestClient(app)
+
+    response = client.post(
+        "/call",
+        headers={AUTH_HEADER: "secret", BATCH_HEADER: "1"},
+        json={"name": "computer_get_screen_size", "arguments": {}},
+    )
+
+    assert response.status_code == 200
+    assert observed == [True]
+    assert overlay.is_animation_suppressed() is False

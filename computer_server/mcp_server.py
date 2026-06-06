@@ -85,6 +85,10 @@ async def _animate_cursor_to(x: int, y: int) -> None:
     """
     import computer_server.overlay as overlay
 
+    if overlay.is_animation_suppressed():
+        overlay.set_position_hidden(x, y)
+        return
+
     if overlay._agent_cursor is None:
         try:
             overlay.init()
@@ -2183,7 +2187,9 @@ def create_mcp_server() -> FastMCP:
         # Step the drag manually so the overlay arrow tracks the path.
         # automation_handler.drag_to() does its own internal stepping, but
         # the overlay would stay at the start point the whole time.
-        from computer_server.overlay import _agent_cursor
+        import computer_server.overlay as overlay
+
+        _agent_cursor = overlay._agent_cursor
 
         btn = automation_handler._map_button(button)
         await automation_handler.mouse_down(actual_start_x, actual_start_y, button=button)
@@ -2194,11 +2200,16 @@ def create_mcp_server() -> FastMCP:
             iy = int(actual_start_y + (actual_end_y - actual_start_y) * t)
             automation_handler.mouse.position = (ix, iy)
             # Track overlay along the drag path and keep it visible
-            if _agent_cursor is not None:
+            if (
+                _agent_cursor is not None
+                and not overlay.is_animation_suppressed()
+            ):
                 _agent_cursor.set_position_visible(ix, iy)
             await asyncio.sleep(duration / steps)
         automation_handler.mouse.position = (actual_end_x, actual_end_y)
         await automation_handler.mouse_up(actual_end_x, actual_end_y, button=button)
+        if overlay.is_animation_suppressed():
+            overlay.set_position_hidden(actual_end_x, actual_end_y)
         result = {"success": True}
         _annotate_action_path(
             result,

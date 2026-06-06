@@ -424,7 +424,9 @@ functions. When the SDK is upgraded past the fix:
 - `cua-win batch` executes a JSON array of mixed MCP tool calls and waits
   sequentially through one CLI process and one persistent daemon HTTP
   connection. It is a precomputed batch runner, not a server-side script
-  executor; recording still occurs inside each invoked action tool.
+  executor; recording still occurs inside each invoked action tool. Batch
+  requests suppress the agent cursor trajectory overlay while preserving real
+  input timing such as drag duration.
 - Subprocess environments should set `PYTHONIOENCODING=utf-8` to avoid GBK output
   issues.
 - One-shot `cua-win --no-daemon` schema queries and explicitly safe read-only

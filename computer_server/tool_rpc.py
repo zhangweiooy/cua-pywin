@@ -6,6 +6,7 @@ from typing import Any
 
 
 AUTH_HEADER = "X-Cua-Token"
+BATCH_HEADER = "X-Cua-Batch"
 DAEMON_TOKEN_ENV = "CUA_WIN_DAEMON_TOKEN"
 
 

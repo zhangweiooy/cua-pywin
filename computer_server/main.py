@@ -6,7 +6,13 @@ from typing import Any
 from fastapi import Body, Depends, FastAPI, Header, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 
-from .tool_rpc import AUTH_HEADER, DAEMON_TOKEN_ENV, call_result_to_json, tool_to_json
+from .tool_rpc import (
+    AUTH_HEADER,
+    BATCH_HEADER,
+    DAEMON_TOKEN_ENV,
+    call_result_to_json,
+    tool_to_json,
+)
 
 OS_TYPE = "windows"
 
@@ -79,7 +85,13 @@ app.add_middleware(
     allow_origin_regex=r"^https?://(localhost|127\.0\.0\.1|\[::1\])(:\d+)?$",
     allow_credentials=True,
     allow_methods=["GET", "POST", "OPTIONS"],
-    allow_headers=["Authorization", "Content-Type", "Mcp-Session-Id", AUTH_HEADER],
+    allow_headers=[
+        "Authorization",
+        "Content-Type",
+        "Mcp-Session-Id",
+        AUTH_HEADER,
+        BATCH_HEADER,
+    ],
 )
 
 
@@ -133,7 +145,10 @@ async def describe_tool(tool_name: str) -> dict[str, Any]:
 
 
 @app.post("/call", dependencies=[Depends(_require_cli_token)])
-async def call_tool(body: dict[str, Any] = Body(...)) -> dict[str, Any]:
+async def call_tool(
+    body: dict[str, Any] = Body(...),
+    x_cua_batch: str | None = Header(default=None, alias=BATCH_HEADER),
+) -> dict[str, Any]:
     name = body.get("name")
     arguments = body.get("arguments") or {}
     if not isinstance(name, str) or not name:
@@ -144,7 +159,17 @@ async def call_tool(body: dict[str, Any] = Body(...)) -> dict[str, Any]:
     mcp = _get_mcp_server()
     if mcp is None:
         raise HTTPException(status_code=503, detail="MCP server unavailable")
-    result = await mcp.call_tool(name, arguments)
+    batch_call = isinstance(x_cua_batch, str) and x_cua_batch.strip().lower() in {
+        "1",
+        "true",
+    }
+    if batch_call:
+        from computer_server.overlay import suppress_animation
+
+        with suppress_animation():
+            result = await mcp.call_tool(name, arguments)
+    else:
+        result = await mcp.call_tool(name, arguments)
     payload = call_result_to_json(result)
     payload.update({"tool": name, "mode": "daemon"})
     return payload
