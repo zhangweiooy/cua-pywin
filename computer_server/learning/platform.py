@@ -540,7 +540,6 @@ class UIAEnricher:
         _ensure_com_initialized()
         try:
             import uiautomation as auto
-            from uiautomation import ValuePattern
 
             focused = auto.GetFocusedControl()
             if focused is None:

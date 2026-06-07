@@ -15,8 +15,8 @@ import os
 import queue
 import threading
 import time
-from dataclasses import dataclass, field
-from typing import Any, Dict, List, Optional, Tuple
+from dataclasses import dataclass
+from typing import Any, Dict, Optional, Tuple
 
 logger = logging.getLogger(__name__)
 
@@ -132,14 +132,12 @@ class RecordingSession:
                 )
                 drained = 0
                 deadline = time.monotonic() + 2.0
-                sentinel_delivered = False
                 while True:
                     remaining = deadline - time.monotonic()
                     if remaining <= 0:
                         # Last-resort attempt without waiting.
                         try:
                             self._writer_queue.put_nowait(_WRITER_STOP)
-                            sentinel_delivered = True
                         except queue.Full:
                             logger.error(
                                 "Failed to deliver stop sentinel "
@@ -155,7 +153,6 @@ class RecordingSession:
                     except queue.Empty:
                         # Queue emptied — safe to deliver sentinel.
                         self._writer_queue.put_nowait(_WRITER_STOP)
-                        sentinel_delivered = True
                         break
                 if drained:
                     logger.warning(

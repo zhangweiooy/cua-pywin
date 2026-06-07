@@ -824,6 +824,27 @@ async def test_mouse_actions_activate_explicit_window_before_input(monkeypatch):
     ]
     assert scroll.structured_content["target_window_activated"] is True
 
+    events.clear()
+    smooth_scroll = await mcp.call_tool(
+        "computer_scroll",
+        {
+            "window": target,
+            "coordinate_space": "screen",
+            "x": 10,
+            "y": 20,
+            "scroll_y": -2,
+            "smooth": True,
+        },
+    )
+    assert events == [
+        ("activate", 456),
+        ("move", 10, 20),
+        ("wheel", 0, -1),
+        ("wheel", 0, -1),
+    ]
+    assert smooth_scroll.structured_content["success"] is True
+    assert smooth_scroll.structured_content["target_window_activated"] is True
+
 
 @pytest.mark.asyncio
 async def test_click_does_not_send_input_when_explicit_window_activation_fails(

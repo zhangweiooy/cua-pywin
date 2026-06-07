@@ -4,7 +4,7 @@ This file contains shared fixtures and configuration for all computer-server tes
 Following SRP: This file ONLY handles test setup/teardown.
 """
 
-from unittest.mock import AsyncMock, Mock, patch
+from unittest.mock import AsyncMock
 
 import pytest
 

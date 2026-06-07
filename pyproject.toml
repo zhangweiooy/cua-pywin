@@ -102,3 +102,10 @@ dev = [
 
 [tool.pdm.scripts]
 api = "cua-win serve"
+
+[tool.ruff]
+extend-exclude = ["computer_server/models/omniparser_v2/icon_caption"]
+
+[tool.ruff.lint.per-file-ignores]
+"computer_server/handlers/windows.py" = ["E402"]
+"computer_server/mcp_server.py" = ["E402"]

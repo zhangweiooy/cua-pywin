@@ -4,18 +4,12 @@ import io
 import logging
 import time
 
-import cv2
-import numpy as np
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple, Union, cast
-import supervision as sv
+from typing import Dict, List, Optional, Tuple, Union, cast
+
 import torch
 import torchvision.ops
-import torchvision.transforms as T
-from huggingface_hub import hf_hub_download
 from PIL import Image
-from supervision.detection.core import Detections
-from ultralytics import YOLO
 
 from .detection import DetectionProcessor
 from .models import (

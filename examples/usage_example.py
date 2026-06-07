@@ -5,11 +5,6 @@ Example showing how to use the Cua Computer API as an imported package.
 
 import asyncio
 import logging
-from typing import TYPE_CHECKING
-
-# For type checking only
-if TYPE_CHECKING:
-    from computer_api import Server
 
 # Setup logging
 logging.basicConfig(

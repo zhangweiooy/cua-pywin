@@ -9,8 +9,6 @@ import asyncio
 import base64
 import functools
 import logging
-import os
-import subprocess
 import threading
 from typing import Any, Callable, Dict, List, Optional, Tuple, TypeVar, Union
 
@@ -53,8 +51,6 @@ _CLIPBOARD_LOCK = threading.Lock()
 
 # Try to import Windows-specific modules
 try:
-    import win32api
-    import win32con
     import win32gui
 
     logger.info("Windows API modules successfully imported")

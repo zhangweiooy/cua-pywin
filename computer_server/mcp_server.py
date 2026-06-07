@@ -8,6 +8,7 @@ Usage:
     python -m computer_server.mcp_server
 """
 
+import asyncio
 import base64
 import logging
 import os
@@ -2197,8 +2198,6 @@ def create_mcp_server() -> FastMCP:
             coordinate_space: Explicit coordinate space for start/end coords.
             modifier: Modifier keys held during drag (cmd, shift, option, ctrl)
         """
-        import asyncio
-
         from computer_server.services.validation_service import (
             error_result,
             validate_drag_duration,
@@ -2364,7 +2363,6 @@ def create_mcp_server() -> FastMCP:
 
         _agent_cursor = overlay._agent_cursor
 
-        btn = automation_handler._map_button(button)
         await automation_handler.mouse_down(actual_start_x, actual_start_y, button=button)
         steps = max(1, int(duration / 0.02))
         for i in range(1, steps + 1):
@@ -3379,8 +3377,6 @@ def create_mcp_server() -> FastMCP:
         Returns:
             Dictionary with 'apps' list containing app info (name, pid, bundle_id, running, active).
         """
-        import sys
-
         try:
             import win32gui
             import win32process
@@ -3452,8 +3448,6 @@ def create_mcp_server() -> FastMCP:
             Dictionary with 'windows' list. Each window has 'minimized',
             and XAML entries carry 'source': 'uia_xaml'.
         """
-        import sys
-
         try:
             import win32gui
             import win32process
@@ -3539,7 +3533,6 @@ def create_mcp_server() -> FastMCP:
                     root = auto.GetRootControl()
                     for child in root.GetChildren():
                         try:
-                            ct = child.ControlType
                             hwnd = child.NativeWindowHandle or 0
                             if hwnd and hwnd in seen_hwnds:
                                 continue  # already in EnumWindows list
@@ -4314,7 +4307,8 @@ def create_mcp_server() -> FastMCP:
                 recorder = LearningRecorder()
                 context.learning_recorder = recorder
 
-            import os, time as _time
+            import time as _time
+
             if not output_dir:
                 output_dir = os.path.join(
                     os.environ.get("TEMP", os.path.expanduser("~")),

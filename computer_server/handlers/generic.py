@@ -8,15 +8,12 @@ Includes:
 """
 
 import base64
-import ctypes
 import logging
 import os
 import platform
 import subprocess
 import webbrowser
 from typing import Any, Dict, Optional
-
-logger = logging.getLogger(__name__)
 
 from .base import BaseDesktopHandler, BaseFileHandler, BaseWindowHandler
 from .screen_geometry import get_virtual_screen_geometry
@@ -26,6 +23,8 @@ from computer_server.services.permission_service import (
     resolve_allowed_path,
     resolve_path,
 )
+
+logger = logging.getLogger(__name__)
 
 
 # ---------------------------------------------------------------------------
@@ -204,7 +203,7 @@ class GenericWindowHandler(BaseWindowHandler):
         """
         if platform.system().lower() == "windows":
             return await self._launch_windows(app, args)
-        return {"success": False, "error": f"Unsupported OS for application launching"}
+        return {"success": False, "error": "Unsupported OS for application launching"}
 
     async def _launch_windows(
         self, app: str, args: Optional[list[str]] = None

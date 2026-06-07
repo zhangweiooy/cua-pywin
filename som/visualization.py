@@ -3,8 +3,6 @@ import os
 import platform
 from typing import Any, Dict, List, Tuple
 
-import numpy as np
-import supervision as sv
 from PIL import Image, ImageDraw, ImageFont
 
 logger = logging.getLogger(__name__)

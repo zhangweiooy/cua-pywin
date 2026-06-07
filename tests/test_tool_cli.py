@@ -373,7 +373,10 @@ def test_tool_to_json_exposes_stable_schema_fields() -> None:
         parameters = {"type": "object"}
         output_schema = None
         annotations = None
-        fn = lambda: None
+
+        @staticmethod
+        def fn():
+            return None
 
     assert _tool_to_json(Tool()) == {
         "name": "computer_example",

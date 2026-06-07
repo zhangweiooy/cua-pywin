@@ -41,8 +41,6 @@ from PIL import Image, ImageDraw
 from .motion import (
     CLICK_OFFSET,
     DWELL_SECONDS,
-    SPRING_OVERSHOOT,
-    TURN_RADIUS,
     MotionState,
     plan_path,
     tick,
