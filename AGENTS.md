@@ -149,6 +149,9 @@ observations. `screenshot_id` binds the exact screenshot/crop geometry used for
 to `computer_click`, `computer_drag`, `computer_scroll`, and `computer_zoom`
 when coordinates come from a returned screenshot. `computer_zoom` returns
 `zoom_id`; zoom actions can use it instead of implicit per-window zoom state.
+Returned `nodes` use `nodes_coordinate_space="window_resized"`, so their
+bounding boxes and centers align with the returned target screenshot. The
+internal `ElementCache` continues to use window-full-res coordinates.
 
 Key invariant: `ElementCache` stores window-relative coordinates, and
 `_resolve_element_center` returns screen coordinates.
@@ -195,6 +198,13 @@ Merged public entry points:
 `window_ref` is separate replay metadata. Agents should not hand-author it;
 recording builds it from the resolved `window` plus origin, process, title,
 class, and size metadata.
+
+`computer_launch_app(wait_for_window=True)` polls for a visible, targetable
+top-level window and returns its canonical `window`. Matching prefers the
+launcher PID, then resolved process name, then app/title hints, because apps
+such as WeChat can reuse an existing process or expose the main HWND from a
+different PID. A timeout preserves the successful launch result but reports
+`window_ready=false` explicitly.
 
 ## Key Design Decisions
 
@@ -451,6 +461,10 @@ functions. When the SDK is upgraded past the fix:
   a server-side script executor; recording still occurs inside each invoked
   action tool. Batch requests suppress the agent cursor trajectory overlay
   while preserving real input timing such as drag duration.
+- `cua-win call TOOL -` reads one UTF-8 JSON argument object from stdin, and
+  `cua-win call TOOL @path.json` reads one from a UTF-8 file. Prefer these forms
+  for Chinese text or nested JSON to avoid PowerShell/native argument escaping
+  and console code-page transformations.
 - Subprocess environments should set `PYTHONIOENCODING=utf-8` to avoid GBK output
   issues.
 - One-shot `cua-win --no-daemon` schema queries and explicitly safe read-only

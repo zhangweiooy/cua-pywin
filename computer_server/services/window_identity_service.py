@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any, Dict, Mapping, Optional, Tuple
 
 from computer_server.services.validation_service import ValidationError
@@ -176,6 +177,79 @@ def rehydrate_window(window_id: Any, app: Optional[str] = None) -> Dict[str, Any
         if key in window:
             result[key] = window[key]
     return result
+
+
+def find_app_window(
+    *,
+    pid: Optional[int] = None,
+    process_name: Optional[str] = None,
+    app_hint: Optional[str] = None,
+    title_hint: Optional[str] = None,
+) -> Optional[Dict[str, Any]]:
+    """Find the best live top-level window for a launched application."""
+    try:
+        import win32gui
+        import win32process
+    except Exception:
+        return None
+
+    expected_pid = _coerce_optional_int("pid", pid)
+    process_basename = Path(process_name).name.casefold() if process_name else ""
+    process_stem = Path(process_basename).stem
+    app_text = (app_hint or "").strip().casefold()
+    app_basename = Path(app_text).name
+    app_stem = Path(app_basename).stem
+    expected_title = (title_hint or "").strip().casefold()
+    candidates: list[tuple[int, int, int, int, str]] = []
+
+    def _visit(hwnd: int, _extra: Any) -> bool:
+        try:
+            if not win32gui.IsWindow(hwnd) or not win32gui.IsWindowVisible(hwnd):
+                return True
+            left, top, right, bottom = win32gui.GetWindowRect(hwnd)
+            width = int(right - left)
+            height = int(bottom - top)
+            if width <= 0 or height <= 0:
+                return True
+            _, candidate_pid = win32process.GetWindowThreadProcessId(hwnd)
+            candidate_pid = int(candidate_pid)
+            title = (win32gui.GetWindowText(hwnd) or "").strip()
+            title_folded = title.casefold()
+            candidate_process = _get_process_name(candidate_pid).casefold()
+            candidate_stem = Path(candidate_process).stem
+
+            score = 0
+            if expected_pid is not None and candidate_pid == expected_pid:
+                score = max(score, 100)
+            if process_basename and candidate_process == process_basename:
+                score = max(score, 90)
+            if process_stem and candidate_stem == process_stem:
+                score = max(score, 85)
+            if app_basename and candidate_process == app_basename:
+                score = max(score, 80)
+            if app_stem and candidate_stem == app_stem:
+                score = max(score, 75)
+            if expected_title and expected_title in title_folded:
+                score = max(score, 65)
+            if app_text and app_text in title_folded:
+                score = max(score, 50)
+            if score:
+                candidates.append(
+                    (score, 1 if title else 0, width * height, int(hwnd), title)
+                )
+        except Exception:
+            pass
+        return True
+
+    try:
+        win32gui.EnumWindows(_visit, None)
+    except Exception:
+        return None
+    if not candidates:
+        return None
+
+    _, _, _, hwnd, title = max(candidates)
+    return build_window(hwnd, title=title)
 
 
 def normalize_window_input(window: Optional[Mapping[str, Any]]) -> tuple[Optional[int], Optional[int]]:

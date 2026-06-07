@@ -43,6 +43,16 @@ def test_parse_tool_arguments_requires_object() -> None:
         _parse_tool_arguments("[1, 2, 3]")
 
 
+def test_parse_tool_arguments_accepts_utf8_stdin_and_file(tmp_path, monkeypatch) -> None:
+    encoded = '{"query":"\u5fae\u4fe1"}'
+    argument_file = tmp_path / "arguments.json"
+    argument_file.write_text("\ufeff" + encoded, encoding="utf-8")
+
+    monkeypatch.setattr(sys, "stdin", io.StringIO("\ufeff" + encoded))
+    assert _parse_tool_arguments("-") == {"query": "微信"}
+    assert _parse_tool_arguments(f"@{argument_file}") == {"query": "微信"}
+
+
 def test_parse_batch_actions_accepts_inline_file_and_stdin(tmp_path, monkeypatch) -> None:
     actions = [{"tool": "computer_get_screen_size", "arguments": {}}]
     encoded = '[{"tool":"computer_get_screen_size","arguments":{}}]'
@@ -155,6 +165,19 @@ def test_top_level_help_describes_batch_input_forms() -> None:
     help_text = " ".join(build_parser().format_help().split())
 
     assert "execute a JSON action array or {defaults, actions} object" in help_text
+
+
+def test_call_help_describes_utf8_argument_sources() -> None:
+    parser = build_parser()
+    subparsers_action = next(
+        action
+        for action in parser._actions
+        if isinstance(action, argparse._SubParsersAction)
+    )
+    help_text = subparsers_action.choices["call"].format_help()
+
+    assert "UTF-8 stdin" in help_text
+    assert "'@path'" in help_text
 
 
 def test_batch_help_is_self_contained() -> None:

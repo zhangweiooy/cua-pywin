@@ -427,8 +427,21 @@ def _ensure_daemon(timeout: float = DEFAULT_START_TIMEOUT) -> DaemonInfo:
 def _parse_tool_arguments(raw: str | None) -> dict[str, Any]:
     if raw is None or not raw.strip():
         return {}
+    if raw == "-":
+        source = sys.stdin.read()
+    elif raw.startswith("@"):
+        path_text = raw[1:]
+        if not path_text:
+            raise SystemExit("argument file path is required after @")
+        try:
+            source = Path(path_text).read_text(encoding="utf-8")
+        except OSError as exc:
+            raise SystemExit(f"could not read argument file {path_text!r}: {exc}") from exc
+    else:
+        source = raw
+    source = source.lstrip("\ufeff")
     try:
-        parsed = json.loads(raw)
+        parsed = json.loads(source)
     except json.JSONDecodeError as exc:
         raise SystemExit(f"invalid JSON arguments: {exc.msg}") from exc
     if not isinstance(parsed, dict):
@@ -1365,7 +1378,10 @@ def build_parser() -> argparse.ArgumentParser:
         "arguments",
         nargs="?",
         default="{}",
-        help="Tool arguments as a JSON object.",
+        help=(
+            "Tool arguments as inline JSON, '-' for UTF-8 stdin, or "
+            "'@path' for a UTF-8 JSON file."
+        ),
     )
     call.add_argument(
         "--json",

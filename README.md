@@ -111,7 +111,9 @@ cua-win doctor
 cua-win status
 cua-win list-tools
 cua-win computer_get_screen_size
-cua-win call computer_get_window_state '{\"window\":{\"id\":5678,\"pid\":1234}}'
+@'
+{"window":{"id":5678,"pid":1234}}
+'@ | cua-win call computer_get_window_state -
 cua-win computer_press_key '{\"key\":\"Control_L+s\"}'
 cua-win computer_mouse '{\"action\":\"move\",\"x\":100,\"y\":100}'
 cua-win computer_recording '{\"action\":\"status\"}'
@@ -129,8 +131,10 @@ cua-win serve --host 0.0.0.0 --port 8000 \
 
 `cua-win` 是面向人和脚本的 CLI。默认启动同一个本机 HTTP app，并通过 token 保护的 JSON RPC 路由调用 MCP 工具，因此 `computer_get_window_state` 这类高频重工具只在 daemon 启动时预热一次。`--no-daemon` 会强制单次进程内调用；`list-tools`、`describe` 和明确安全的只读状态调用使用轻量导入，不会启动 SOM/TinyCLIP/RapidOCR 预热。桌面控制和视觉调用仍推荐复用 daemon。
 `cua-win <tool> '<json>'` 会自动等价转换为 `cua-win call <tool> '<json>'`。
-PowerShell 调用 native command 时会剥离 JSON 内层双引号，示例中因此使用
-`'{\"key\":\"value\"}'` 写法。
+包含中文或复杂嵌套参数时，推荐通过 UTF-8 stdin
+（`'<json>' | cua-win call <tool> -`）或 UTF-8 文件
+（`cua-win call <tool> '@arguments.json'`）传入，避免 PowerShell/native
+参数转义和控制台代码页改变内容。内联 JSON 仍保持兼容。
 
 `cua-win batch` 从标准输入、内联 JSON 或 UTF-8 JSON 文件读取动作数组，或
 `{"defaults":...,"actions":[...]}` 对象，并在同一 CLI 进程中通过常驻 daemon
@@ -140,6 +144,12 @@ PowerShell 调用 native command 时会剥离 JSON 内层双引号，示例中�
 `--continue-on-error` 可继续后续条目。失败或 Ctrl+C 中断时会尝试调用
 `computer_release_all_inputs`。批处理调用会关闭 agent 鼠标轨迹动画，避免大量连续
 动作在 overlay 动画上产生额外等待；真实鼠标拖拽的 `duration` 仍按动作参数执行。
+
+`computer_launch_app` 默认只报告进程启动结果。需要立即执行窗口操作时可传
+`{"wait_for_window":true,"wait_timeout":10}`；工具会等待可定位的顶层窗口并返回
+canonical `window`。微信等应用可能复用已有进程，或由不同于 launcher PID 的进程
+持有主窗口，因此应以返回的 `window.pid/window.id` 为准。等待超时不会否定已经
+成功的应用启动，而会明确返回 `window_ready=false`。
 
 大量同类操作可用按工具 defaults 减少重复参数。合并是浅合并，单条动作参数优先：
 
@@ -250,6 +260,8 @@ handle、绑定丢失或上下文重置后重新获取当前窗口对象；使�
 `screenshot_id` 绑定该次截图的 crop origin、resize ratio 和 capture backend。
 当 `computer_click`、`computer_drag`、`computer_scroll` 或 `computer_zoom` 的坐标来自
 返回截图时，传入 `screenshot_id` 可以避免后续截图刷新覆盖全局几何状态。
+返回的 `nodes` 使用 `nodes_coordinate_space="window_resized"`，其 `bbox`
+和中心坐标可直接与主截图对齐；内部 `ElementCache` 仍保留窗口全分辨率坐标。
 `computer_get_window_state` 还返回 `screenshots` 数组：第一项是
 `role="target", zIndex=0` 的主截图；当前可见的同应用关联菜单、弹层或对话框会
 作为 `role="transient"` 项返回。每项都有独立的 `window`、`screenshot_id`、
@@ -409,7 +421,9 @@ cua-win doctor
 cua-win status
 cua-win list-tools
 cua-win computer_get_screen_size
-cua-win call computer_get_window_state '{\"window\":{\"id\":5678,\"pid\":1234}}'
+@'
+{"window":{"id":5678,"pid":1234}}
+'@ | cua-win call computer_get_window_state -
 cua-win computer_press_key '{\"key\":\"Control_L+s\"}'
 cua-win computer_mouse '{\"action\":\"move\",\"x\":100,\"y\":100}'
 cua-win computer_recording '{\"action\":\"status\"}'
@@ -437,8 +451,10 @@ daemon process. `--no-daemon` forces a one-shot in-process call. `list-tools`,
 path that skips SOM/TinyCLIP/RapidOCR warm-up. Desktop-control and vision calls
 should still reuse the daemon.
 `cua-win <tool> '<json>'` is rewritten to `cua-win call <tool> '<json>'`.
-PowerShell strips inner JSON quotes when launching native commands, so CLI
-examples use `'{\"key\":\"value\"}'`.
+For Chinese text or deeply nested arguments, prefer UTF-8 stdin
+(`'<json>' | cua-win call <tool> -`) or a UTF-8 file
+(`cua-win call <tool> '@arguments.json'`) to avoid PowerShell/native argument
+escaping and console code-page transformations. Inline JSON remains supported.
 
 `cua-win batch` reads an action array or a
 `{"defaults":...,"actions":[...]}` object from stdin, inline JSON, or a UTF-8
@@ -450,6 +466,14 @@ Ctrl+C interruptions trigger a best-effort `computer_release_all_inputs` call.
 Batch calls suppress the agent cursor trajectory overlay so dense action
 sequences do not wait on visual animation; the actual drag `duration` remains
 unchanged.
+
+`computer_launch_app` reports process launch completion by default. Pass
+`{"wait_for_window":true,"wait_timeout":10}` when the next step needs a
+targetable top-level window and canonical `window`. Apps such as WeChat may
+reuse an existing process or expose their main HWND from a process other than
+the launcher PID, so follow-up calls should use the returned
+`window.pid/window.id`. A wait timeout preserves the successful launch result
+and explicitly returns `window_ready=false`.
 
 For repeated operations, `defaults` supplies common arguments per tool. The
 merge is shallow and each action's arguments take precedence:
@@ -573,6 +597,8 @@ origin, resize ratio, and backend. Pass `screenshot_id` to
 `computer_click`, `computer_drag`, `computer_scroll`, or `computer_zoom` when
 coordinates come from a returned screenshot, so later observations cannot
 overwrite the geometry used for coordinate conversion.
+Returned `nodes` use `nodes_coordinate_space="window_resized"`, so their
+bounding boxes and centers align directly with the target screenshot.
 `computer_get_window_state` also returns a `screenshots` array. The first item
 is the target (`role="target", zIndex=0`); visible related menus, popovers, and
 dialogs are returned as `role="transient"` items. Each item has its own

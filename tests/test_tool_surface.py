@@ -103,6 +103,81 @@ class _FakeWindow:
         }
 
 
+@pytest.mark.asyncio
+async def test_launch_app_can_wait_for_canonical_window(monkeypatch):
+    import computer_server.mcp_server as mcp_module
+    import computer_server.services.window_identity_service as identity_module
+
+    class Window(_FakeWindow):
+        async def launch(self, app, args=None):
+            return {
+                "success": True,
+                "pid": 111,
+                "resolved_path": r"C:\Program Files\Weixin\Weixin.exe",
+            }
+
+    calls = []
+
+    def find_app_window(**kwargs):
+        calls.append(kwargs)
+        return {
+            "id": 456,
+            "window_id": 456,
+            "pid": 222,
+            "app": "Weixin.exe",
+            "process_name": "Weixin.exe",
+            "title": "微信",
+        }
+
+    monkeypatch.setattr(
+        mcp_module,
+        "_handlers",
+        SimpleNamespace(window=Window()),
+    )
+    monkeypatch.setattr(identity_module, "find_app_window", find_app_window)
+
+    result = await create_mcp_server().call_tool(
+        "computer_launch_app",
+        {"app": "微信", "wait_for_window": True, "wait_timeout": 1},
+    )
+
+    content = result.structured_content
+    assert content["success"] is True
+    assert content["window_ready"] is True
+    assert content["launch_pid"] == 111
+    assert content["pid"] == 222
+    assert content["window"]["id"] == 456
+    assert calls[0]["process_name"] == "Weixin.exe"
+    assert calls[0]["app_hint"] == "微信"
+
+
+@pytest.mark.asyncio
+async def test_launch_app_window_wait_timeout_is_explicit(monkeypatch):
+    import computer_server.mcp_server as mcp_module
+    import computer_server.services.window_identity_service as identity_module
+
+    class Window(_FakeWindow):
+        async def launch(self, app, args=None):
+            return {"success": True, "pid": 111, "resolved_path": "sample.exe"}
+
+    monkeypatch.setattr(
+        mcp_module,
+        "_handlers",
+        SimpleNamespace(window=Window()),
+    )
+    monkeypatch.setattr(identity_module, "find_app_window", lambda **kwargs: None)
+
+    result = await create_mcp_server().call_tool(
+        "computer_launch_app",
+        {"app": "sample", "wait_for_window": True, "wait_timeout": 0.1},
+    )
+
+    content = result.structured_content
+    assert content["success"] is True
+    assert content["window_ready"] is False
+    assert "no targetable window appeared" in content["warning"]
+
+
 EXPECTED_PUBLIC_TOOLS = {
     "computer_screenshot",
     "computer_get_screen_size",
@@ -421,6 +496,51 @@ async def test_list_windows_marks_minimized_window_off_screen(monkeypatch):
     assert record["is_on_screen"] is False
     assert record["window"]["state"]["minimized"] is True
     assert on_screen.structured_content["windows"] == []
+
+
+@pytest.mark.asyncio
+async def test_list_windows_query_matches_unicode_window_title(monkeypatch):
+    import win32con
+    import win32gui
+    import win32process
+
+    import computer_server.handlers.generic as generic
+    import computer_server.services.window_identity_service as identity
+
+    monkeypatch.setattr(
+        win32gui,
+        "EnumWindows",
+        lambda callback, extra: callback(456, extra),
+    )
+    monkeypatch.setattr(win32gui, "IsWindowVisible", lambda _hwnd: True)
+    monkeypatch.setattr(
+        win32gui,
+        "GetWindowLong",
+        lambda _hwnd, _index: win32con.WS_VISIBLE,
+    )
+    monkeypatch.setattr(win32gui, "GetWindowText", lambda _hwnd: "\u5fae\u4fe1")
+    monkeypatch.setattr(win32gui, "GetWindowRect", lambda _hwnd: (0, 0, 800, 600))
+    monkeypatch.setattr(
+        win32process,
+        "GetWindowThreadProcessId",
+        lambda _hwnd: (1, 123),
+    )
+    monkeypatch.setattr(generic, "_is_meaningful_window", lambda _hwnd: True)
+    monkeypatch.setattr(
+        identity,
+        "is_window_minimized",
+        lambda _hwnd, _rect=None: False,
+    )
+
+    mcp = create_mcp_server()
+    result = await mcp.call_tool(
+        "computer_list_windows",
+        {"query": "\u5fae\u4fe1"},
+    )
+
+    windows = result.structured_content["windows"]
+    assert len(windows) == 1
+    assert windows[0]["title"] == "\u5fae\u4fe1"
 
 
 @pytest.mark.asyncio
@@ -882,6 +1002,7 @@ async def test_get_window_state_accepts_window_and_returns_window(monkeypatch):
             "node_count": 0,
             "unfiltered_node_count": 0,
             "nodes": [],
+            "nodes_coordinate_space": "window_resized",
             "tree_markdown": "",
             "screen_width": 100,
             "screen_height": 50,
@@ -925,6 +1046,7 @@ async def test_get_window_state_accepts_window_and_returns_window(monkeypatch):
     assert content["capture"]["screen_width"] == 100
     assert content["capture"]["screen_height"] == 50
     assert content["capture"]["capture_backend"] == "wgc"
+    assert content["nodes_coordinate_space"] == "window_resized"
     assert content["screenshots"][0]["id"] == content["screenshot_id"]
     assert content["screenshots"][0]["role"] == "target"
     assert content["screenshots"][0]["zIndex"] == 0

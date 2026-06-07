@@ -3111,7 +3111,12 @@ def create_mcp_server() -> FastMCP:
         return result
 
     @mcp.tool(annotations={"readOnlyHint": False, "destructiveHint": True, "idempotentHint": False, "openWorldHint": True})
-    async def computer_launch_app(app: str, args: Optional[List[str]] = None) -> Any:
+    async def computer_launch_app(
+        app: str,
+        args: Optional[List[str]] = None,
+        wait_for_window: bool = False,
+        wait_timeout: float = 10.0,
+    ) -> Any:
         """Launch an application by name, path, or alias.
 
         Three-pass name resolution on Windows:
@@ -3119,13 +3124,80 @@ def create_mcp_server() -> FastMCP:
           2. shell:AppsFolder — unified app registry (desktop + UWP apps)
           3. Start Menu scan — case-insensitive .lnk shortcut name match
 
+        Set wait_for_window=True to poll for a targetable top-level window and
+        return its canonical window object. This handles applications whose
+        launcher PID differs from the process that owns the main window.
+
         Examples: "notepad", "chrome", "Calculator", "C:\\app\\myapp.exe"
         """
+        import asyncio
+        import time
+        from pathlib import Path
+
+        from computer_server.services.validation_service import (
+            error_result,
+            validate_float_range,
+        )
+        from computer_server.services.window_identity_service import find_app_window
+
+        try:
+            if not isinstance(wait_for_window, bool):
+                raise ValueError("wait_for_window must be a boolean")
+            wait_timeout = validate_float_range(
+                "wait_timeout",
+                wait_timeout,
+                0.1,
+                60.0,
+            )
+        except ValueError as exc:
+            return error_result(exc)
+
         window_handler = _get_handlers().window
         result = await window_handler.launch(app, args)
+        if result.get("success") and wait_for_window:
+            launch_pid = result.get("pid")
+            resolved_path = result.get("resolved_path")
+            process_name = (
+                Path(str(resolved_path)).name
+                if resolved_path and not str(resolved_path).startswith("shell:")
+                else None
+            )
+            deadline = time.monotonic() + wait_timeout
+            target_window = None
+            while target_window is None:
+                target_window = find_app_window(
+                    pid=launch_pid,
+                    process_name=process_name,
+                    app_hint=app,
+                    title_hint=result.get("window_title"),
+                )
+                if target_window is not None or time.monotonic() >= deadline:
+                    break
+                await asyncio.sleep(0.1)
+
+            if target_window is not None:
+                actual_pid = target_window.get("pid")
+                if launch_pid is not None and actual_pid != launch_pid:
+                    result["launch_pid"] = launch_pid
+                result["window_ready"] = True
+                result["window"] = target_window
+                result["window_id"] = target_window["id"]
+                if actual_pid is not None:
+                    result["pid"] = actual_pid
+            else:
+                result["window_ready"] = False
+                result["warning"] = (
+                    f"Application launched, but no targetable window appeared "
+                    f"within {wait_timeout:g} seconds"
+                )
         await _recording_hook(_recorded_turn(
             "computer_launch_app",
-            {"app": app, "args": args},
+            {
+                "app": app,
+                "args": args,
+                "wait_for_window": wait_for_window,
+                "wait_timeout": wait_timeout,
+            },
             result,
         ))
         return result

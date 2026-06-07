@@ -179,6 +179,52 @@ def prepare_direct_window_snapshot_image(
     return img, geometry
 
 
+def project_nodes_to_window_resized(
+    nodes: List[Dict[str, Any]],
+    geometry: WindowSnapshotGeometry,
+) -> List[Dict[str, Any]]:
+    """Project internal window-full-res node geometry onto the returned screenshot."""
+    ratio = geometry.compression_ratio or 1.0
+    offset_x = geometry.crop_origin_window_x
+    offset_y = geometry.crop_origin_window_y
+
+    def _project_x(value: Any) -> int:
+        return max(
+            0,
+            min(
+                geometry.screen_width,
+                int(round((int(value) - offset_x) / ratio)),
+            ),
+        )
+
+    def _project_y(value: Any) -> int:
+        return max(
+            0,
+            min(
+                geometry.screen_height,
+                int(round((int(value) - offset_y) / ratio)),
+            ),
+        )
+
+    projected: List[Dict[str, Any]] = []
+    for node in nodes:
+        public_node = dict(node)
+        bbox = node.get("bbox")
+        if isinstance(bbox, (list, tuple)) and len(bbox) == 4:
+            public_node["bbox"] = [
+                _project_x(bbox[0]),
+                _project_y(bbox[1]),
+                _project_x(bbox[2]),
+                _project_y(bbox[3]),
+            ]
+        if node.get("center_x") is not None:
+            public_node["center_x"] = _project_x(node["center_x"])
+        if node.get("center_y") is not None:
+            public_node["center_y"] = _project_y(node["center_y"])
+        projected.append(public_node)
+    return projected
+
+
 def classify_tree_quality(count: int) -> str:
     """Classify element count as tree quality: empty/poor/ok/rich."""
     if count == 0:
@@ -1476,7 +1522,10 @@ async def get_window_state_snapshot(
         else:
             vision_metadata = {}
 
-        returned_nodes = filter_nodes_by_query(nodes, query, include_all_nodes)
+        returned_nodes = project_nodes_to_window_resized(
+            filter_nodes_by_query(nodes, query, include_all_nodes),
+            geometry,
+        )
 
         screenshot_field = save_window_state_screenshot(
             img,
@@ -1502,6 +1551,7 @@ async def get_window_state_snapshot(
             "unfiltered_node_count": len(nodes),
             "returned_node_count": len(returned_nodes),
             "nodes_filtered": bool(query and not include_all_nodes),
+            "nodes_coordinate_space": "window_resized",
             "uia_node_count": uia_node_count,
             "msaa_total_elements": msaa_total_elements,
             "msaa_tree_node_count": msaa_tree_node_count,

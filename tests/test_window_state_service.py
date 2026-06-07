@@ -12,6 +12,7 @@ from computer_server.handlers.element_cache import CachedElement
 from computer_server.services.window_state_service import (
     MSAAWalkGate,
     UIAWalkGate,
+    WindowSnapshotGeometry,
     create_zoom_image,
     filter_nodes_by_query,
     get_accessibility_tree_snapshot,
@@ -20,6 +21,7 @@ from computer_server.services.window_state_service import (
     node_matches_query,
     prepare_direct_window_snapshot_image,
     prepare_window_snapshot_image,
+    project_nodes_to_window_resized,
 )
 
 
@@ -41,6 +43,46 @@ def test_prepare_window_snapshot_tracks_partially_offscreen_crop_origin():
     assert geometry.crop_origin_screen_y == 10
     assert geometry.crop_origin_window_x == 20
     assert geometry.crop_origin_window_y == 0
+
+
+def test_project_nodes_to_window_resized_applies_crop_and_resize_geometry():
+    geometry = WindowSnapshotGeometry(
+        full_width=2000,
+        full_height=1000,
+        screenshot_origin_x=0,
+        screenshot_origin_y=0,
+        window_origin_x=-100,
+        window_origin_y=0,
+        crop_origin_screen_x=0,
+        crop_origin_screen_y=0,
+        crop_origin_window_x=100,
+        crop_origin_window_y=0,
+        original_width=1000,
+        original_height=500,
+        screen_width=500,
+        screen_height=250,
+        compression_ratio=2.0,
+    )
+    original = {
+        "element_index": 7,
+        "center_x": 500,
+        "center_y": 200,
+        "bbox": [100, 0, 900, 500],
+        "metadata": {"source": "test"},
+    }
+
+    projected = project_nodes_to_window_resized([original], geometry)
+
+    assert projected == [
+        {
+            "element_index": 7,
+            "center_x": 200,
+            "center_y": 100,
+            "bbox": [0, 0, 400, 250],
+            "metadata": {"source": "test"},
+        }
+    ]
+    assert original["bbox"] == [100, 0, 900, 500]
 
 
 def test_prepare_direct_window_snapshot_uses_window_origin():
