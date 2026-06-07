@@ -23,7 +23,7 @@ from io import BytesIO
 from typing import Any, Dict, List, Optional
 
 from computer_server.handlers.element_cache import CachedElement
-from computer_server.services.icon_label_service import IconLabel
+from computer_server.services.icon_caption_service import IconCaption
 
 logger = logging.getLogger(__name__)
 
@@ -149,25 +149,43 @@ def warm_up() -> None:
             from concurrent.futures import ThreadPoolExecutor
 
             parser = _get_parser()
-            logger.info("SOM parser singleton created; loading YOLO + OCR + TinyCLIP in parallel...")
+            logger.info("SOM parser singleton created; loading YOLO + OCR...")
 
             with _parse_lock:
-                with ThreadPoolExecutor(max_workers=3) as ex:
+                captions_ready = False
+                with ThreadPoolExecutor(max_workers=2) as ex:
                     f_yolo = ex.submit(parser.detector.load_model)
                     f_ocr = ex.submit(parser.ocr._ensure_reader)
-                    try:
-                        from computer_server.services.icon_label_service import warm_up as _warm_icon_labels
-
-                        f_icon = ex.submit(_warm_icon_labels)
-                    except Exception:
-                        f_icon = None
                     f_yolo.result()
                     f_ocr.result()
-                    if f_icon is not None:
-                        f_icon.result()
+
+                # Florence-2 is much larger than the detector and OCR runtime.
+                # Load it after those stages to keep startup peak memory and
+                # disk contention bounded. Caption failure is optional and
+                # must not make YOLO/OCR unavailable.
+                try:
+                    from computer_server.services.icon_caption_service import (
+                        warm_up as _warm_icon_captions,
+                    )
+
+                    captions_ready = _warm_icon_captions()
+                    if not captions_ready:
+                        logger.warning(
+                            "Florence-2 warm-up did not complete; "
+                            "SOM will continue without icon captions"
+                        )
+                except Exception as icon_exc:
+                    logger.warning(
+                        "Florence-2 warm-up failed; SOM will continue without "
+                        "icon captions: %s",
+                        icon_exc,
+                    )
 
             _set_parser_state("ready")
-            logger.info("SOM OmniParser pre-warmed — YOLO + OCR ready")
+            logger.info(
+                "SOM OmniParser pre-warmed — YOLO + OCR ready; captions=%s",
+                "ready" if captions_ready else "unavailable",
+            )
         except Exception as exc:
             _set_parser_state("failed", str(exc))
             logger.warning("SOM pre-warm failed: %s", exc)
@@ -186,7 +204,7 @@ def _element_to_cached(
     index: int,
     screen_width: int,
     screen_height: int,
-    icon_label: Optional[IconLabel] = None,
+    icon_caption: Optional[IconCaption] = None,
 ) -> CachedElement:
     """Convert a SOM UIElement to a CachedElement with pixel-space coordinates.
 
@@ -217,15 +235,19 @@ def _element_to_cached(
         if "vision_confidence" in metadata:
             metadata["ocr_confidence"] = metadata["vision_confidence"]
     else:
-        name = icon_label.label if icon_label is not None else None
+        name = icon_caption.label if icon_caption is not None else None
         actions = ["click"]
-        if icon_label is not None:
+        if icon_caption is not None:
             metadata.update(
                 {
-                    "icon_label": icon_label.label,
-                    "icon_label_score": icon_label.score,
-                    "icon_label_margin": icon_label.margin,
-                    "icon_label_source": "tinyclip",
+                    "raw_caption": icon_caption.raw_caption,
+                    "normalized_label": icon_caption.normalized_label,
+                    "icon_label": icon_caption.normalized_label,
+                    "icon_label_source": "omniparser_v2_florence2",
+                    "icon_label_confidence": icon_caption.confidence,
+                    "icon_label_confidence_provenance": (
+                        icon_caption.confidence_provenance
+                    ),
                 }
             )
 
@@ -267,20 +289,15 @@ def _crop_icon_elements(
             bottom = min(screen_height, int(bbox[3] * screen_height))
             if right <= left or bottom <= top:
                 continue
-            width = right - left
-            height = bottom - top
-            pad_x = max(2, int(width * 0.15))
-            pad_y = max(2, int(height * 0.15))
-            crop_box = (
-                max(0, left - pad_x),
-                max(0, top - pad_y),
-                min(screen_width, right + pad_x),
-                min(screen_height, bottom + pad_y),
-            )
             positions.append(pos)
-            crops.append(image.crop(crop_box))
+            crops.append(
+                image.crop((left, top, right, bottom)).resize(
+                    (64, 64),
+                    Image.Resampling.LANCZOS,
+                )
+            )
         except Exception as exc:
-            logger.debug("Skipping icon crop for TinyCLIP labeling: %s", exc)
+            logger.debug("Skipping icon crop for Florence-2 captioning: %s", exc)
     return positions, crops
 
 
@@ -289,10 +306,13 @@ def _label_icon_elements(
     raw_elements: List[Any],
     screen_width: int,
     screen_height: int,
-) -> Dict[int, IconLabel]:
-    """Batch-label all icon crops and return labels keyed by raw element position."""
+) -> tuple[Dict[int, IconCaption], str]:
+    """Batch-caption all icon crops and return captions by raw element position."""
     try:
-        from computer_server.services.icon_label_service import label_icons
+        from computer_server.services.icon_caption_service import (
+            caption_icons,
+            get_icon_caption_service,
+        )
 
         positions, crops = _crop_icon_elements(
             screenshot_bytes,
@@ -301,16 +321,20 @@ def _label_icon_elements(
             screen_height,
         )
         if not crops:
-            return {}
-        labels = label_icons(crops)
-        return {
-            pos: label
-            for pos, label in zip(positions, labels)
-            if label is not None
-        }
+            return {}, "not_run"
+        captions = caption_icons(crops)
+        status = str(get_icon_caption_service().status.get("state") or "unknown")
+        return (
+            {
+                pos: caption
+                for pos, caption in zip(positions, captions)
+                if caption is not None
+            },
+            status,
+        )
     except Exception as exc:
-        logger.debug("TinyCLIP icon labeling skipped: %s", exc, exc_info=True)
-        return {}
+        logger.debug("Florence-2 icon captioning skipped: %s", exc, exc_info=True)
+        return {}, "inference_failed"
 
 
 def _convert_parse_result(
@@ -322,13 +346,13 @@ def _convert_parse_result(
 ) -> VisionResult:
     raw_elements = list(getattr(result, "elements", []) or [])
     stage_start = time.perf_counter()
-    icon_labels = _label_icon_elements(
+    icon_captions, icon_semantic_status = _label_icon_elements(
         screenshot_bytes,
         raw_elements,
         screen_width,
         screen_height,
     )
-    tinyclip_latency = time.perf_counter() - stage_start
+    icon_semantic_latency = time.perf_counter() - stage_start
 
     stage_start = time.perf_counter()
     cached: List[CachedElement] = []
@@ -342,7 +366,7 @@ def _convert_parse_result(
                     next_index,
                     screen_width,
                     screen_height,
-                    icon_label=icon_labels.get(raw_pos),
+                    icon_caption=icon_captions.get(raw_pos),
                 )
             )
             next_index += 1
@@ -352,11 +376,20 @@ def _convert_parse_result(
 
     metadata = _build_metadata(result)
     stage_timings = dict(metadata.get("stage_timings", {}) or {})
-    stage_timings["tinyclip_latency"] = tinyclip_latency
+    stage_timings["tinyclip_latency"] = 0.0
+    stage_timings["florence2_latency"] = icon_semantic_latency
+    stage_timings["icon_semantic_latency"] = icon_semantic_latency
     stage_timings["bridge_convert_latency"] = time.perf_counter() - stage_start
     metadata["stage_timings"] = stage_timings
-    metadata["icon_label_count"] = len(icon_labels)
-    metadata["icon_labeler"] = "tinyclip" if icon_labels else None
+    metadata["icon_label_count"] = sum(
+        1 for caption in icon_captions.values() if caption.label is not None
+    )
+    metadata["icon_caption_count"] = len(icon_captions)
+    metadata["icon_labeler"] = (
+        "omniparser_v2_florence2" if icon_captions else None
+    )
+    metadata["icon_semantic_backend"] = "florence2"
+    metadata["icon_semantic_status"] = icon_semantic_status
     return VisionResult(
         elements=cached,
         annotated_image_base64=getattr(result, "annotated_image_base64", None),

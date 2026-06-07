@@ -36,12 +36,15 @@ if not _LIGHTWEIGHT_MCP_IMPORT:
     except Exception:
         pass
     try:
-        # Transformers/tokenizers/safetensors can import native extensions.
-        # Import them before FastMCP's anyio event loop starts; model weights are
-        # still loaded by the background warm-up thread.
-        from transformers import CLIPModel as _pre_clip_model  # noqa: F401
-        from transformers import CLIPProcessor as _pre_clip_processor  # noqa: F401
+        # Florence-2 dependencies can import native extensions through
+        # tokenizers, safetensors, torchvision, and timm. Import them before
+        # FastMCP's anyio event loop starts; weights are still loaded by the
+        # background warm-up thread.
+        import einops as _pre_einops  # noqa: F401
         import safetensors.torch as _pre_safetensors_torch  # noqa: F401
+        import timm as _pre_timm  # noqa: F401
+        from transformers import AutoModelForCausalLM as _pre_auto_model  # noqa: F401
+        from transformers import AutoProcessor as _pre_auto_processor  # noqa: F401
     except Exception:
         pass
     try:

@@ -76,7 +76,9 @@ DEPENDENCY_CHECKS = (
     ("rapidocr", "rapidocr", "OCR"),
     ("onnxruntime", "onnxruntime", "OCR runtime"),
     ("ultralytics", "ultralytics", "OmniParser YOLO"),
-    ("transformers", "transformers", "TinyCLIP"),
+    ("transformers", "transformers", "OmniParser Florence-2"),
+    ("einops", "einops", "Florence-2 tensor operations"),
+    ("timm", "timm", "Florence-2 vision encoder"),
     ("winrt.windows.graphics.capture", "winrt-windows-graphics-capture", "WGC window capture"),
     (
         "winrt.windows.graphics.capture.interop",
@@ -90,11 +92,25 @@ DEPENDENCY_CHECKS = (
     ),
 )
 
-TINYCLIP_REQUIRED_FILES = (
+FLORENCE2_REQUIRED_FILES = (
     "config.json",
+    "configuration_florence2.py",
+    "generation_config.json",
+    "model_manifest.json",
     "model.safetensors",
+    "modeling_florence2.py",
     "preprocessor_config.json",
+    "processing_florence2.py",
     "tokenizer.json",
+    "tokenizer_config.json",
+    "vocab.json",
+)
+FLORENCE2_MIN_MODEL_BYTES = 1_000_000_000
+FLORENCE2_MODEL_DIR = (
+    Path(__file__).resolve().parent
+    / "models"
+    / "omniparser_v2"
+    / "icon_caption"
 )
 
 MAX_BATCH_ACTIONS = 10_000
@@ -740,27 +756,75 @@ def _check_omniparser_weight() -> DoctorCheck:
     )
 
 
-def _check_tinyclip_bundle() -> DoctorCheck:
-    model_dir = (
-        Path(__file__).resolve().parent
-        / "models"
-        / "tinyclip"
-        / "wkcn-TinyCLIP-ViT-8M-16-Text-3M-YFCC15M"
-    )
-    missing = [name for name in TINYCLIP_REQUIRED_FILES if not (model_dir / name).exists()]
+def _check_florence2_bundle() -> DoctorCheck:
+    model_dir = FLORENCE2_MODEL_DIR
+    missing = [
+        name for name in FLORENCE2_REQUIRED_FILES if not (model_dir / name).exists()
+    ]
     if missing:
         return DoctorCheck(
-            name="model:tinyclip",
+            name="model:omniparser_florence2",
             status="fail",
-            message=f"TinyCLIP bundle incomplete: missing {', '.join(missing)}",
+            message=f"OmniParser Florence-2 bundle incomplete: missing {', '.join(missing)}",
             details={"path": str(model_dir), "missing": missing},
         )
-    total_size = sum((model_dir / name).stat().st_size for name in TINYCLIP_REQUIRED_FILES)
+    model_path = model_dir / "model.safetensors"
+    model_size = model_path.stat().st_size
+    if model_size < FLORENCE2_MIN_MODEL_BYTES:
+        with model_path.open("rb") as handle:
+            prefix = handle.read(128)
+        is_lfs_pointer = prefix.startswith(
+            b"version https://git-lfs.github.com/spec/v1"
+        )
+        reason = (
+            "Git LFS pointer found; run `git lfs pull`"
+            if is_lfs_pointer
+            else f"model weight is unexpectedly small ({_format_size(model_size)})"
+        )
+        return DoctorCheck(
+            name="model:omniparser_florence2",
+            status="fail",
+            message=f"OmniParser Florence-2 bundle incomplete: {reason}",
+            details={
+                "path": str(model_dir),
+                "model_path": str(model_path),
+                "size_bytes": model_size,
+                "git_lfs_pointer": is_lfs_pointer,
+            },
+        )
+    manifest_path = model_dir / "model_manifest.json"
+    try:
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        model_manifest = manifest["model"]
+        expected_hash = manifest["sha256"]["model.safetensors"]
+        if (
+            not isinstance(model_manifest.get("repository"), str)
+            or not isinstance(model_manifest.get("revision"), str)
+            or not isinstance(expected_hash, str)
+            or len(expected_hash) != 64
+        ):
+            raise ValueError("required model provenance fields are invalid")
+    except (OSError, KeyError, TypeError, ValueError, json.JSONDecodeError) as exc:
+        return DoctorCheck(
+            name="model:omniparser_florence2",
+            status="fail",
+            message=f"OmniParser Florence-2 manifest is invalid: {exc}",
+            details={"path": str(manifest_path)},
+        )
+    total_size = sum(
+        (model_dir / name).stat().st_size for name in FLORENCE2_REQUIRED_FILES
+    )
     return DoctorCheck(
-        name="model:tinyclip",
+        name="model:omniparser_florence2",
         status="ok",
-        message=f"TinyCLIP bundle present ({_format_size(total_size)})",
-        details={"path": str(model_dir), "size_bytes": total_size},
+        message=f"OmniParser Florence-2 bundle present ({_format_size(total_size)})",
+        details={
+            "path": str(model_dir),
+            "size_bytes": total_size,
+            "repository": model_manifest["repository"],
+            "revision": model_manifest["revision"],
+            "expected_sha256": expected_hash,
+        },
     )
 
 
@@ -836,7 +900,7 @@ def _collect_doctor_checks(
 
     checks.append(_check_state_dir())
     checks.append(_check_omniparser_weight())
-    checks.append(_check_tinyclip_bundle())
+    checks.append(_check_florence2_bundle())
 
     if dependencies:
         checks.extend(

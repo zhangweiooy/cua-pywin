@@ -17,7 +17,7 @@ Windows AI Agent 桌面操控 MCP 服务 — 25 个计算机控制工具。
 - **25 个 MCP 工具** — 截图、鼠标、键盘、窗口管理；重复 wrapper 已合并为高层入口
 - **录制 / 回放** — 录制 MCP 工具调用序列到磁盘，完整回放（含坐标重算和过期窗口解析）
 - **学习模式** — 录制真人操作（pynput 全局钩子 + UIA 元素标注 + PaddleOCR ONNX 视觉增强）
-- **SOM 视觉检测** — OmniParser YOLO + PaddleOCR ONNX 中文识别 + TinyCLIP 图标语义标签，UIA 不可用时自动回退
+- **SOM 视觉检测** — OmniParser V2 YOLO + Florence-2 图标描述 + PaddleOCR ONNX 中文识别，UIA 不可用时自动回退
 - **UIA 树遍历** — 支持 Win32 / UWP / Electron / Qt 应用，非 UIA 应用自动触发 SOM
 - **Agent 光标覆盖层** — Dubins 路径飞行动画 + 弹簧过冲 + 辉光渲染
 
@@ -53,7 +53,7 @@ cua-pywin/
 │  │  ├─ replay_resolver.py        ← 回放时坐标重算 + 过期 HWND 重写
 │  │  ├─ capture_service.py        ← virtual desktop 截图（录制 + 学习共享）
 │  │  ├─ ocr_service.py            ← lazy OCRProcessor 单例
-│  │  ├─ icon_label_service.py     ← TinyCLIP 图标语义标签（batch 推理）
+│  │  ├─ icon_caption_service.py   ← OmniParser V2 Florence-2 图标描述（batch 推理）
 │  │  └─ uia_service.py            ← UIACallGate（semaphore + daemon + timeout）
 │  ├─ recording/             ← 录制/回放（agent 视角）
 │  │  ├─ session.py          ← 有界 writer queue + 专用 writer 线程
@@ -129,7 +129,7 @@ cua-win serve --host 0.0.0.0 --port 8000 \
 
 普通 HTTP 服务暴露 `/status` 与 `/mcp`；`cua-win` daemon 复用同一个 app，并额外启用 token 保护的 `/tools`、`/call`、`/shutdown` JSON RPC 路由。CORS 仅放行 `localhost / 127.0.0.1 / [::1]` origin。
 
-`cua-win` 是面向人和脚本的 CLI。默认启动同一个本机 HTTP app，并通过 token 保护的 JSON RPC 路由调用 MCP 工具，因此 `computer_get_window_state` 这类高频重工具只在 daemon 启动时预热一次。`--no-daemon` 会强制单次进程内调用；`list-tools`、`describe` 和明确安全的只读状态调用使用轻量导入，不会启动 SOM/TinyCLIP/RapidOCR 预热。桌面控制和视觉调用仍推荐复用 daemon。
+`cua-win` 是面向人和脚本的 CLI。默认启动同一个本机 HTTP app，并通过 token 保护的 JSON RPC 路由调用 MCP 工具，因此 `computer_get_window_state` 这类高频重工具只在 daemon 启动时预热一次。`--no-daemon` 会强制单次进程内调用；`list-tools`、`describe` 和明确安全的只读状态调用使用轻量导入，不会启动 SOM/Florence-2/RapidOCR 预热。桌面控制和视觉调用仍推荐复用 daemon。
 `cua-win <tool> '<json>'` 会自动等价转换为 `cua-win call <tool> '<json>'`。
 包含中文或复杂嵌套参数时，推荐通过 UTF-8 stdin
 （`'<json>' | cua-win call <tool> -`）或 UTF-8 文件
@@ -325,7 +325,7 @@ uv run python scripts/wgc_smoke.py --live-only --app chrome --app dingtalk --rep
 - **25 MCP tools** — screenshots, mouse, keyboard, window management; duplicate wrappers merged into higher-level entries
 - **Recording / Replay** — record MCP tool invocations to disk with full replay (coordinate recalculation + stale-window resolution)
 - **Learning mode** — record human actions (pynput global hooks + UIA element enrichment + PaddleOCR ONNX vision)
-- **SOM vision detection** — OmniParser YOLO + PaddleOCR ONNX (Chinese + English) + TinyCLIP icon labels, automatic fallback when UIA is unavailable
+- **SOM vision detection** — OmniParser V2 YOLO + Florence-2 icon captions + PaddleOCR ONNX (Chinese + English), automatic fallback when UIA is unavailable
 - **UIA tree walking** — supports Win32 / UWP / Electron / Qt apps; auto-triggers SOM for non-UIA apps
 - **Agent cursor overlay** — Dubins-path flight animation + spring overshoot + glow rendering
 
@@ -362,7 +362,7 @@ cua-pywin/
 │  │  ├─ replay_resolver.py        ← coord rewrite + stale HWND rewrite
 │  │  ├─ capture_service.py        ← virtual-desktop mss capture
 │  │  ├─ ocr_service.py            ← lazy OCRProcessor singleton
-│  │  ├─ icon_label_service.py     ← TinyCLIP icon labels (batched inference)
+│  │  ├─ icon_caption_service.py   ← OmniParser V2 Florence-2 icon captions (batched)
 │  │  └─ uia_service.py            ← UIACallGate (semaphore + daemon + timeout)
 │  ├─ recording/             ← Agent-perspective recording / replay
 │  │  ├─ session.py          ← Bounded writer queue + dedicated writer thread
@@ -448,7 +448,7 @@ default and calls MCP tools through token-protected JSON RPC routes, so heavy
 high-frequency tools such as `computer_get_window_state` pay warm-up once per
 daemon process. `--no-daemon` forces a one-shot in-process call. `list-tools`,
 `describe`, and explicitly safe read-only status calls use a lightweight import
-path that skips SOM/TinyCLIP/RapidOCR warm-up. Desktop-control and vision calls
+path that skips SOM/Florence-2/RapidOCR warm-up. Desktop-control and vision calls
 should still reuse the daemon.
 `cua-win <tool> '<json>'` is rewritten to `cua-win call <tool> '<json>'`.
 For Chinese text or deeply nested arguments, prefer UTF-8 stdin
@@ -614,18 +614,35 @@ primary target capture.
 
 **Tree quality + SOM fallback** — `rich(>50) / ok(15-50)` skip SOM; `poor(<15) / empty(0)` enable SOM vision. `uia_quality` and `vision_quality` are reported separately and do not overwrite each other.
 
-**Bundled OmniParser v2 detector** — The YOLO icon detector is bundled at
-`som/weights/icon_detect/model.pt` from `microsoft/OmniParser-v2.0`, so packaged
-installs do not need to download it at runtime.
+**Bundled OmniParser V2 pipeline** — The YOLO detector is bundled at
+`som/weights/icon_detect/model.pt`. The fine-tuned Florence-2 icon-caption model,
+processor, tokenizer, and model code are bundled under
+`computer_server/models/omniparser_v2/icon_caption/`, with the 1.08 GB weight
+tracked through Git LFS. Runtime download is disabled by default. Icon crops are
+resized to 64x64 and captioned in batches, matching the official V2 pipeline.
+RapidOCR remains responsible for visible text.
 
-**TinyCLIP icon labels** — SOM icon crops are labeled in one TinyCLIP batch.
-The model (`wkcn/TinyCLIP-ViT-8M-16-Text-3M-YFCC15M`) is bundled under
-`computer_server/models/tinyclip/` and merged into vision nodes as `name`,
-`icon_label`, and `metadata.icon_label_*`. Runtime download is disabled by
-default; use `CUA_TINYCLIP_MODEL` to override the local model path or
-`CUA_TINYCLIP_ALLOW_DOWNLOAD=1` to allow Hugging Face downloads. SOM debug
-timing is exposed under `vision_metadata.stage_timings`, including YOLO, OCR,
-TinyCLIP, merge, encode, and total latency.
+Florence-2 output is exposed as `raw_caption` plus a conservative
+`normalized_label`. It has no calibrated confidence score, so nodes explicitly
+report `icon_label_confidence=null` and
+`icon_label_confidence_provenance="unscored_greedy_generation"`. Empty or
+generic captions remain unknown rather than receiving a forced label. Controls:
+`CUA_ENABLE_FLORENCE2`, `CUA_FLORENCE2_MODEL`, `CUA_FLORENCE2_PROCESSOR`,
+`CUA_FLORENCE2_MODEL_SUBFOLDER`, `CUA_FLORENCE2_DEVICE`,
+`CUA_FLORENCE2_BATCH_SIZE`, and
+`CUA_FLORENCE2_MAX_NEW_TOKENS`. Debug timing includes `florence2_latency` and
+`icon_semantic_latency`; legacy `tinyclip_latency` remains `0.0` for metadata
+compatibility. `vision_metadata.icon_semantic_status` reports whether captioning
+was ready, disabled/failed during model initialization, or failed during
+inference; YOLO and OCR nodes remain available when captioning fails.
+Batch size and generated-token limits are capped at 256 and 128 respectively to
+bound accidental memory growth.
+
+The bundled wheel is approximately 988 MB because it contains the full model.
+This exceeds PyPI's normal per-file upload limit; distribute release wheels
+through GitHub Releases, an installer, or another artifact store. Source
+checkouts must run `git lfs pull`; `cua-win doctor` rejects an unresolved LFS
+pointer instead of treating it as a valid model.
 
 **PaddleOCR ONNX backend** — OCR defaults to RapidOCR + ONNXRuntime with
 PaddleOCR PP-OCRv4 mobile models. `CUA_OCR_BACKEND=easyocr` enables the optional

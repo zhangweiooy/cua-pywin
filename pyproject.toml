@@ -44,7 +44,9 @@ dependencies = [
     "ultralytics>=8.1",
     "supervision>=0.25",
     "huggingface-hub>=0.21",
-    "transformers>=4.40",
+    "transformers>=4.46.1,<4.47",
+    "einops>=0.8",
+    "timm>=1.0",
     # Windows.Graphics.Capture target-window capture backend
     "winrt-windows-foundation>=3.2.1",
     "winrt-windows-graphics>=3.2.1",
@@ -81,7 +83,7 @@ includes = ["computer_server", "som"]
 excludes = ["som/.pdm-build", "som/tests"]
 
 [tool.pdm.build.package-data]
-computer_server = ["py.typed", "models/tinyclip/wkcn-TinyCLIP-ViT-8M-16-Text-3M-YFCC15M/*"]
+computer_server = ["py.typed", "models/omniparser_v2/icon_caption/*"]
 som = ["weights/icon_detect/model.pt"]
 
 [tool.pdm.dev-dependencies]

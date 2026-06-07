@@ -1082,8 +1082,19 @@ def merge_som_vision(
                     node["ocr_confidence"] = metadata["ocr_confidence"]
                 if "icon_label" in metadata:
                     node["icon_label"] = metadata["icon_label"]
-                    node["icon_label_score"] = metadata.get("icon_label_score")
-                    node["icon_label_margin"] = metadata.get("icon_label_margin")
+                if "raw_caption" in metadata:
+                    node["raw_caption"] = metadata["raw_caption"]
+                if "normalized_label" in metadata:
+                    node["normalized_label"] = metadata["normalized_label"]
+                if "icon_label_source" in metadata:
+                    node["icon_label_source"] = metadata["icon_label_source"]
+                if "icon_label_confidence" in metadata:
+                    node["icon_label_confidence"] = metadata[
+                        "icon_label_confidence"
+                    ]
+                    node["icon_label_confidence_provenance"] = metadata.get(
+                        "icon_label_confidence_provenance"
+                    )
             nodes.append(node)
         cache.set_quality(pid, window_id, uia_quality)
         return {

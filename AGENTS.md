@@ -333,24 +333,67 @@ is internal replay metadata.
 
 ## SOM Vision Strategy
 
-### Current: OmniParser YOLO + PaddleOCR ONNX + TinyCLIP
+### Current Runtime: Full OmniParser V2 + PaddleOCR ONNX
 
 ```
 OCR: RapidOCR + ONNXRuntime default, PaddleOCR PP-OCRv4 mobile Chinese+English
-Icon labels: bundled TinyCLIP wkcn/TinyCLIP-ViT-8M-16-Text-3M-YFCC15M
+Icon detection: bundled OmniParser V2 YOLO
+Icon semantics: bundled OmniParser V2 fine-tuned Florence-2
 Perf: CPU 2-5s/frame, GPU <1s/frame
 Risk: OmniParser is trained on modern Web/mobile UI; old Win32 recall may vary
 ```
 
-The OmniParser v2 YOLO detector is bundled at
+The OmniParser V2 YOLO detector is bundled at
 `som/weights/icon_detect/model.pt` from `microsoft/OmniParser-v2.0`; package
 builds include the `som` package and this weight file.
 
-TinyCLIP runs over YOLO icon crops only. The model is bundled under
-`computer_server/models/tinyclip/` and package-data includes it for future
-builds. It complements OCR: TinyCLIP labels non-text icons; RapidOCR labels
-visible text. Inference must remain batched across all icon crops in one pass;
-do not call the model once per icon.
+The fine-tuned Florence-2 icon-caption model, processor, tokenizer, and custom
+model code are bundled under
+`computer_server/models/omniparser_v2/icon_caption/`. The 1.08 GB
+`model.safetensors` is tracked with Git LFS. Runtime model download is disabled
+by default. `transformers` is pinned to 4.46.x because later 4.x and 5.x
+releases are incompatible with the official OmniParser V2 custom model code.
+The resulting wheel is about 988 MB and cannot use the normal PyPI file-size
+limit; publish it through GitHub Releases, an installer, or another artifact
+store. `cua-win doctor` must reject unresolved Git LFS pointer files.
+
+Florence-2 runs over 64x64 YOLO icon crops in batches of up to 64 by default.
+Do not call it once per crop. RapidOCR remains responsible for visible text.
+TinyCLIP has been removed from the runtime and package after the WeChat
+comparison showed materially worse label quality.
+
+### WeChat Icon-Semantic Comparison
+
+The 2026-06-07 comparison used a real WeChat WGC capture collected through
+`cua-win`, with 21 YOLO icon crops and 39 OCR text nodes.
+
+Current pipeline timings:
+
+- Total visual pipeline: about 4.01 seconds.
+- YOLO: about 0.75 seconds.
+- RapidOCR: about 3.16 seconds.
+- TinyCLIP: about 0.44 seconds.
+
+Florence-2 icon-caption timings:
+
+- Cold pass: about 0.84 seconds.
+- Warm pass: about 0.59-0.60 seconds.
+- Process memory: about 1.49 GB during the experiment.
+
+Quality result:
+
+- Florence-2 produced correct or usable descriptions for scissors, more
+  options, file/document, square, minimize, close, contacts, messages, and QR
+  code icons.
+- TinyCLIP accepted only 7 of 21 crops, and most accepted results were incorrect
+  `profile button` or `emoji button` labels.
+- Florence-2 still misidentified phone, pin, mute, and WeChat-specific icons.
+  Generated captions therefore require normalization and an explicit
+  low-confidence/unknown path; they must not be treated as ground truth.
+
+Decision: use Florence-2 as the only normal icon-semantic backend. Do not run
+TinyCLIP and Florence-2 together. Florence captions remain advisory because
+phone, pin, mute, and application-specific icons can still be misidentified.
 
 Relevant controls:
 
@@ -361,17 +404,30 @@ Relevant controls:
 - `CUA_OCR_DENOISE=0` disables OCR text cleanup; `CUA_OCR_DENOISE=strict`
   enables deletion-style filtering for isolated symbol/single-character
   artifacts. Default denoising must stay conservative.
-- `CUA_ENABLE_TINYCLIP=0` disables icon semantic labeling.
-- `CUA_TINYCLIP_MODEL` overrides the model id/path; local HF snapshot paths are
-  supported.
-- `CUA_TINYCLIP_ALLOW_DOWNLOAD=1` allows runtime download. Default is local-only.
-- `CUA_TINYCLIP_LABELS` overrides the comma-separated candidate list.
-- `CUA_TINYCLIP_MIN_SCORE` and `CUA_TINYCLIP_MIN_MARGIN` tune label acceptance.
+- `CUA_ENABLE_FLORENCE2=0` disables icon semantic captioning.
+- `CUA_FLORENCE2_MODEL` overrides the caption model path.
+- `CUA_FLORENCE2_MODEL_SUBFOLDER` selects a model subfolder for a Hugging Face
+  repository override.
+- `CUA_FLORENCE2_PROCESSOR` overrides the processor/tokenizer path.
+- `CUA_FLORENCE2_ALLOW_DOWNLOAD=1` permits Hugging Face access; default is
+  local-only.
+- `CUA_FLORENCE2_DEVICE=cpu|cuda` selects the device.
+- `CUA_FLORENCE2_BATCH_SIZE` defaults to 64 and is capped at 256.
+- `CUA_FLORENCE2_MAX_NEW_TOKENS` defaults to 20 and is capped at 128.
 
 `vision_metadata.stage_timings` reports SOM stage timing for debugging:
 `image_decode_latency`, `yolo_latency`, `ocr_latency`, `merge_latency`,
-`tinyclip_latency`, `bridge_convert_latency`, `annotation_encode_latency`,
-`omniparser_latency`, and `total_latency`.
+`florence2_latency`, `icon_semantic_latency`, `bridge_convert_latency`,
+`annotation_encode_latency`, `omniparser_latency`, and `total_latency`.
+`tinyclip_latency=0.0` is retained only as a compatibility field.
+
+Icon nodes preserve `raw_caption`, a conservative `normalized_label`,
+`icon_label_source="omniparser_v2_florence2"`, and
+`icon_label_confidence_provenance="unscored_greedy_generation"`. Florence
+generation does not provide a calibrated confidence, so do not invent one.
+`vision_metadata.icon_semantic_status` exposes caption availability. Florence
+initialization or inference failure must degrade to unlabeled YOLO icons without
+failing the overall SOM observation.
 
 Vision text nodes propagate OCR confidence as `confidence`,
 `ocr_confidence`, and `metadata.ocr_confidence`. Default denoising must not
@@ -497,7 +553,7 @@ uv run cua-win stop
 
 ## Current Priorities
 
-### P1: High-Value API Stabilization
+### P1: High-Value Development
 
 - Defer `CUA_TOOL_PROFILE=core|full` until the merged 25-tool surface has had
   enough real agent usage to show which low-level primitives should stay hidden
@@ -508,6 +564,11 @@ uv run cua-win stop
 
 ### P2: Useful, But Not Blocking
 
+- Vendor and verify the RapidOCR PP-OCR ONNX model files for offline/package
+  builds; current environments may download them on first initialization.
+- Build a reviewed Windows icon-caption corpus for WeChat, DingTalk, Chrome,
+  and classic controls. Track Florence incorrect-label and unknown rates,
+  especially phone, pin, mute, and application-specific icons.
 - Deduplicate EnumWindows search strategies for process/title matching.
 - Explore broader MSAA-backed actions only when the action contract is
   observable and verification-gated.
@@ -527,8 +588,8 @@ uv run cua-win stop
   high-frequency.
 - Rework overlay architecture only after more Windows runs expose concrete GDI
   lifecycle, shutdown, or modularity problems.
-- Revisit MobileCLIP-S0 only if TinyCLIP label quality is insufficient on
-  collected Windows icon-label samples.
+- Revisit MobileCLIP-S0 only if Florence-2 memory or package size prevents it
+  from becoming the default icon-semantic backend.
 - Keep YOLO + OCR parallelism disabled by default; the prior EasyOCR CPU speedup
   was about 8%, and RapidOCR needs fresh benchmarks before adding complexity.
 
@@ -573,11 +634,9 @@ uv run cua-win stop
 
 ## Future Exploration
 
-- MobileCLIP-S0 is likely a stronger semantic model than TinyCLIP for icon
-  labeling, but use the PyTorch/checkpoint path for this Windows Python server.
-  The CoreML export is primarily for Apple runtimes and should not be the main
-  integration path here. Revisit MobileCLIP-S0 if TinyCLIP label quality is
-  insufficient.
+- MobileCLIP-S0 remains a possible lower-memory alternative if Florence-2 is too
+  expensive. Use the PyTorch/checkpoint path for this Windows server; CoreML is
+  not the primary runtime.
 - YOLO + EasyOCR `ThreadPoolExecutor` parallelism was evaluated on 2026-06-01
   with a 1280x830 WGC screenshot on CPU: serial averaged 3.31s, parallel
   averaged 3.07s, about 8% faster. This is historical EasyOCR data; re-benchmark
