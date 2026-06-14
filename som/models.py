@@ -1,6 +1,11 @@
 from typing import Any, Dict, List, Literal, Optional, Tuple
 
-from pydantic import BaseModel, Field, validator
+from pydantic import BaseModel, Field
+
+try:
+    from pydantic import field_validator
+except ImportError:  # pragma: no cover - compatibility with Pydantic v1
+    from pydantic import validator as field_validator
 
 
 class BoundingBox(BaseModel):
@@ -50,7 +55,8 @@ class ImageData(BaseModel):
     width: int = Field(..., description="Image width in pixels")
     height: int = Field(..., description="Image height in pixels")
 
-    @validator("width", "height")
+    @field_validator("width", "height")
+    @classmethod
     def dimensions_must_be_positive(cls, v):
         if v <= 0:
             raise ValueError("Dimensions must be positive")

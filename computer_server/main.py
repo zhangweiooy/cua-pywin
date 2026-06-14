@@ -1,6 +1,7 @@
 import asyncio
 import logging
 import os
+from contextlib import asynccontextmanager
 from typing import Any
 
 from fastapi import Body, Depends, FastAPI, Header, HTTPException
@@ -19,6 +20,7 @@ OS_TYPE = "windows"
 HAS_MCP = None
 _mcp_server = None
 _mcp_server_app = None
+_mcp_mounted = False
 _tools_cache = None
 
 
@@ -71,11 +73,23 @@ async def _require_cli_token(
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.INFO)
 
+
+@asynccontextmanager
+async def _lifespan(fastapi_app: FastAPI):
+    """Lazy-mount the MCP server on HTTP startup."""
+    global _mcp_mounted
+    if not _mcp_mounted and _check_mcp() and _mcp_server_app:
+        fastapi_app.mount("/mcp", _mcp_server_app)
+        _mcp_mounted = True
+        logger.info("MCP server mounted at /mcp")
+    yield
+
+
 app = FastAPI(
     title="Computer API",
     description="API for the Computer project",
     version="0.1.0",
-    lifespan=None,
+    lifespan=_lifespan,
     redirect_slashes=False,
 )
 
@@ -93,14 +107,6 @@ app.add_middleware(
         BATCH_HEADER,
     ],
 )
-
-
-@app.on_event("startup")
-async def _mount_mcp():
-    """Lazy-mount the MCP server on first HTTP startup."""
-    if _check_mcp() and _mcp_server_app:
-        app.mount("/mcp", _mcp_server_app)
-        logger.info("MCP server mounted at /mcp")
 
 
 @app.get("/status")
