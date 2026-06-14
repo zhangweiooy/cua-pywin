@@ -59,7 +59,6 @@ venv.bak/
 .pdm-python
 .pdm-build/
 __pypackages__/
-uv.lock
 
 # mypy
 .mypy_cache/

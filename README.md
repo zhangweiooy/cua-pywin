@@ -81,6 +81,20 @@ cua-pywin/
 
 ### 安装
 
+正式发布包从 [GitHub Releases](https://github.com/zhangweiooy/cua-pywin/releases)
+下载。wheel 已内置 OmniParser V2 YOLO、
+Florence-2 和 RapidOCR 模型，用户不需要单独下载模型：
+
+```powershell
+pip install .\cua_pywin-0.1.0-py3-none-any.whl
+cua-win doctor
+```
+
+wheel 约 1 GB，因此不通过常规 PyPI 分发。安装过程仍可能从包索引下载
+Python 依赖；完整的开发者发布流程见 [`RELEASE.md`](RELEASE.md)。
+
+源码开发安装：
+
 ```bash
 cd D:\Documents\Code\cua-pywin
 pip install -e . -i https://pypi.tuna.tsinghua.edu.cn/simple
@@ -389,6 +403,22 @@ cua-pywin/
 **Layer direction**: `mcp_server → services → handlers → OS APIs`. `handlers` never imports `services`. `recording`, `learning`, and `overlay` share capture / OCR / UIA-timeout behaviour through `services` rather than duplicating it.
 
 ### Installation
+
+Download the release wheel from
+[GitHub Releases](https://github.com/zhangweiooy/cua-pywin/releases). It
+contains the OmniParser V2 YOLO, Florence-2, and RapidOCR models, so users do
+not download model files separately:
+
+```powershell
+pip install .\cua_pywin-0.1.0-py3-none-any.whl
+cua-win doctor
+```
+
+The wheel is approximately 1 GB and is not distributed through normal PyPI.
+Installation can still download Python dependencies from the package index.
+See [`RELEASE.md`](RELEASE.md) for the developer release process.
+
+For source development:
 
 ```bash
 cd D:\Documents\Code\cua-pywin

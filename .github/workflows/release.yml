@@ -1,0 +1,83 @@
+name: Build and release
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: Candidate version without a leading v
+        required: true
+        default: "0.1.0"
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+jobs:
+  windows-release:
+    runs-on: windows-latest
+    timeout-minutes: 120
+    env:
+      HF_HUB_OFFLINE: "1"
+      TRANSFORMERS_OFFLINE: "1"
+      PYTHONIOENCODING: "utf-8"
+
+    steps:
+      - name: Check out source and Git LFS models
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          lfs: true
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Set up uv
+        uses: astral-sh/setup-uv@v6
+        with:
+          enable-cache: true
+
+      - name: Resolve release version
+        shell: pwsh
+        run: |
+          if ($env:GITHUB_REF_TYPE -eq "tag") {
+            if (-not $env:GITHUB_REF_NAME.StartsWith("v")) {
+              throw "Release tags must start with v"
+            }
+            $version = $env:GITHUB_REF_NAME.Substring(1)
+          } else {
+            $version = "${{ inputs.version }}"
+          }
+          "RELEASE_VERSION=$version" >> $env:GITHUB_ENV
+
+      - name: Build and validate release candidate
+        shell: pwsh
+        run: ./scripts/build_release.ps1 -Version $env:RELEASE_VERSION
+
+      - name: Upload candidate artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: cua-pywin-${{ env.RELEASE_VERSION }}-windows
+          path: |
+            dist/*.whl
+            dist/SHA256SUMS.txt
+          compression-level: 0
+          retention-days: 7
+          if-no-files-found: error
+
+      - name: Create GitHub Release
+        if: github.ref_type == 'tag'
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $wheel = (Get-ChildItem dist -Filter *.whl -File -ErrorAction Stop).FullName
+          gh release create $env:GITHUB_REF_NAME `
+            $wheel `
+            (Resolve-Path dist/SHA256SUMS.txt).Path `
+            --verify-tag `
+            --generate-notes `
+            --title "cua-pywin $env:RELEASE_VERSION"

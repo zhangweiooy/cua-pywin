@@ -89,7 +89,7 @@ computer_server = [
 ]
 som = ["weights/icon_detect/model.pt", "weights/icon_detect/model_manifest.json"]
 
-[tool.pdm.dev-dependencies]
+[dependency-groups]
 test = [
     "pytest>=7.0.0",
     "pytest-asyncio>=0.23.0",

@@ -124,6 +124,9 @@ uv run python scripts/mcp_test_one.py --list
 
 # Compile checks
 python -m compileall -q computer_server som
+
+# Build and validate a release candidate
+./scripts/build_release.ps1 -Version 0.1.0
 ```
 
 ## Coordinate Systems
@@ -547,6 +550,23 @@ uv run cua-win computer_get_screen_size --start-timeout 90
 uv run cua-win stop
 ```
 
+## Release Process
+
+- Release wheels include OmniParser V2 YOLO, Florence-2, and RapidOCR model
+  files and are approximately 1 GB. Publish them through GitHub Releases, not
+  normal PyPI.
+- `scripts/build_release.ps1` performs the locked install, source/model
+  validation, Ruff, tests, compile checks, wheel build, wheel-internal model
+  validation, and SHA-256 generation.
+- `uv.lock` is committed release input. Regenerate and commit it whenever
+  dependency metadata changes; clean CI checkouts use `uv sync --locked`.
+- Manual `Build and release` workflow runs create a seven-day candidate
+  artifact. A pushed `v*` tag creates the GitHub Release after the same checks.
+- Keep the repository visibility decision separate from release mechanics. The
+  repository is currently private and must not be made public implicitly.
+- Follow `RELEASE.md` for version updates, clean-environment smoke tests,
+  tagging, and model-update requirements.
+
 ## Adding A New MCP Tool
 
 1. Add an `@mcp.tool` async function in `create_mcp_server()`.
@@ -563,6 +583,9 @@ uv run cua-win stop
 
 ### P1: High-Value Development
 
+- Before publishing `v0.1.0`, decide whether the currently private GitHub
+  repository should become public, verify the candidate wheel on a second
+  Windows machine, finalize `CHANGELOG.md`, and then push the annotated tag.
 - Defer `CUA_TOOL_PROFILE=core|full` until the merged 25-tool surface has had
   enough real agent usage to show which low-level primitives should stay hidden
   by default.
