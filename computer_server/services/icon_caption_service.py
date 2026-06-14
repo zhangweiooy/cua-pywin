@@ -20,8 +20,6 @@ BUNDLED_FLORENCE2_MODEL_DIR = (
     / "omniparser_v2"
     / "icon_caption"
 )
-DEFAULT_FLORENCE2_MODEL = "microsoft/OmniParser-v2.0"
-DEFAULT_FLORENCE2_PROCESSOR = "microsoft/Florence-2-base"
 GENERATION_PROMPT = "<CAPTION>"
 GENERATION_CONFIDENCE_PROVENANCE = "unscored_greedy_generation"
 
@@ -99,19 +97,14 @@ def default_model_name_or_path() -> str:
     configured = os.environ.get("CUA_FLORENCE2_MODEL")
     if configured:
         return configured
-    if BUNDLED_FLORENCE2_MODEL_DIR.exists():
-        return str(BUNDLED_FLORENCE2_MODEL_DIR)
-    return DEFAULT_FLORENCE2_MODEL
+    return str(BUNDLED_FLORENCE2_MODEL_DIR)
 
 
 def default_processor_name_or_path(model_name_or_path: str) -> str:
     configured = os.environ.get("CUA_FLORENCE2_PROCESSOR")
     if configured:
         return configured
-    model_path = Path(model_name_or_path)
-    if model_path.exists() and (model_path / "preprocessor_config.json").exists():
-        return model_name_or_path
-    return DEFAULT_FLORENCE2_PROCESSOR
+    return model_name_or_path
 
 
 class IconCaptionService:
@@ -121,7 +114,6 @@ class IconCaptionService:
         self,
         model_name_or_path: Optional[str] = None,
         processor_name_or_path: Optional[str] = None,
-        allow_download: Optional[bool] = None,
         enabled: Optional[bool] = None,
         batch_size: Optional[int] = None,
         max_new_tokens: Optional[int] = None,
@@ -130,17 +122,6 @@ class IconCaptionService:
         self.processor_name_or_path = (
             processor_name_or_path
             or default_processor_name_or_path(self.model_name_or_path)
-        )
-        self.model_subfolder = os.environ.get("CUA_FLORENCE2_MODEL_SUBFOLDER")
-        if (
-            self.model_subfolder is None
-            and self.model_name_or_path == DEFAULT_FLORENCE2_MODEL
-        ):
-            self.model_subfolder = "icon_caption"
-        self.allow_download = (
-            allow_download
-            if allow_download is not None
-            else _env_flag("CUA_FLORENCE2_ALLOW_DOWNLOAD", False)
         )
         self.enabled = (
             enabled
@@ -174,7 +155,6 @@ class IconCaptionService:
             "failure": self._failure,
             "model": self.model_name_or_path,
             "processor": self.processor_name_or_path,
-            "model_subfolder": self.model_subfolder,
             "batch_size": self.batch_size,
         }
 
@@ -194,6 +174,14 @@ class IconCaptionService:
                 return False
             try:
                 self._state = "loading"
+                model_path = self._require_local_directory(
+                    self.model_name_or_path,
+                    "Florence-2 model",
+                )
+                processor_path = self._require_local_directory(
+                    self.processor_name_or_path,
+                    "Florence-2 processor",
+                )
                 import torch
                 from transformers import AutoModelForCausalLM, AutoProcessor
 
@@ -205,22 +193,19 @@ class IconCaptionService:
                         "cuda" if torch.cuda.is_available() else "cpu"
                     )
                 dtype = torch.float16 if device.type == "cuda" else torch.float32
-                local_files_only = not self.allow_download
 
                 processor = AutoProcessor.from_pretrained(
-                    self.processor_name_or_path,
-                    local_files_only=local_files_only,
+                    str(processor_path),
+                    local_files_only=True,
                     trust_remote_code=True,
                 )
                 model_kwargs = {
-                    "local_files_only": local_files_only,
+                    "local_files_only": True,
                     "trust_remote_code": True,
                     "torch_dtype": dtype,
                 }
-                if self.model_subfolder:
-                    model_kwargs["subfolder"] = self.model_subfolder
                 model = AutoModelForCausalLM.from_pretrained(
-                    self.model_name_or_path,
+                    str(model_path),
                     **model_kwargs,
                 )
                 model.eval()
@@ -244,6 +229,17 @@ class IconCaptionService:
                 self._failure = str(exc)
                 logger.warning("Florence-2 icon captioner disabled: %s", exc)
                 return False
+
+    @staticmethod
+    def _require_local_directory(value: str, label: str) -> Path:
+        path = Path(value).expanduser()
+        if not path.is_dir():
+            raise FileNotFoundError(
+                f"{label} must be a local directory: {path}. "
+                "Runtime model download is disabled; install a complete "
+                "cua-pywin release or update the developer model bundle."
+            )
+        return path.resolve()
 
     def caption_icons(
         self,

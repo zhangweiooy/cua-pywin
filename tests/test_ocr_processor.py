@@ -38,7 +38,7 @@ def test_rapidocr_object_result_is_normalized(monkeypatch):
     monkeypatch.setitem(
         sys.modules,
         "rapidocr",
-        types.SimpleNamespace(RapidOCR=lambda: FakeRapidOCR()),
+        types.SimpleNamespace(RapidOCR=lambda **_kwargs: FakeRapidOCR()),
     )
     monkeypatch.setenv("CUA_OCR_BACKEND", "rapidocr")
 
@@ -67,7 +67,7 @@ def test_rapidocr_list_result_is_supported(monkeypatch):
     monkeypatch.setitem(
         sys.modules,
         "rapidocr",
-        types.SimpleNamespace(RapidOCR=lambda: FakeRapidOCR()),
+        types.SimpleNamespace(RapidOCR=lambda **_kwargs: FakeRapidOCR()),
     )
     monkeypatch.setenv("CUA_OCR_BACKEND", "rapidocr")
 
@@ -94,7 +94,7 @@ def test_rapidocr_default_denoise_keeps_single_character_detections(monkeypatch)
     monkeypatch.setitem(
         sys.modules,
         "rapidocr",
-        types.SimpleNamespace(RapidOCR=lambda: FakeRapidOCR()),
+        types.SimpleNamespace(RapidOCR=lambda **_kwargs: FakeRapidOCR()),
     )
     monkeypatch.setenv("CUA_OCR_BACKEND", "rapidocr")
 
@@ -119,7 +119,7 @@ def test_rapidocr_strict_denoise_filters_isolated_artifacts(monkeypatch):
     monkeypatch.setitem(
         sys.modules,
         "rapidocr",
-        types.SimpleNamespace(RapidOCR=lambda: FakeRapidOCR()),
+        types.SimpleNamespace(RapidOCR=lambda **_kwargs: FakeRapidOCR()),
     )
     monkeypatch.setenv("CUA_OCR_BACKEND", "rapidocr")
     monkeypatch.setenv("CUA_OCR_DENOISE", "strict")
@@ -141,7 +141,7 @@ def test_rapidocr_normalizes_search_icon_artifact(monkeypatch):
     monkeypatch.setitem(
         sys.modules,
         "rapidocr",
-        types.SimpleNamespace(RapidOCR=lambda: FakeRapidOCR()),
+        types.SimpleNamespace(RapidOCR=lambda **_kwargs: FakeRapidOCR()),
     )
     monkeypatch.setenv("CUA_OCR_BACKEND", "rapidocr")
 
@@ -162,7 +162,7 @@ def test_ocr_denoise_can_be_disabled(monkeypatch):
     monkeypatch.setitem(
         sys.modules,
         "rapidocr",
-        types.SimpleNamespace(RapidOCR=lambda: FakeRapidOCR()),
+        types.SimpleNamespace(RapidOCR=lambda **_kwargs: FakeRapidOCR()),
     )
     monkeypatch.setenv("CUA_OCR_BACKEND", "rapidocr")
     monkeypatch.setenv("CUA_OCR_DENOISE", "0")
@@ -186,3 +186,69 @@ def test_rapidocr_import_failure_returns_empty(monkeypatch):
     monkeypatch.setenv("CUA_OCR_BACKEND", "rapidocr")
 
     assert OCRProcessor().detect_text(Image.new("RGB", (10, 10), "white")) == []
+
+
+def test_rapidocr_uses_explicit_bundled_model_paths(monkeypatch, tmp_path):
+    _reset_ocr_processor()
+    expected_names = {
+        "Det.model_path": "ch_PP-OCRv4_det_mobile.onnx",
+        "Cls.model_path": "ch_ppocr_mobile_v2.0_cls_mobile.onnx",
+        "Rec.model_path": "ch_PP-OCRv4_rec_mobile.onnx",
+        "Rec.rec_keys_path": "ppocr_keys_v1.txt",
+    }
+    for name in expected_names.values():
+        (tmp_path / name).write_bytes(b"model")
+
+    captured = {}
+
+    class FakeRapidOCR:
+        pass
+
+    def create_rapidocr(*, params):
+        captured.update(params)
+        return FakeRapidOCR()
+
+    monkeypatch.setitem(
+        sys.modules,
+        "rapidocr",
+        types.SimpleNamespace(RapidOCR=create_rapidocr),
+    )
+    monkeypatch.setenv("CUA_RAPIDOCR_MODEL_DIR", str(tmp_path))
+
+    reader = OCRProcessor()._create_rapidocr_reader()
+
+    assert isinstance(reader, FakeRapidOCR)
+    for key, name in expected_names.items():
+        assert captured[key] == str(tmp_path / name)
+    assert captured["Global.log_level"] == "error"
+
+
+def test_rapidocr_missing_bundled_model_fails_closed(monkeypatch, tmp_path):
+    monkeypatch.setenv("CUA_RAPIDOCR_MODEL_DIR", str(tmp_path))
+
+    try:
+        OCRProcessor()._rapidocr_params()
+    except RuntimeError as exc:
+        assert "Bundled RapidOCR model files are missing" in str(exc)
+    else:
+        raise AssertionError("missing model bundle should fail initialization")
+
+
+def test_easyocr_developer_fallback_disables_download(monkeypatch):
+    captured = {}
+
+    class FakeReader:
+        def __init__(self, languages, **kwargs):
+            captured["languages"] = languages
+            captured.update(kwargs)
+
+    monkeypatch.setitem(
+        sys.modules,
+        "easyocr",
+        types.SimpleNamespace(Reader=FakeReader),
+    )
+
+    reader = OCRProcessor(backend="easyocr")._create_easyocr_reader()
+
+    assert isinstance(reader, FakeReader)
+    assert captured["download_enabled"] is False

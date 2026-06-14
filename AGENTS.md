@@ -347,13 +347,21 @@ The OmniParser V2 YOLO detector is bundled at
 `som/weights/icon_detect/model.pt` from `microsoft/OmniParser-v2.0`; package
 builds include the `som` package and this weight file.
 
+RapidOCR det/cls/rec ONNX models and the Chinese character dictionary are
+bundled under `computer_server/models/rapidocr_ppocrv4/`. Runtime initialization
+passes these paths explicitly, so OCR does not depend on RapidOCR's package
+layout, default model selection, cache, or network download. The ONNX files are
+tracked with Git LFS; `cua-win doctor` verifies their SHA-256 hashes.
+
 The fine-tuned Florence-2 icon-caption model, processor, tokenizer, and custom
 model code are bundled under
 `computer_server/models/omniparser_v2/icon_caption/`. The 1.08 GB
 `model.safetensors` is tracked with Git LFS. Runtime model download is disabled
-by default. `transformers` is pinned to 4.46.x because later 4.x and 5.x
+entirely. Missing or invalid model files must fail explicitly; model updates are
+made only in the repository and shipped in a new release. `transformers` is
+pinned to 4.46.x because later 4.x and 5.x
 releases are incompatible with the official OmniParser V2 custom model code.
-The resulting wheel is about 988 MB and cannot use the normal PyPI file-size
+The resulting wheel is about 1.00 GB and cannot use the normal PyPI file-size
 limit; publish it through GitHub Releases, an installer, or another artifact
 store. `cua-win doctor` must reject unresolved Git LFS pointer files.
 
@@ -401,16 +409,14 @@ Relevant controls:
   EasyOCR is optional and requires the `ocr-easy` extra.
 - `CUA_OCR_TIMEOUT_SECONDS` overrides per-call OCR timeout.
 - `CUA_RAPIDOCR_DEVICE=cpu` is the supported RapidOCR runtime in v1.
+- `CUA_RAPIDOCR_MODEL_DIR` is a developer-only local bundle override. It must
+  never trigger downloads or become an end-user model update mechanism.
 - `CUA_OCR_DENOISE=0` disables OCR text cleanup; `CUA_OCR_DENOISE=strict`
   enables deletion-style filtering for isolated symbol/single-character
   artifacts. Default denoising must stay conservative.
 - `CUA_ENABLE_FLORENCE2=0` disables icon semantic captioning.
-- `CUA_FLORENCE2_MODEL` overrides the caption model path.
-- `CUA_FLORENCE2_MODEL_SUBFOLDER` selects a model subfolder for a Hugging Face
-  repository override.
-- `CUA_FLORENCE2_PROCESSOR` overrides the processor/tokenizer path.
-- `CUA_FLORENCE2_ALLOW_DOWNLOAD=1` permits Hugging Face access; default is
-  local-only.
+- `CUA_FLORENCE2_MODEL` and `CUA_FLORENCE2_PROCESSOR` are developer-only local
+  directory overrides. Remote repository identifiers are rejected.
 - `CUA_FLORENCE2_DEVICE=cpu|cuda` selects the device.
 - `CUA_FLORENCE2_BATCH_SIZE` defaults to 64 and is capped at 256.
 - `CUA_FLORENCE2_MAX_NEW_TOKENS` defaults to 20 and is capped at 128.
@@ -437,9 +443,11 @@ characters can be valid UI labels. Keep deletion-style rules behind explicit
 
 ### OCR Fallback: RapidOCR -> EasyOCR
 
-RapidOCR may download PP-OCR ONNX models on first initialization. Offline and
-packaged releases should verify these model files are vendored before shipping.
-Use EasyOCR only as an explicit fallback for comparison or regressions.
+The PP-OCRv4 ONNX files are bundled and loaded through explicit local paths.
+Offline/package verification is enforced by `cua-win doctor` and wheel smoke
+tests.
+Use EasyOCR only as an explicit developer comparison path. EasyOCR runtime
+downloads are disabled.
 
 ### Detection Fallback: OmniParser -> Grounding DINO
 
@@ -564,8 +572,6 @@ uv run cua-win stop
 
 ### P2: Useful, But Not Blocking
 
-- Vendor and verify the RapidOCR PP-OCR ONNX model files for offline/package
-  builds; current environments may download them on first initialization.
 - Build a reviewed Windows icon-caption corpus for WeChat, DingTalk, Chrome,
   and classic controls. Track Florence incorrect-label and unknown rates,
   especially phone, pin, mute, and application-specific icons.

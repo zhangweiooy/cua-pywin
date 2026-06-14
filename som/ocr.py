@@ -5,6 +5,7 @@ import os
 import re
 import threading
 from concurrent.futures import ThreadPoolExecutor, TimeoutError as FutureTimeoutError
+from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple
 
 import numpy as np
@@ -16,6 +17,12 @@ _CJK_RE = re.compile(r"[\u3400-\u9fff]")
 _FALSE_VALUES = {"0", "false", "no", "off"}
 _STRICT_VALUES = {"strict", "aggressive"}
 _CJK_SHAPE_ARTIFACTS = {"\u53e3"}
+_RAPIDOCR_MODEL_FILES = {
+    "Det.model_path": "ch_PP-OCRv4_det_mobile.onnx",
+    "Cls.model_path": "ch_ppocr_mobile_v2.0_cls_mobile.onnx",
+    "Rec.model_path": "ch_PP-OCRv4_rec_mobile.onnx",
+    "Rec.rec_keys_path": "ppocr_keys_v1.txt",
+}
 
 
 class TimeoutException(Exception):
@@ -51,7 +58,12 @@ class OCRProcessor:
 
     def _ensure_reader(self):
         """Ensure the selected OCR reader is initialized and cached."""
-        cache_key = (self.backend, tuple(self.languages), os.getenv("CUA_RAPIDOCR_DEVICE", "cpu"))
+        cache_key = (
+            self.backend,
+            tuple(self.languages),
+            os.getenv("CUA_RAPIDOCR_DEVICE", "cpu"),
+            os.getenv("CUA_RAPIDOCR_MODEL_DIR", ""),
+        )
 
         if OCRProcessor._shared_reader is not None and OCRProcessor._shared_key == cache_key:
             self.reader = OCRProcessor._shared_reader
@@ -81,9 +93,41 @@ class OCRProcessor:
         try:
             from rapidocr import RapidOCR
 
-            return RapidOCR()
+            return RapidOCR(params=self._rapidocr_params())
         except Exception as exc:
             raise RuntimeError(f"RapidOCR initialization failed: {exc}") from exc
+
+    def _rapidocr_params(self) -> Dict[str, Any]:
+        model_dir = self._rapidocr_model_dir()
+        paths = {
+            key: model_dir / filename
+            for key, filename in _RAPIDOCR_MODEL_FILES.items()
+        }
+        missing = [str(path) for path in paths.values() if not path.is_file()]
+        if missing:
+            raise RuntimeError(
+                "Bundled RapidOCR model files are missing: " + ", ".join(missing)
+            )
+        params: Dict[str, Any] = {
+            key: str(path)
+            for key, path in paths.items()
+        }
+        params["Global.log_level"] = os.getenv(
+            "CUA_RAPIDOCR_LOG_LEVEL", "error"
+        ).strip().lower()
+        return params
+
+    @staticmethod
+    def _rapidocr_model_dir() -> Path:
+        override = os.getenv("CUA_RAPIDOCR_MODEL_DIR", "").strip()
+        if override:
+            return Path(override).expanduser().resolve()
+        return (
+            Path(__file__).resolve().parents[1]
+            / "computer_server"
+            / "models"
+            / "rapidocr_ppocrv4"
+        )
 
     def _create_easyocr_reader(self):
         try:
@@ -91,7 +135,11 @@ class OCRProcessor:
             import torch
 
             use_gpu = bool(torch.cuda.is_available())
-            return easyocr.Reader(self.languages, gpu=use_gpu)
+            return easyocr.Reader(
+                self.languages,
+                gpu=use_gpu,
+                download_enabled=False,
+            )
         except Exception as exc:
             raise RuntimeError(f"EasyOCR initialization failed: {exc}") from exc
 

@@ -3,3 +3,4 @@
 *.py        text eol=lf
 *.md        text eol=lf
 computer_server/models/omniparser_v2/icon_caption/model.safetensors filter=lfs diff=lfs merge=lfs -text
+computer_server/models/rapidocr_ppocrv4/*.onnx filter=lfs diff=lfs merge=lfs -text

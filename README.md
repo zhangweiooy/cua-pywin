@@ -93,7 +93,8 @@ uv sync --index-url https://pypi.tuna.tsinghua.edu.cn/simple
 ```
 
 默认 OCR 后端是 RapidOCR + ONNXRuntime（PaddleOCR PP-OCRv4 mobile 模型）。
-首次初始化会校验/下载 RapidOCR ONNX 模型；后续 daemon 热启动复用已加载状态。
+det/cls/rec ONNX 模型和中文字符字典已内置到项目，首次初始化不需要联网；
+后续 daemon 调用复用已加载状态。
 OCR 文本节点会保留 `confidence`。默认去噪只做空文本过滤和确定性误读修正；
 删除孤立符号/单字符的严格过滤需显式设置 `CUA_OCR_DENOISE=strict`。
 
@@ -276,7 +277,7 @@ handle、绑定丢失或上下文重置后重新获取当前窗口对象；使�
 
 **树质量 + SOM 回退** — `tree_quality: rich(>50) / ok(15-50)` 跳过 SOM，`poor(<15) / empty(0)` 启用 SOM 视觉检测。`uia_quality` 与 `vision_quality` 单独报告，不互相覆盖。
 
-**PaddleOCR ONNX 后端** — OCR 默认使用 RapidOCR + ONNXRuntime，也就是 PaddleOCR PP-OCRv4 mobile ONNX 模型。`CUA_OCR_BACKEND=easyocr` 可启用可选 EasyOCR fallback（需安装 `ocr-easy` extra）。`CUA_OCR_TIMEOUT_SECONDS` 覆盖单次 OCR timeout；`CUA_RAPIDOCR_DEVICE=cpu` 是 v1 支持的运行方式。RapidOCR 首次初始化可能下载 ONNX 模型，离线/打包发布前需要确认这些模型已内置。OCR 文本结果会透传 `confidence` / `ocr_confidence` 到 vision nodes。默认去噪只做空文本过滤和确定性误读修正；删除孤立符号、微小 ASCII 和已知图标形状误读需显式设置 `CUA_OCR_DENOISE=strict`，`CUA_OCR_DENOISE=0` 可关闭修正。
+**PaddleOCR ONNX 后端** — OCR 默认使用 RapidOCR + ONNXRuntime，也就是 PaddleOCR PP-OCRv4 mobile ONNX 模型。det/cls/rec 模型和中文字符字典固定内置在 `computer_server/models/rapidocr_ppocrv4/`，运行时显式传入本地路径，不支持模型下载或自动更新。模型升级只随开发者发布的新版本交付。`cua-win doctor` 校验文件 SHA-256，并拒绝未拉取的 Git LFS 指针。`CUA_RAPIDOCR_MODEL_DIR` 仅用于开发者本地验证；`CUA_OCR_BACKEND=easyocr` 是可选开发对比路径（需安装 `ocr-easy` extra），同样禁用运行时下载。`CUA_OCR_TIMEOUT_SECONDS` 覆盖单次 OCR timeout；`CUA_RAPIDOCR_DEVICE=cpu` 是 v1 支持的运行方式。OCR 文本结果会透传 `confidence` / `ocr_confidence` 到 vision nodes。默认去噪只做空文本过滤和确定性误读修正；删除孤立符号、微小 ASCII 和已知图标形状误读需显式设置 `CUA_OCR_DENOISE=strict`，`CUA_OCR_DENOISE=0` 可关闭修正。
 
 **录制 vs 学习** — 录制是 agent 视角（MCP 工具调用回放），学习是人类视角（pynput + UIA 标注 + OCR 增强）。两者通过 `capture_service / ocr_service / uia_service / window_identity_service` 共享底层能力。
 
@@ -401,8 +402,9 @@ uv sync --index-url https://pypi.tuna.tsinghua.edu.cn/simple
 ```
 
 The default OCR backend is RapidOCR + ONNXRuntime with PaddleOCR PP-OCRv4
-mobile models. First initialization validates/downloads RapidOCR ONNX models;
-subsequent daemon calls reuse loaded state.
+mobile models. The det/cls/rec ONNX files and Chinese character dictionary are
+bundled, so first initialization does not require network access. Subsequent
+daemon calls reuse loaded state.
 OCR text nodes preserve `confidence`. Default denoising only drops empty text
 and applies deterministic misread fixes; deletion-style filtering for isolated
 symbols and single characters requires `CUA_OCR_DENOISE=strict`.
@@ -618,7 +620,9 @@ primary target capture.
 `som/weights/icon_detect/model.pt`. The fine-tuned Florence-2 icon-caption model,
 processor, tokenizer, and model code are bundled under
 `computer_server/models/omniparser_v2/icon_caption/`, with the 1.08 GB weight
-tracked through Git LFS. Runtime download is disabled by default. Icon crops are
+tracked through Git LFS. Runtime model download is not supported: missing or
+invalid model files fail explicitly and are replaced only by a developer-built
+release. Icon crops are
 resized to 64x64 and captioned in batches, matching the official V2 pipeline.
 RapidOCR remains responsible for visible text.
 
@@ -627,9 +631,7 @@ Florence-2 output is exposed as `raw_caption` plus a conservative
 report `icon_label_confidence=null` and
 `icon_label_confidence_provenance="unscored_greedy_generation"`. Empty or
 generic captions remain unknown rather than receiving a forced label. Controls:
-`CUA_ENABLE_FLORENCE2`, `CUA_FLORENCE2_MODEL`, `CUA_FLORENCE2_PROCESSOR`,
-`CUA_FLORENCE2_MODEL_SUBFOLDER`, `CUA_FLORENCE2_DEVICE`,
-`CUA_FLORENCE2_BATCH_SIZE`, and
+`CUA_ENABLE_FLORENCE2`, `CUA_FLORENCE2_DEVICE`, `CUA_FLORENCE2_BATCH_SIZE`, and
 `CUA_FLORENCE2_MAX_NEW_TOKENS`. Debug timing includes `florence2_latency` and
 `icon_semantic_latency`; legacy `tinyclip_latency` remains `0.0` for metadata
 compatibility. `vision_metadata.icon_semantic_status` reports whether captioning
@@ -638,7 +640,8 @@ inference; YOLO and OCR nodes remain available when captioning fails.
 Batch size and generated-token limits are capped at 256 and 128 respectively to
 bound accidental memory growth.
 
-The bundled wheel is approximately 988 MB because it contains the full model.
+The bundled wheel is approximately 1.00 GB because it contains the full
+Florence-2 and RapidOCR model bundles.
 This exceeds PyPI's normal per-file upload limit; distribute release wheels
 through GitHub Releases, an installer, or another artifact store. Source
 checkouts must run `git lfs pull`; `cua-win doctor` rejects an unresolved LFS
@@ -648,12 +651,16 @@ pointer instead of treating it as a valid model.
 PaddleOCR PP-OCRv4 mobile models. `CUA_OCR_BACKEND=easyocr` enables the optional
 EasyOCR fallback when installed with the `ocr-easy` extra. `CUA_OCR_TIMEOUT_SECONDS`
 overrides per-call OCR timeout, and `CUA_RAPIDOCR_DEVICE=cpu` is the supported v1
-runtime. RapidOCR may download ONNX models on first initialization; package/offline
-builds should verify these model files are vendored before release. OCR text results
-propagate `confidence` / `ocr_confidence` into vision nodes. Default denoising only
-drops empty text and applies deterministic misread fixes; deletion-style filtering
-for isolated symbols, tiny ASCII artifacts, and known icon-shape misreads requires
-`CUA_OCR_DENOISE=strict`. Set `CUA_OCR_DENOISE=0` to disable denoising.
+runtime. The det/cls/rec models and Chinese character dictionary are bundled under
+`computer_server/models/rapidocr_ppocrv4/` and passed to RapidOCR explicitly, so
+runtime model download is not supported. `cua-win doctor` verifies their SHA-256 hashes
+and rejects unresolved Git LFS pointers. `CUA_RAPIDOCR_MODEL_DIR` overrides the
+bundle path for developer validation only; user model updates ship with new
+`cua-pywin` releases. OCR text results propagate `confidence` / `ocr_confidence` into vision
+nodes. Default denoising only drops empty text and applies deterministic misread
+fixes; deletion-style filtering for isolated symbols, tiny ASCII artifacts, and
+known icon-shape misreads requires `CUA_OCR_DENOISE=strict`. Set
+`CUA_OCR_DENOISE=0` to disable denoising.
 
 **Recording vs Learning** — Recording is agent-perspective (MCP tool replay); Learning is human-perspective (pynput + UIA + OCR enrichment). The two share capture / OCR / UIA-timeout / window-identity through `services/` rather than duplicating logic.
 

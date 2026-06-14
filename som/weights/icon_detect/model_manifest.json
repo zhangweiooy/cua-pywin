@@ -1,0 +1,11 @@
+{
+  "source": {
+    "repository": "microsoft/OmniParser-v2.0",
+    "revision": "6600256cb0f1b07651e3bc86166196307bad7e2d",
+    "path": "icon_detect/model.pt",
+    "license": "MIT"
+  },
+  "sha256": {
+    "model.pt": "dab3d4351ad00b035db829909a4db98354d5a90f6990e4ac00222a9a95d4bf57"
+  }
+}

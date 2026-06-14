@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import hashlib
 import http.client
 import importlib.metadata
 import importlib.util
@@ -106,11 +107,29 @@ FLORENCE2_REQUIRED_FILES = (
     "vocab.json",
 )
 FLORENCE2_MIN_MODEL_BYTES = 1_000_000_000
+OMNIPARSER_YOLO_DIR = (
+    Path(__file__).resolve().parents[1]
+    / "som"
+    / "weights"
+    / "icon_detect"
+)
 FLORENCE2_MODEL_DIR = (
     Path(__file__).resolve().parent
     / "models"
     / "omniparser_v2"
     / "icon_caption"
+)
+RAPIDOCR_REQUIRED_FILES = (
+    "ch_PP-OCRv4_det_mobile.onnx",
+    "ch_ppocr_mobile_v2.0_cls_mobile.onnx",
+    "ch_PP-OCRv4_rec_mobile.onnx",
+    "ppocr_keys_v1.txt",
+    "model_manifest.json",
+)
+RAPIDOCR_MODEL_DIR = (
+    Path(__file__).resolve().parent
+    / "models"
+    / "rapidocr_ppocrv4"
 )
 
 MAX_BATCH_ACTIONS = 10_000
@@ -683,10 +702,6 @@ def _json_print(payload: Any, compact: bool = False) -> None:
         print(json.dumps(payload, indent=2, ensure_ascii=False))
 
 
-def _project_root() -> Path:
-    return Path(__file__).resolve().parents[1]
-
-
 def _format_size(num_bytes: int) -> str:
     size = float(num_bytes)
     for unit in ("B", "KB", "MB", "GB"):
@@ -732,7 +747,9 @@ def _check_state_dir() -> DoctorCheck:
 
 
 def _check_omniparser_weight() -> DoctorCheck:
-    path = _project_root() / "som" / "weights" / "icon_detect" / "model.pt"
+    model_dir = OMNIPARSER_YOLO_DIR
+    path = model_dir / "model.pt"
+    manifest_path = model_dir / "model_manifest.json"
     if not path.exists():
         return DoctorCheck(
             name="model:omniparser_yolo",
@@ -740,19 +757,55 @@ def _check_omniparser_weight() -> DoctorCheck:
             message=f"OmniParser YOLO weight missing: {path}",
             details={"path": str(path)},
         )
-    size = path.stat().st_size
-    if size <= 0:
+    if not manifest_path.is_file():
         return DoctorCheck(
             name="model:omniparser_yolo",
             status="fail",
-            message=f"OmniParser YOLO weight is empty: {path}",
-            details={"path": str(path), "size_bytes": size},
+            message=f"OmniParser YOLO manifest missing: {manifest_path}",
+            details={"path": str(manifest_path)},
+        )
+    size = path.stat().st_size
+    try:
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        source = manifest["source"]
+        expected_hash = manifest["sha256"]["model.pt"]
+        if (
+            not isinstance(source.get("repository"), str)
+            or not isinstance(source.get("revision"), str)
+            or not isinstance(expected_hash, str)
+            or len(expected_hash) != 64
+        ):
+            raise ValueError("required provenance fields are invalid")
+    except (OSError, KeyError, TypeError, ValueError, json.JSONDecodeError) as exc:
+        return DoctorCheck(
+            name="model:omniparser_yolo",
+            status="fail",
+            message=f"OmniParser YOLO manifest is invalid: {exc}",
+            details={"path": str(manifest_path)},
+        )
+    actual_hash = _sha256_file(path)
+    if actual_hash.lower() != expected_hash.lower():
+        return DoctorCheck(
+            name="model:omniparser_yolo",
+            status="fail",
+            message="OmniParser YOLO weight checksum mismatch",
+            details={
+                "path": str(path),
+                "expected_sha256": expected_hash,
+                "actual_sha256": actual_hash,
+            },
         )
     return DoctorCheck(
         name="model:omniparser_yolo",
         status="ok",
         message=f"OmniParser YOLO weight present ({_format_size(size)})",
-        details={"path": str(path), "size_bytes": size},
+        details={
+            "path": str(path),
+            "size_bytes": size,
+            "repository": source["repository"],
+            "revision": source["revision"],
+            "verified_sha256": actual_hash,
+        },
     )
 
 
@@ -824,6 +877,108 @@ def _check_florence2_bundle() -> DoctorCheck:
             "repository": model_manifest["repository"],
             "revision": model_manifest["revision"],
             "expected_sha256": expected_hash,
+        },
+    )
+
+
+def _sha256_file(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def _check_rapidocr_bundle() -> DoctorCheck:
+    model_dir = RAPIDOCR_MODEL_DIR
+    missing = [
+        name for name in RAPIDOCR_REQUIRED_FILES if not (model_dir / name).is_file()
+    ]
+    if missing:
+        return DoctorCheck(
+            name="model:rapidocr_ppocrv4",
+            status="fail",
+            message=f"RapidOCR PP-OCRv4 bundle incomplete: missing {', '.join(missing)}",
+            details={"path": str(model_dir), "missing": missing},
+        )
+
+    manifest_path = model_dir / "model_manifest.json"
+    try:
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        expected_hashes = manifest["sha256"]
+        source = manifest["source"]
+        if (
+            source.get("distribution") != "rapidocr"
+            or not isinstance(source.get("version"), str)
+            or not isinstance(expected_hashes, dict)
+        ):
+            raise ValueError("required provenance fields are invalid")
+    except (OSError, KeyError, TypeError, ValueError, json.JSONDecodeError) as exc:
+        return DoctorCheck(
+            name="model:rapidocr_ppocrv4",
+            status="fail",
+            message=f"RapidOCR PP-OCRv4 manifest is invalid: {exc}",
+            details={"path": str(manifest_path)},
+        )
+
+    verified: dict[str, str] = {}
+    for name in RAPIDOCR_REQUIRED_FILES:
+        if name == "model_manifest.json":
+            continue
+        path = model_dir / name
+        expected = expected_hashes.get(name)
+        if not isinstance(expected, str) or len(expected) != 64:
+            return DoctorCheck(
+                name="model:rapidocr_ppocrv4",
+                status="fail",
+                message=f"RapidOCR PP-OCRv4 manifest hash missing or invalid: {name}",
+                details={"path": str(manifest_path), "file": name},
+            )
+        if path.suffix == ".onnx":
+            with path.open("rb") as handle:
+                prefix = handle.read(128)
+            if prefix.startswith(b"version https://git-lfs.github.com/spec/v1"):
+                return DoctorCheck(
+                    name="model:rapidocr_ppocrv4",
+                    status="fail",
+                    message=(
+                        "RapidOCR PP-OCRv4 bundle incomplete: Git LFS pointer "
+                        f"found for {name}; run `git lfs pull`"
+                    ),
+                    details={
+                        "path": str(path),
+                        "file": name,
+                        "git_lfs_pointer": True,
+                    },
+                )
+        actual = _sha256_file(path)
+        if actual.lower() != expected.lower():
+            return DoctorCheck(
+                name="model:rapidocr_ppocrv4",
+                status="fail",
+                message=f"RapidOCR PP-OCRv4 checksum mismatch: {name}",
+                details={
+                    "path": str(path),
+                    "file": name,
+                    "expected_sha256": expected,
+                    "actual_sha256": actual,
+                },
+            )
+        verified[name] = actual
+
+    total_size = sum(
+        (model_dir / name).stat().st_size
+        for name in RAPIDOCR_REQUIRED_FILES
+    )
+    return DoctorCheck(
+        name="model:rapidocr_ppocrv4",
+        status="ok",
+        message=f"RapidOCR PP-OCRv4 bundle present ({_format_size(total_size)})",
+        details={
+            "path": str(model_dir),
+            "size_bytes": total_size,
+            "source_version": source["version"],
+            "verified_sha256": verified,
         },
     )
 
@@ -901,6 +1056,7 @@ def _collect_doctor_checks(
     checks.append(_check_state_dir())
     checks.append(_check_omniparser_weight())
     checks.append(_check_florence2_bundle())
+    checks.append(_check_rapidocr_bundle())
 
     if dependencies:
         checks.extend(

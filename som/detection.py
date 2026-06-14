@@ -4,7 +4,6 @@ from typing import Any, Dict, List, Optional
 
 import torch
 import torchvision
-from huggingface_hub import hf_hub_download
 from PIL import Image
 
 logger = logging.getLogger(__name__)
@@ -16,18 +15,15 @@ class DetectionProcessor:
     def __init__(
         self,
         model_path: Optional[Path] = None,
-        cache_dir: Optional[Path] = None,
         force_device: Optional[str] = None,
     ):
         """Initialize the detection processor.
 
         Args:
             model_path: Path to YOLOv8 model
-            cache_dir: Directory to cache downloaded models
             force_device: Force specific device (cuda, cpu, mps)
         """
         self.model_path = model_path
-        self.cache_dir = cache_dir
         self.model = None  # type: Any  # Will be set to YOLO model in load_model
 
         # Set device
@@ -48,55 +44,17 @@ class DetectionProcessor:
         logger.info(f"Using device: {self.device}")
 
     def load_model(self) -> None:
-        """Load or download the YOLO model."""
+        """Load the bundled YOLO model without network fallback."""
         try:
-            # Set default model path if none provided
             if self.model_path is None:
                 self.model_path = Path(__file__).parent / "weights" / "icon_detect" / "model.pt"
 
-            # Check if the model file already exists
             if not self.model_path.exists():
-                logger.info(
-                    "Model not found locally, downloading from Microsoft OmniParser-v2.0..."
+                raise FileNotFoundError(
+                    "Bundled OmniParser YOLO model is missing: "
+                    f"{self.model_path}. Reinstall cua-pywin or use a complete "
+                    "developer build; runtime model download is disabled."
                 )
-
-                # Create directory
-                self.model_path.parent.mkdir(parents=True, exist_ok=True)
-
-                try:
-                    # Check if the model exists in cache
-                    cache_path = None
-                    if self.cache_dir:
-                        # Try to find the model in the cache
-                        potential_paths = list(Path(self.cache_dir).glob("**/model.pt"))
-                        if potential_paths:
-                            cache_path = str(potential_paths[0])
-                            logger.info(f"Found model in cache: {cache_path}")
-
-                    if not cache_path:
-                        # Download from HuggingFace
-                        downloaded_path = hf_hub_download(
-                            repo_id="microsoft/OmniParser-v2.0",
-                            filename="icon_detect/model.pt",
-                            cache_dir=self.cache_dir,
-                        )
-                        cache_path = downloaded_path
-                        logger.info(f"Model downloaded to cache: {cache_path}")
-
-                    # Copy to package directory
-                    import shutil
-
-                    shutil.copy2(cache_path, self.model_path)
-                    logger.info(f"Model copied to: {self.model_path}")
-                except Exception as e:
-                    raise FileNotFoundError(
-                        f"Failed to download model: {str(e)}\n"
-                        "Please ensure you have internet connection and huggingface-hub installed."
-                    ) from e
-
-            # Make sure the model path exists before loading
-            if not self.model_path.exists():
-                raise FileNotFoundError(f"Model file not found at: {self.model_path}")
 
             # If model is already loaded, skip reloading
             if self.model is not None:

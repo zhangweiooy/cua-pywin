@@ -1,11 +1,13 @@
 from __future__ import annotations
 
+import sys
+import types
+
 import pytest
 from PIL import Image
 
 from computer_server.services.icon_caption_service import (
     BUNDLED_FLORENCE2_MODEL_DIR,
-    DEFAULT_FLORENCE2_MODEL,
     GENERATION_CONFIDENCE_PROVENANCE,
     IconCaptionService,
     default_model_name_or_path,
@@ -127,15 +129,57 @@ def test_default_model_path_uses_bundled_model(monkeypatch):
     assert default_model_name_or_path() == str(BUNDLED_FLORENCE2_MODEL_DIR)
 
 
-def test_huggingface_repo_fallback_uses_icon_caption_subfolder(monkeypatch):
-    monkeypatch.delenv("CUA_FLORENCE2_MODEL_SUBFOLDER", raising=False)
-
+def test_remote_model_identifier_is_rejected_without_download():
     service = IconCaptionService(
-        model_name_or_path=DEFAULT_FLORENCE2_MODEL,
+        model_name_or_path="microsoft/OmniParser-v2.0",
         processor_name_or_path="microsoft/Florence-2-base",
     )
 
-    assert service.model_subfolder == "icon_caption"
+    assert service.ensure_ready() is False
+    assert service.status["state"] == "failed"
+    assert "must be a local directory" in service.status["failure"]
+
+
+def test_local_model_loading_forces_transformers_offline(monkeypatch, tmp_path):
+    calls = {}
+
+    class FakeProcessor:
+        @classmethod
+        def from_pretrained(cls, path, **kwargs):
+            calls["processor"] = (path, kwargs)
+            return cls()
+
+    class FakeModel:
+        @classmethod
+        def from_pretrained(cls, path, **kwargs):
+            calls["model"] = (path, kwargs)
+            return cls()
+
+        def eval(self):
+            return self
+
+        def to(self, _device):
+            return self
+
+    monkeypatch.setitem(
+        sys.modules,
+        "transformers",
+        types.SimpleNamespace(
+            AutoModelForCausalLM=FakeModel,
+            AutoProcessor=FakeProcessor,
+        ),
+    )
+    service = IconCaptionService(
+        model_name_or_path=str(tmp_path),
+        processor_name_or_path=str(tmp_path),
+        enabled=True,
+    )
+
+    assert service.ensure_ready() is True
+    assert calls["processor"][1]["local_files_only"] is True
+    assert calls["model"][1]["local_files_only"] is True
+    assert calls["processor"][0] == str(tmp_path.resolve())
+    assert calls["model"][0] == str(tmp_path.resolve())
 
 
 def test_caption_limits_are_bounded(monkeypatch):

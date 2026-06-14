@@ -115,7 +115,7 @@ def _get_parser() -> Any:
 def warm_up() -> None:
     """Pre-initialize OmniParser in a background thread at server startup.
 
-    YOLO model download/load and OCR reader init run in parallel to
+    Bundled YOLO model load and OCR reader init run in parallel to
     minimize wall-clock time.  Fire-and-forget — does not block server startup.
 
     ALL heavy imports (torch, cv2, ultralytics, ...) are pushed into the

@@ -452,6 +452,7 @@ def test_collect_doctor_checks_can_skip_slow_sections() -> None:
         "state_dir",
         "model:omniparser_yolo",
         "model:omniparser_florence2",
+        "model:rapidocr_ppocrv4",
     }.issubset(names)
     assert "daemon" not in names
     assert not any(name.startswith("dependency:") for name in names)
@@ -480,3 +481,131 @@ def test_florence_doctor_rejects_git_lfs_pointer(monkeypatch, tmp_path) -> None:
     assert check.status == "fail"
     assert "git lfs pull" in check.message
     assert check.details["git_lfs_pointer"] is True
+
+
+def test_yolo_doctor_verifies_manifest_hash(monkeypatch, tmp_path) -> None:
+    import hashlib
+    import json
+
+    import computer_server.tool_cli as tool_cli
+
+    model_dir = tmp_path / "icon_detect"
+    model_dir.mkdir()
+    content = b"bundled-yolo"
+    (model_dir / "model.pt").write_bytes(content)
+    (model_dir / "model_manifest.json").write_text(
+        json.dumps(
+            {
+                "source": {
+                    "repository": "microsoft/OmniParser-v2.0",
+                    "revision": "test-revision",
+                },
+                "sha256": {
+                    "model.pt": hashlib.sha256(content).hexdigest(),
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(tool_cli, "OMNIPARSER_YOLO_DIR", model_dir)
+
+    check = tool_cli._check_omniparser_weight()
+
+    assert check.status == "ok"
+    assert check.details["revision"] == "test-revision"
+
+
+def test_yolo_doctor_rejects_checksum_mismatch(monkeypatch, tmp_path) -> None:
+    import json
+
+    import computer_server.tool_cli as tool_cli
+
+    model_dir = tmp_path / "icon_detect"
+    model_dir.mkdir()
+    (model_dir / "model.pt").write_bytes(b"unexpected")
+    (model_dir / "model_manifest.json").write_text(
+        json.dumps(
+            {
+                "source": {
+                    "repository": "microsoft/OmniParser-v2.0",
+                    "revision": "test-revision",
+                },
+                "sha256": {"model.pt": "0" * 64},
+            }
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(tool_cli, "OMNIPARSER_YOLO_DIR", model_dir)
+
+    check = tool_cli._check_omniparser_weight()
+
+    assert check.status == "fail"
+    assert "checksum mismatch" in check.message
+
+
+def test_rapidocr_doctor_verifies_bundle(monkeypatch, tmp_path) -> None:
+    import hashlib
+    import json
+
+    import computer_server.tool_cli as tool_cli
+
+    model_dir = tmp_path / "rapidocr_ppocrv4"
+    model_dir.mkdir()
+    hashes = {}
+    for name in tool_cli.RAPIDOCR_REQUIRED_FILES:
+        if name == "model_manifest.json":
+            continue
+        content = f"test-{name}".encode()
+        (model_dir / name).write_bytes(content)
+        hashes[name] = hashlib.sha256(content).hexdigest()
+    (model_dir / "model_manifest.json").write_text(
+        json.dumps(
+            {
+                "source": {"distribution": "rapidocr", "version": "3.8.1"},
+                "sha256": hashes,
+            }
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(tool_cli, "RAPIDOCR_MODEL_DIR", model_dir)
+
+    check = tool_cli._check_rapidocr_bundle()
+
+    assert check.status == "ok"
+    assert check.details["source_version"] == "3.8.1"
+
+
+def test_rapidocr_doctor_rejects_git_lfs_pointer(monkeypatch, tmp_path) -> None:
+    import hashlib
+    import json
+
+    import computer_server.tool_cli as tool_cli
+
+    model_dir = tmp_path / "rapidocr_ppocrv4"
+    model_dir.mkdir()
+    hashes = {}
+    for name in tool_cli.RAPIDOCR_REQUIRED_FILES:
+        if name == "model_manifest.json":
+            continue
+        content = (
+            b"version https://git-lfs.github.com/spec/v1\n"
+            if name.endswith(".onnx")
+            else b"dictionary"
+        )
+        (model_dir / name).write_bytes(content)
+        hashes[name] = hashlib.sha256(content).hexdigest()
+    (model_dir / "model_manifest.json").write_text(
+        json.dumps(
+            {
+                "source": {"distribution": "rapidocr", "version": "3.8.1"},
+                "sha256": hashes,
+            }
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(tool_cli, "RAPIDOCR_MODEL_DIR", model_dir)
+
+    check = tool_cli._check_rapidocr_bundle()
+
+    assert check.status == "fail"
+    assert "git lfs pull" in check.message

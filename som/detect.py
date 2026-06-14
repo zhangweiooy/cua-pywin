@@ -35,7 +35,6 @@ class OmniParser:
     def __init__(
         self,
         model_path: Optional[Union[str, Path]] = None,
-        cache_dir: Optional[Union[str, Path]] = None,
         force_device: Optional[str] = None,
         ocr_languages: Optional[List[str]] = None,
     ):
@@ -43,13 +42,11 @@ class OmniParser:
 
         Args:
             model_path: Optional path to the YOLO model
-            cache_dir: Optional directory to cache model files
             force_device: Force specific device (cpu/cuda/mps)
             ocr_languages: OCR language hints. RapidOCR uses bundled PP-OCR Chinese+English models.
         """
         self.detector = DetectionProcessor(
             model_path=Path(model_path) if model_path else None,
-            cache_dir=Path(cache_dir) if cache_dir else None,
             force_device=force_device,
         )
         self.ocr = OCRProcessor(languages=ocr_languages)
