@@ -326,8 +326,11 @@ is internal replay metadata.
 - `computer_click(verify_query=..., require_verification=True)` performs a
   post-action window-state check and marks the result failed when the query is
   not observed. `pid` and `window_id` are required for verification.
-- `capture_after=True` is supported by click, scroll, and type tools and returns
-  a fresh snapshot with `snapshot_id`, `screenshot_id`, and `capture`.
+- `capture_after=True` is supported by click, scroll, type, and secondary-action
+  tools. It returns a fresh snapshot with `snapshot_id`, `screenshot_id`, and
+  `capture`; when a pre-action observation is available, it also returns a
+  lightweight `post_action_delta` summarizing node count, added/removed nodes,
+  text changes, tree-quality changes, and before/after screenshot ids.
 - Window snapshots include `capture_metadata` with screenshot provenance,
   crop geometry, resize metadata, capture backend, fallback reason, and
   explicit occlusion-risk warnings. `capture_metadata.stage_timings` includes
@@ -544,7 +547,9 @@ functions. When the SDK is upgraded past the fix:
   one persistent daemon HTTP connection. It is a precomputed batch runner, not
   a server-side script executor; recording still occurs inside each invoked
   action tool. Batch requests suppress the agent cursor trajectory overlay
-  while preserving real input timing such as drag duration.
+  while preserving real input timing such as drag duration. Use
+  `cua-win batch --dry-run` to validate and summarize expanded actions without
+  starting the daemon or sending input.
 - `cua-win call TOOL -` reads one UTF-8 JSON argument object from stdin, and
   `cua-win call TOOL @path.json` reads one from a UTF-8 file. Prefer these forms
   for Chinese text or nested JSON to avoid PowerShell/native argument escaping

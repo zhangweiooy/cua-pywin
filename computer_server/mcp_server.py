@@ -951,6 +951,8 @@ def create_mcp_server() -> FastMCP:
             if fresh.get("success") is False:
                 return {"success": False, "error": fresh.get("error", "get_window_state returned success=False")}
             return {
+                "pid": pid,
+                "window_id": window_id,
                 "screenshot": fresh.get("screenshot"),
                 "screenshots": fresh.get("screenshots", []),
                 "screenshot_id": fresh.get("screenshot_id"),
@@ -980,6 +982,15 @@ def create_mcp_server() -> FastMCP:
         except Exception as _cap_err:
             logger.warning("capture_after failed: %s", _cap_err)
             return {"success": False, "error": str(_cap_err)}
+
+    async def _capture_before_action(
+        pid: Optional[int],
+        window_id: Optional[int],
+        capture_after: bool,
+    ) -> Optional[Dict[str, Any]]:
+        if not capture_after or pid is None or window_id is None:
+            return None
+        return await _capture_and_detect(pid, window_id)
 
     def _annotate_action_path(
         result: Dict[str, Any],
@@ -1050,6 +1061,7 @@ def create_mcp_server() -> FastMCP:
         capture_after: bool,
         verify_query: Optional[str],
         require_verification: bool,
+        pre_action_capture: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Any]:
         """Attach capture_after and optional post-action verification."""
         if pid is None or window_id is None:
@@ -1068,7 +1080,17 @@ def create_mcp_server() -> FastMCP:
             return result
 
         if capture_after:
-            result["capture_after"] = await _capture_and_detect(pid, window_id)
+            post_capture = await _capture_and_detect(pid, window_id)
+            result["capture_after"] = post_capture
+            if pre_action_capture is not None:
+                from computer_server.services.action_delta_service import (
+                    build_post_action_delta,
+                )
+
+                result["post_action_delta"] = build_post_action_delta(
+                    pre_action_capture,
+                    post_capture,
+                )
 
         if verify_query:
             verification_capture = await _capture_and_detect(
@@ -1211,6 +1233,11 @@ def create_mcp_server() -> FastMCP:
                 origin_x, origin_y = get_element_cache().get_window_origin(pid, window_id)
                 screen_pt = (origin_x + el.center_x, origin_y + el.center_y)
             await _animate_cursor_to(int(screen_pt[0]), int(screen_pt[1]))
+            pre_action_capture = await _capture_before_action(
+                pid,
+                window_id,
+                capture_after,
+            )
 
             invoked, invoke_error = await _run_uia_action_with_timeout(
                 pid,
@@ -1273,6 +1300,7 @@ def create_mcp_server() -> FastMCP:
                 capture_after=capture_after,
                 verify_query=verify_query,
                 require_verification=require_verification,
+                pre_action_capture=pre_action_capture,
             )
             wr = _build_window_ref(pid, window_id, screen_pt[0], screen_pt[1])
             await _recording_hook(_recorded_turn(
@@ -1548,6 +1576,11 @@ def create_mcp_server() -> FastMCP:
                     window_id,
                 )
             await asyncio.sleep(0.05)
+            pre_action_capture = await _capture_before_action(
+                pid,
+                window_id,
+                capture_after,
+            )
             _mouse_event_click(actual_x, actual_y, button, count)
             result: Dict[str, Any] = {
                 "success": True,
@@ -1576,6 +1609,7 @@ def create_mcp_server() -> FastMCP:
                 capture_after=capture_after,
                 verify_query=verify_query,
                 require_verification=require_verification,
+                pre_action_capture=pre_action_capture,
             )
             wr = _build_window_ref(pid, window_id, actual_x, actual_y)
             await _recording_hook(_recorded_turn(
@@ -1855,6 +1889,11 @@ def create_mcp_server() -> FastMCP:
         except Exception:
             pass
 
+        pre_action_capture = await _capture_before_action(
+            pid,
+            window_id,
+            capture_after,
+        )
         result = await _perform_pixel_click(
             automation_handler,
             actual_x,
@@ -1897,6 +1936,7 @@ def create_mcp_server() -> FastMCP:
             capture_after=capture_after,
             verify_query=verify_query,
             require_verification=require_verification,
+            pre_action_capture=pre_action_capture,
         )
 
         wr = _build_window_ref(pid, window_id, actual_x, actual_y)
@@ -2031,6 +2071,11 @@ def create_mcp_server() -> FastMCP:
 
         actual_x, actual_y = _scale_to_actual(target_x, target_y)
         await _animate_cursor_to(actual_x, actual_y)
+        pre_action_capture = await _capture_before_action(
+            pid,
+            window_id,
+            capture_after,
+        )
         result = await _perform_pixel_click(
             _get_handlers().automation,
             actual_x,
@@ -2058,6 +2103,7 @@ def create_mcp_server() -> FastMCP:
             capture_after=capture_after,
             verify_query=verify_query,
             require_verification=require_verification,
+            pre_action_capture=pre_action_capture,
         )
 
         wr = _build_window_ref(pid, window_id, actual_x, actual_y)
@@ -2626,6 +2672,11 @@ def create_mcp_server() -> FastMCP:
             await _animate_cursor_to(scroll_ax, scroll_ay)
             await automation_handler.move_cursor(scroll_ax, scroll_ay)
 
+        pre_action_capture = await _capture_before_action(
+            pid,
+            window_id,
+            capture_after,
+        )
         if smooth and scroll_y != 0:
             # Emit many small individual wheel ticks for smooth human-like scrolling
             direction = 1 if scroll_y > 0 else -1
@@ -2664,6 +2715,15 @@ def create_mcp_server() -> FastMCP:
             window_id,
             activated=explicit_window_activated,
         )
+        await _attach_post_action_observation(
+            result,
+            pid,
+            window_id,
+            capture_after=capture_after,
+            verify_query=None,
+            require_verification=False,
+            pre_action_capture=pre_action_capture,
+        )
         if scroll_ax is not None and pid is not None and window_id is not None:
             wr = _build_window_ref(pid, window_id, scroll_ax, scroll_ay)
             await _recording_hook(_recorded_turn(
@@ -2693,10 +2753,6 @@ def create_mcp_server() -> FastMCP:
                 result,
                 element_ref=recorded_element_ref,
             ))
-
-        # capture_after
-        if capture_after and pid is not None and window_id is not None:
-            result["capture_after"] = await _capture_and_detect(pid, window_id)
 
         return result
 
@@ -2739,6 +2795,11 @@ def create_mcp_server() -> FastMCP:
         automation_handler = _get_handlers().automation
         estimated_seconds = min(60.0, max(1.0, (len(text) / 3.0) * 0.12 + 0.75))
         _suppress_learning_input(estimated_seconds)
+        pre_action_capture = await _capture_before_action(
+            pid,
+            window_id,
+            capture_after,
+        )
         result = await automation_handler.type_text(text)
         _attach_input_window(result, pid, window_id)
         recorded_text = "<redacted>" if sensitive else text
@@ -2755,16 +2816,21 @@ def create_mcp_server() -> FastMCP:
             if window_id is not None
             else None
         )
+        await _attach_post_action_observation(
+            result,
+            pid,
+            window_id,
+            capture_after=capture_after,
+            verify_query=None,
+            require_verification=False,
+            pre_action_capture=pre_action_capture,
+        )
         await _recording_hook(_recorded_turn(
             "computer_type",
             record_args,
             result,
             window_ref=window_ref,
         ))
-
-        # capture_after
-        if capture_after and pid is not None and window_id is not None:
-            result["capture_after"] = await _capture_and_detect(pid, window_id)
 
         return result
 

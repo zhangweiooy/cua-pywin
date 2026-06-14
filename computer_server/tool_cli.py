@@ -623,6 +623,84 @@ def _batch_payload_failed(payload: dict[str, Any]) -> bool:
     return isinstance(structured, dict) and structured.get("success") is False
 
 
+def _validate_batch_action(item: dict[str, Any]) -> tuple[str, str, dict[str, Any]]:
+    item_type = item.get("type")
+    if item_type == "wait":
+        milliseconds = item.get("milliseconds")
+        if (
+            isinstance(milliseconds, bool)
+            or not isinstance(milliseconds, (int, float))
+            or not math.isfinite(milliseconds)
+            or milliseconds < 0
+            or milliseconds > MAX_BATCH_WAIT_MS
+        ):
+            raise ValueError(
+                "wait milliseconds must be between "
+                f"0 and {MAX_BATCH_WAIT_MS}"
+            )
+        return "wait", "wait", {"milliseconds": milliseconds}
+
+    tool = item.get("tool")
+    arguments = item.get("arguments", {})
+    if not isinstance(tool, str) or not tool.strip():
+        raise ValueError("batch tool item requires a non-empty tool")
+    if not isinstance(arguments, dict):
+        raise ValueError("batch tool arguments must be an object")
+    tool = tool.strip()
+    return "tool", tool, {"arguments": arguments}
+
+
+def _batch_dry_run(actions: Sequence[dict[str, Any]]) -> dict[str, Any]:
+    summaries: list[dict[str, Any]] = []
+    tool_counts: dict[str, int] = {}
+    wait_count = 0
+
+    for index, item in enumerate(actions):
+        try:
+            action_type, label, validated = _validate_batch_action(item)
+        except ValueError as exc:
+            return {
+                "success": False,
+                "dry_run": True,
+                "error": str(exc),
+                "failed_index": index,
+                "total": len(actions),
+                "validated": len(summaries),
+                "actions": summaries,
+            }
+
+        if action_type == "wait":
+            wait_count += 1
+            summaries.append(
+                {
+                    "index": index,
+                    "operation": label,
+                    "type": "wait",
+                    "milliseconds": validated["milliseconds"],
+                }
+            )
+        else:
+            tool_counts[label] = tool_counts.get(label, 0) + 1
+            summaries.append(
+                {
+                    "index": index,
+                    "operation": label,
+                    "type": "tool",
+                    "argument_keys": sorted(validated["arguments"].keys()),
+                }
+            )
+
+    return {
+        "success": True,
+        "dry_run": True,
+        "total": len(actions),
+        "tool_calls": sum(tool_counts.values()),
+        "waits": wait_count,
+        "tools": dict(sorted(tool_counts.items())),
+        "actions": summaries,
+    }
+
+
 def _release_batch_inputs(client: _DaemonHttpClient) -> bool:
     try:
         payload = client.request(
@@ -649,44 +727,25 @@ def _execute_batch(
     try:
         for index, item in enumerate(actions):
             item_started = time.monotonic()
-            item_type = item.get("type")
             try:
-                if item_type == "wait":
-                    milliseconds = item.get("milliseconds")
-                    if (
-                        isinstance(milliseconds, bool)
-                        or not isinstance(milliseconds, (int, float))
-                        or not math.isfinite(milliseconds)
-                        or milliseconds < 0
-                        or milliseconds > MAX_BATCH_WAIT_MS
-                    ):
-                        raise ValueError(
-                            "wait milliseconds must be between "
-                            f"0 and {MAX_BATCH_WAIT_MS}"
-                        )
+                action_type, label, validated = _validate_batch_action(item)
+                if action_type == "wait":
+                    milliseconds = validated["milliseconds"]
                     time.sleep(float(milliseconds) / 1000.0)
                     payload: dict[str, Any] = {
                         "success": True,
                         "waited_ms": milliseconds,
                     }
-                    label = "wait"
                     item_failed = False
                 else:
-                    tool = item.get("tool")
-                    arguments = item.get("arguments", {})
-                    if not isinstance(tool, str) or not tool.strip():
-                        raise ValueError("batch tool item requires a non-empty tool")
-                    if not isinstance(arguments, dict):
-                        raise ValueError("batch tool arguments must be an object")
-                    label = tool.strip()
                     payload = client.request(
                         "POST",
                         "/call",
-                        payload={"name": label, "arguments": arguments},
+                        payload={"name": label, "arguments": validated["arguments"]},
                     )
                     item_failed = _batch_payload_failed(payload)
             except (RuntimeError, ValueError) as exc:
-                label = str(item.get("tool") or item_type or "invalid")
+                label = str(item.get("tool") or item.get("type") or "invalid")
                 payload = {"success": False, "error": str(exc)}
                 item_failed = True
 
@@ -1441,6 +1500,11 @@ def _cmd_call(args: argparse.Namespace) -> int:
 
 def _cmd_batch(args: argparse.Namespace) -> int:
     actions = _parse_batch_actions(args.input)
+    if args.dry_run:
+        payload = _batch_dry_run(actions)
+        _json_print(payload)
+        return 0 if payload["success"] else 1
+
     info = _ensure_daemon(timeout=args.start_timeout)
     client = _DaemonHttpClient(info, timeout=args.timeout, batch_mode=True)
     try:
@@ -1693,6 +1757,8 @@ and an actions array. Defaults are shallow-merged by tool name; each action's
 arguments override its defaults. Wait entries never use defaults.
 
 Execution stops on the first failure unless --continue-on-error is set.
+Use --dry-run to validate and summarize the expanded actions without starting
+the daemon or sending input.
 Batch requests suppress the agent cursor trajectory overlay, while real input
 timing such as computer_drag duration is preserved.""",
         epilog="""Examples:
@@ -1714,6 +1780,11 @@ timing such as computer_drag duration is preserved.""",
         "--continue-on-error",
         action="store_true",
         help="Continue after a failed batch item instead of stopping.",
+    )
+    batch.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="Validate and summarize the expanded batch without starting the daemon.",
     )
     batch.add_argument(
         "--timeout",

@@ -252,6 +252,20 @@ Rules:
 - `wait` entries do not use defaults.
 - Execution stops on first failure unless `--continue-on-error` is passed.
 - On failure or Ctrl+C, the CLI attempts `computer_release_all_inputs`.
+- Use `cua-win batch --dry-run` to validate and summarize expanded actions
+  without starting the daemon or sending input.
+
+## Post-Action Observation
+
+Use `capture_after=true` on supported action tools when the next step depends
+on visible UI changes. The result includes `capture_after`; when the tool can
+capture both before and after the action, it also includes `post_action_delta`.
+
+`post_action_delta` is a lightweight hint, not a full semantic diff. It reports
+node-count deltas, added/removed node samples, changed text samples,
+tree-quality changes, and before/after snapshot and screenshot ids. For
+high-stakes branching, still inspect `capture_after.nodes` or take a fresh
+`computer_get_window_state`.
 
 ## Recording And Learning
 

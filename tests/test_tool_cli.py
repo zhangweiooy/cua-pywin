@@ -11,6 +11,7 @@ from computer_server.tool_cli import (
     DaemonInfo,
     DoctorCheck,
     _DaemonHttpClient,
+    _batch_dry_run,
     _call_result_to_json,
     _collect_doctor_checks,
     _daemon_start_args,
@@ -166,6 +167,7 @@ def test_batch_parser_accepts_minimal_options() -> None:
             "batch",
             "batch.json",
             "--continue-on-error",
+            "--dry-run",
             "--timeout",
             "10",
         ]
@@ -174,6 +176,7 @@ def test_batch_parser_accepts_minimal_options() -> None:
     assert args.command == "batch"
     assert args.input == "batch.json"
     assert args.continue_on_error is True
+    assert args.dry_run is True
     assert args.timeout == 10
 
 
@@ -204,6 +207,7 @@ def test_batch_help_is_self_contained() -> None:
         if isinstance(action, argparse._SubParsersAction)
     )
     help_text = subparsers_action.choices["batch"].format_help()
+    compact_help = " ".join(help_text.split())
 
     assert "per-tool defaults" in help_text
     assert "shallow-merged by tool name" in help_text
@@ -215,6 +219,53 @@ def test_batch_help_is_self_contained() -> None:
     assert '"actions"' in help_text
     assert "--timeout" in help_text
     assert "each tool HTTP request" in help_text
+    assert "--dry-run" in help_text
+    assert "without starting the daemon" in compact_help
+
+
+def test_batch_dry_run_validates_and_summarizes_actions() -> None:
+    actions = _parse_batch_actions(
+        """
+        {
+          "defaults": {
+            "computer_click": {"window": {"id": 1, "pid": 2}}
+          },
+          "actions": [
+            {"tool": "computer_click", "arguments": {"x": 1, "y": 2}},
+            {"type": "wait", "milliseconds": 50},
+            {"tool": "computer_press_key", "arguments": {"key": "Return"}}
+          ]
+        }
+        """
+    )
+
+    result = _batch_dry_run(actions)
+
+    assert result["success"] is True
+    assert result["dry_run"] is True
+    assert result["total"] == 3
+    assert result["tool_calls"] == 2
+    assert result["waits"] == 1
+    assert result["tools"] == {
+        "computer_click": 1,
+        "computer_press_key": 1,
+    }
+    assert result["actions"][0]["argument_keys"] == ["window", "x", "y"]
+
+
+def test_batch_dry_run_reports_first_invalid_action() -> None:
+    result = _batch_dry_run(
+        [
+            {"tool": "computer_get_screen_size", "arguments": {}},
+            {"type": "wait", "milliseconds": -1},
+        ]
+    )
+
+    assert result["success"] is False
+    assert result["dry_run"] is True
+    assert result["failed_index"] == 1
+    assert result["validated"] == 1
+    assert "wait milliseconds" in result["error"]
 
 
 def test_public_subcommand_arguments_have_help_text() -> None:
