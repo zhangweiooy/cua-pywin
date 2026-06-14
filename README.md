@@ -72,7 +72,9 @@ cua-pywin/
 │  └─ weights/               ← 内置 OmniParser v2 YOLO 图标检测权重
 ├─ scripts/
 │  ├─ mcp_test_one.py        ← 单工具测试脚本
-│  └─ wgc_smoke.py           ← WGC 遮挡/最小化/显示器 DPI/真实应用 smoke
+│  ├─ wgc_smoke.py           ← WGC 遮挡/最小化/显示器 DPI/真实应用 smoke
+│  ├─ agent_smoke_fixture.py ← 固定 Windows GUI fixture
+│  └─ run_agent_smoke.py     ← agent smoke prompt / transcript checker
 ├─ pyproject.toml
 └─ README.md
 ```
@@ -297,6 +299,10 @@ handle、绑定丢失或上下文重置后重新获取当前窗口对象；使�
 `set_value`、`expand`），便于区分可点击、可输入和可展开候选。
 `accessibility_hint` / `observation_recommendation` 会说明语义树是否稀疏、
 是否已启用视觉/OCR，以及是否应继续用 `query` 或提高 `max_nodes` 收窄观察。
+`agent_state` 和顶层别名 `state_text` 是默认给 agent 读取的紧凑状态摘要，
+默认由 `agent_text_limit=500` 限制长度；只有摘要不足时才使用
+`show_full_text=true` 或提高 `agent_text_limit`，再进一步检查 `nodes` /
+`tree_markdown`。
 `computer_get_window_state` 还返回 `screenshots` 数组：第一项是
 `role="target", zIndex=0` 的主截图；当前可见的同应用关联菜单、弹层或对话框会
 作为 `role="transient"` 项返回。每项都有独立的 `window`、`screenshot_id`、
@@ -349,6 +355,10 @@ python -m py_compile computer_server/learning/*.py
 # WGC 受控场景 + 可选真实应用采样
 uv run python scripts/wgc_smoke.py
 uv run python scripts/wgc_smoke.py --live-only --app chrome --app dingtalk --repeat 3
+
+# Agent smoke 骨架
+uv run python scripts/agent_smoke_fixture.py
+uv run python scripts/run_agent_smoke.py --dry-run --scenario fixture-basic
 ```
 
 ---
@@ -415,7 +425,10 @@ cua-pywin/
 │  ├─ ocr.py                 ← PaddleOCR ONNX / RapidOCR Chinese/English
 │  └─ weights/               ← Bundled OmniParser v2 YOLO icon detector
 ├─ scripts/
-│  └─ mcp_test_one.py        ← Single-tool test script
+│  ├─ mcp_test_one.py        ← Single-tool test script
+│  ├─ wgc_smoke.py           ← WGC occlusion / minimized / DPI smoke tests
+│  ├─ agent_smoke_fixture.py ← Fixed Windows GUI fixture
+│  └─ run_agent_smoke.py     ← Agent smoke prompt / transcript checker
 ├─ pyproject.toml
 └─ README.md
 ```
@@ -675,6 +688,10 @@ candidates easier to distinguish. `accessibility_hint` and
 `observation_recommendation` describe whether semantic UIA/MSAA data is
 sufficient, whether vision/OCR was needed, and whether callers should narrow
 with `query` or raise `max_nodes`.
+`agent_state` and the top-level `state_text` alias are the default compact
+agent-facing observation summary. The text is capped by `agent_text_limit=500`
+by default; use `show_full_text=true` or raise `agent_text_limit` only when the
+compact state is insufficient, then inspect `nodes` / `tree_markdown` as needed.
 `computer_get_window_state` also returns a `screenshots` array. The first item
 is the target (`role="target", zIndex=0`); visible related menus, popovers, and
 dialogs are returned as `role="transient"` items. Each item has its own
@@ -772,4 +789,8 @@ python -m py_compile computer_server/learning/*.py
 # Controlled WGC scenarios and optional live-app samples
 uv run python scripts/wgc_smoke.py
 uv run python scripts/wgc_smoke.py --live-only --app chrome --app dingtalk --repeat 3
+
+# Agent smoke scaffolding
+uv run python scripts/agent_smoke_fixture.py
+uv run python scripts/run_agent_smoke.py --dry-run --scenario fixture-basic
 ```

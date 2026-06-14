@@ -71,6 +71,9 @@ set_value, select, toggle, expand, and scroll paths.
 `accessibility_hint` and `observation_recommendation` summarize whether the
 semantic tree is usable, whether vision/OCR filled gaps, and whether to narrow
 with `query` or increase `max_nodes`.
+Read `agent_state.text` / `state_text` before scanning the full node list. It
+is capped by `agent_text_limit=500` by default; pass `show_full_text=true` or
+raise `agent_text_limit` for diagnostic runs.
 
 Click a screenshot coordinate:
 

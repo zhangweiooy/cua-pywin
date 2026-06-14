@@ -88,6 +88,12 @@ Use canonical `window` objects instead of hand-built `pid/window_id` pairs:
 - OmniParser V2 YOLO + Florence-2 icon captions.
 - RapidOCR/PaddleOCR ONNX text nodes.
 
+Read `agent_state.text` or the top-level `state_text` first. It is the compact
+default state summary for planning; inspect `nodes`, `screenshots`, and
+`tree_markdown` only when the summary is insufficient. The summary is capped by
+`agent_text_limit=500` by default. Use `show_full_text=true` or raise
+`agent_text_limit` for diagnostics.
+
 Returned node boxes use `nodes_coordinate_space="window_resized"` and align
 with the returned screenshot. When clicking or dragging from that screenshot,
 pass `coordinate_space="window_resized"` and the returned `screenshot_id`.

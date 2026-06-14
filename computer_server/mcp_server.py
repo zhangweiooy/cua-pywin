@@ -473,12 +473,24 @@ def create_mcp_server() -> FastMCP:
     """
     mcp = FastMCP(
         name="cua-pywin",
-        instructions="""You are connected to a computer control server that provides low-level
-        primitives for interacting with a desktop computer. You can take screenshots, click,
-        type text, press keys, scroll, manage windows, inspect UI state, and control browser pages.
+        instructions="""You are connected to cua-pywin, a Windows desktop control server.
 
-        Always take a screenshot first to see the current state before performing actions.
-        After performing actions, take another screenshot to verify the result.""",
+        Preferred workflow:
+        1. Bind a target window with computer_get_window(active=true),
+           computer_list_windows, computer_list_apps, or computer_launch_app(wait_for_window=true).
+        2. Observe it with computer_get_window_state. Reuse the returned window object.
+        3. Read agent_state/state_text first for a compact summary, then inspect nodes,
+           screenshots, and tree_markdown only as needed.
+        4. Prefer element_index actions from the latest snapshot when available. When using
+           screenshot coordinates from get_window_state, pass screenshot_id and
+           coordinate_space="window_resized".
+        5. After any state-changing action, verify with capture_after, verify_query, or a fresh
+           computer_get_window_state. Do not treat input dispatch alone as task success.
+
+        Element indexes and screenshot coordinates are observation-scoped. Re-observe after
+        layout, modal, focus, or window changes. Use computer_release_all_inputs after an
+        interrupted held key/button or failed replay. Ask before external, destructive, or
+        irreversible actions such as sending, deleting, purchasing, or changing settings.""",
     )
     from computer_server.server_context import ServerContext
 
@@ -3669,6 +3681,8 @@ def create_mcp_server() -> FastMCP:
         force_som: bool = False,
         include_all_nodes: bool = False,
         max_nodes: Optional[int] = 100,
+        agent_text_limit: int = 500,
+        show_full_text: bool = False,
     ) -> Any:
         """
         Get a rich snapshot of a window's UI state: screenshot + element tree + indexed nodes.
@@ -3688,6 +3702,8 @@ def create_mcp_server() -> FastMCP:
             include_all_nodes: When True, return all nodes even if query is set.
             max_nodes: Maximum number of highest-priority nodes to return. Default 100;
                 use 0 or null to return all nodes.
+            agent_text_limit: Maximum characters in the default state_text summary.
+            show_full_text: When True, do not truncate the agent_state text.
 
         Returns:
             Dictionary with:
@@ -3699,11 +3715,17 @@ def create_mcp_server() -> FastMCP:
             - tree_quality: 'rich', 'ok', 'poor', or 'empty'
             - accessibility_hint / observation_recommendation: observation
               quality and next-step guidance
+            - agent_state / state_text: concise text summary for agent reasoning
             - total_elements: total elements visited
         """
+        from computer_server.services.agent_state_service import (
+            MAX_AGENT_TEXT_LIMIT,
+            build_agent_state,
+        )
         from computer_server.services.window_state_service import get_window_state_snapshot
         from computer_server.services.validation_service import (
             error_result,
+            validate_int_range,
             validate_max_image_dimension,
             validate_max_nodes,
         )
@@ -3711,6 +3733,14 @@ def create_mcp_server() -> FastMCP:
         try:
             max_image_dimension = validate_max_image_dimension(max_image_dimension)
             max_nodes = validate_max_nodes(max_nodes)
+            agent_text_limit = validate_int_range(
+                "agent_text_limit",
+                agent_text_limit,
+                0,
+                MAX_AGENT_TEXT_LIMIT,
+            )
+            if not isinstance(show_full_text, bool):
+                raise ValueError("show_full_text must be a boolean")
         except ValueError as e:
             return error_result(e)
 
@@ -3850,6 +3880,13 @@ def create_mcp_server() -> FastMCP:
             window_ref = _build_window_ref(pid, window_id, 0, 0)
             if window_ref is not None:
                 result["window_ref"] = window_ref
+            agent_state = build_agent_state(
+                result,
+                text_limit=agent_text_limit,
+                show_full_text=show_full_text,
+            )
+            result["agent_state"] = agent_state
+            result["state_text"] = agent_state["text"]
         return result
 
     # ============================================================

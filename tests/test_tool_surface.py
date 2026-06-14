@@ -1079,6 +1079,35 @@ async def test_get_window_state_accepts_window_and_returns_window(monkeypatch):
     assert content["window_ref"]["version"] == 1
     assert content["window_ref"]["pid"] == 123
     assert content["window_ref"]["window_id"] == 456
+    assert content["agent_state"]["text_limit"] == 500
+    assert content["agent_state"]["show_full_text"] is False
+    assert content["state_text"] == content["agent_state"]["text"]
+    assert "snapshot_id=" in content["state_text"]
+
+
+@pytest.mark.asyncio
+async def test_get_window_state_validates_agent_text_options(monkeypatch):
+    import computer_server.mcp_server as mcp_module
+
+    monkeypatch.setattr(
+        mcp_module,
+        "_handlers",
+        SimpleNamespace(automation=_FakeAutomation()),
+    )
+
+    result = await create_mcp_server().call_tool(
+        "computer_get_window_state",
+        {
+            "pid": 123,
+            "window_id": 456,
+            "agent_text_limit": 20001,
+        },
+    )
+
+    assert result.structured_content == {
+        "success": False,
+        "error": "agent_text_limit must be between 0 and 20000",
+    }
 
 
 @pytest.mark.asyncio

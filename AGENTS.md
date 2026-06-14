@@ -125,6 +125,10 @@ uv run python scripts/mcp_test_one.py --list
 # Compile checks
 python -m compileall -q computer_server som
 
+# Agent smoke scaffolding
+uv run python scripts/agent_smoke_fixture.py
+uv run python scripts/run_agent_smoke.py --dry-run --scenario fixture-basic
+
 # Validate bundled Codex skill
 uv run --no-sync python "C:\Users\vinfl\.codex\skills\.system\skill-creator\scripts\quick_validate.py" skills/cua-win
 
@@ -172,6 +176,10 @@ to store complete window-full-res coordinates. Nodes include low-level
 `accessibility_hint` and top-level `observation_recommendation` summarize
 whether UIA/MSAA semantics are sufficient, whether vision/OCR was needed, and
 whether callers should narrow with `query` or raise `max_nodes`.
+`agent_state` and the top-level alias `state_text` provide the default
+agent-facing observation summary. The text is capped by `agent_text_limit=500`
+by default; use `show_full_text=true` or raise `agent_text_limit` only when the
+compact state is insufficient.
 
 Key invariant: `ElementCache` stores window-relative coordinates, and
 `_resolve_element_center` returns screen coordinates.
@@ -568,6 +576,7 @@ uv run pytest -q
 python -m compileall -q computer_server som
 uv run python scripts/mcp_test_one.py --list
 uv run python scripts/wgc_smoke.py
+uv run python scripts/run_agent_smoke.py --dry-run --scenario fixture-basic
 uv run cua-win computer_get_screen_size --start-timeout 90
 uv run cua-win stop
 ```
@@ -617,6 +626,9 @@ uv run cua-win stop
 
 ### P2: Useful, But Not Blocking
 
+- Run `scripts/agent_smoke_fixture.py` plus `scripts/run_agent_smoke.py` against
+  at least Codex before release, and save transcripts when comparing agent
+  behavior across tool prompt revisions.
 - Build a reviewed Windows icon-caption corpus for WeChat, DingTalk, Chrome,
   and classic controls. Track Florence incorrect-label and unknown rates,
   especially phone, pin, mute, and application-specific icons.
