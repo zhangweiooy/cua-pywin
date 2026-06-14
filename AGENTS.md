@@ -125,8 +125,17 @@ uv run python scripts/mcp_test_one.py --list
 # Compile checks
 python -m compileall -q computer_server som
 
+# Validate bundled Codex skill
+uv run --no-sync python "C:\Users\vinfl\.codex\skills\.system\skill-creator\scripts\quick_validate.py" skills/cua-win
+
 # Build and validate a release candidate
 ./scripts/build_release.ps1 -Version 0.1.0
+
+# Build a local Nuitka standalone executable directory
+./scripts/build_nuitka.ps1
+
+# Fast local Nuitka iteration after dependencies are already synced
+./scripts/build_nuitka.ps1 -SkipSync -SkipChecks
 ```
 
 ## Coordinate Systems
@@ -153,8 +162,16 @@ to `computer_click`, `computer_drag`, `computer_scroll`, and `computer_zoom`
 when coordinates come from a returned screenshot. `computer_zoom` returns
 `zoom_id`; zoom actions can use it instead of implicit per-window zoom state.
 Returned `nodes` use `nodes_coordinate_space="window_resized"`, so their
-bounding boxes and centers align with the returned target screenshot. The
-internal `ElementCache` continues to use window-full-res coordinates.
+bounding boxes and centers align with the returned target screenshot. By
+default, only the 100 highest-priority nodes are returned; set `max_nodes=0` to
+return every node or use `query`/`max_nodes` to narrow or expand the payload.
+This return limit does not affect the internal `ElementCache`, which continues
+to store complete window-full-res coordinates. Nodes include low-level
+`actions` plus agent-facing `action_hints` such as `click`, `press`, `focus`,
+`type`, `set_value`, `select`, `toggle`, `expand`, and `scroll`.
+`accessibility_hint` and top-level `observation_recommendation` summarize
+whether UIA/MSAA semantics are sufficient, whether vision/OCR was needed, and
+whether callers should narrow with `query` or raise `max_nodes`.
 
 Key invariant: `ElementCache` stores window-relative coordinates, and
 `_resolve_element_center` returns screen coordinates.

@@ -931,6 +931,7 @@ def create_mcp_server() -> FastMCP:
         max_image_dimension: int = 1280,
         query: Optional[str] = None,
         include_all_nodes: bool = False,
+        max_nodes: Optional[int] = 100,
     ) -> Any:
         """Thin wrapper around computer_get_window_state for capture_after use.
 
@@ -945,6 +946,7 @@ def create_mcp_server() -> FastMCP:
                 max_image_dimension=max_image_dimension,
                 query=query,
                 include_all_nodes=include_all_nodes,
+                max_nodes=max_nodes,
             )
             if fresh.get("success") is False:
                 return {"success": False, "error": fresh.get("error", "get_window_state returned success=False")}
@@ -958,12 +960,17 @@ def create_mcp_server() -> FastMCP:
                 "node_count": fresh.get("node_count", 0),
                 "returned_node_count": fresh.get("returned_node_count", fresh.get("node_count", 0)),
                 "unfiltered_node_count": fresh.get("unfiltered_node_count"),
+                "filtered_node_count": fresh.get("filtered_node_count"),
                 "nodes_filtered": fresh.get("nodes_filtered", False),
+                "nodes_truncated": fresh.get("nodes_truncated", False),
+                "node_limit": fresh.get("node_limit"),
                 "tree_markdown": fresh.get("tree_markdown", ""),
                 "tree_quality": fresh.get("tree_quality", "empty"),
                 "uia_quality": fresh.get("uia_quality"),
                 "msaa_quality": fresh.get("msaa_quality"),
                 "vision_quality": fresh.get("vision_quality"),
+                "accessibility_hint": fresh.get("accessibility_hint"),
+                "observation_recommendation": fresh.get("observation_recommendation"),
                 "node_sources": fresh.get("node_sources", []),
                 "snapshot_id": fresh.get("snapshot_id"),
                 "snapshot_latest": fresh.get("snapshot_latest", True),
@@ -3595,6 +3602,7 @@ def create_mcp_server() -> FastMCP:
         max_image_dimension: int = 1280,
         force_som: bool = False,
         include_all_nodes: bool = False,
+        max_nodes: Optional[int] = 100,
     ) -> Any:
         """
         Get a rich snapshot of a window's UI state: screenshot + element tree + indexed nodes.
@@ -3612,24 +3620,31 @@ def create_mcp_server() -> FastMCP:
             max_image_dimension: Maximum dimension for the screenshot (default 1280).
             force_som: When True, run SOM vision detection regardless of tree quality.
             include_all_nodes: When True, return all nodes even if query is set.
+            max_nodes: Maximum number of highest-priority nodes to return. Default 100;
+                use 0 or null to return all nodes.
 
         Returns:
             Dictionary with:
             - screenshot: base64-encoded JPEG or path to file
-            - nodes: list of elements with element_index, bounds, center, control_type, name, actions
+            - nodes: list of elements with element_index, bounds, center,
+              control_type, name, actions, and action_hints
             - node_count: total number of nodes
             - tree_markdown: formatted markdown representation of the UI tree
             - tree_quality: 'rich', 'ok', 'poor', or 'empty'
+            - accessibility_hint / observation_recommendation: observation
+              quality and next-step guidance
             - total_elements: total elements visited
         """
         from computer_server.services.window_state_service import get_window_state_snapshot
         from computer_server.services.validation_service import (
             error_result,
             validate_max_image_dimension,
+            validate_max_nodes,
         )
 
         try:
             max_image_dimension = validate_max_image_dimension(max_image_dimension)
+            max_nodes = validate_max_nodes(max_nodes)
         except ValueError as e:
             return error_result(e)
 
@@ -3652,6 +3667,7 @@ def create_mcp_server() -> FastMCP:
             max_image_dimension=max_image_dimension,
             force_som=force_som,
             include_all_nodes=include_all_nodes,
+            max_nodes=max_nodes,
             zoom_metadata=_zoom_metadata,
             walk_gate=context.uia_walk_gate,
             msaa_gate=context.msaa_walk_gate,

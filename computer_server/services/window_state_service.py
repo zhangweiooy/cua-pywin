@@ -17,6 +17,7 @@ from typing import Any, Callable, Dict, List, Optional, Tuple, TypeVar
 logger = logging.getLogger(__name__)
 
 T = TypeVar("T")
+DEFAULT_RETURNED_NODE_LIMIT = 100
 
 
 @dataclass(frozen=True)
@@ -477,6 +478,7 @@ async def collect_uia_nodes(
                 "bbox": list(w_bbox),
                 "actions": n.actions,
                 "enabled": n.is_enabled,
+                "is_offscreen": n.is_offscreen,
                 "depth": n.depth,
             })
 
@@ -723,6 +725,11 @@ def node_matches_query(node: Dict[str, Any], query: Optional[str]) -> bool:
         searchable.extend(str(action) for action in actions)
     elif actions is not None:
         searchable.append(actions)
+    action_hints = node.get("action_hints")
+    if isinstance(action_hints, list):
+        searchable.extend(str(hint) for hint in action_hints)
+    elif action_hints is not None:
+        searchable.append(action_hints)
 
     return any(needle in str(value).lower() for value in searchable if value is not None)
 
@@ -736,6 +743,336 @@ def filter_nodes_by_query(
     if include_all_nodes or not query:
         return list(nodes)
     return [node for node in nodes if node_matches_query(node, query)]
+
+
+INTERACTIVE_CONTROL_HINTS = {
+    "button",
+    "checkbox",
+    "combo",
+    "combobox",
+    "edit",
+    "hyperlink",
+    "link",
+    "listitem",
+    "menu",
+    "menuitem",
+    "radio",
+    "radiobutton",
+    "splitbutton",
+    "tabitem",
+    "textinput",
+    "treeitem",
+}
+
+TEXT_ENTRY_CONTROL_TYPES = {
+    "combobox",
+    "document",
+    "edit",
+    "textinput",
+}
+
+PRIMARY_ACTION_CONTROL_TYPES = {
+    "button",
+    "hyperlink",
+    "link",
+    "menuitem",
+    "splitbutton",
+}
+
+TOGGLE_CONTROL_TYPES = {
+    "checkbox",
+    "radiobutton",
+}
+
+SELECTION_CONTROL_TYPES = {
+    "dataitem",
+    "listitem",
+    "tabitem",
+    "treeitem",
+}
+
+TEXT_CONTENT_CONTROL_TYPES = {
+    "label",
+    "statictext",
+    "text",
+}
+
+SCROLL_CONTROL_TYPES = {
+    "scrollbar",
+}
+
+CONTAINER_CONTROL_HINTS = {
+    "custom",
+    "group",
+    "pane",
+    "scrollbar",
+    "separator",
+    "statusbar",
+    "titlebar",
+    "toolbar",
+    "window",
+}
+
+
+def _has_textual_signal(node: Dict[str, Any]) -> bool:
+    for key in (
+        "name",
+        "title",
+        "value",
+        "icon_label",
+        "raw_caption",
+        "normalized_label",
+    ):
+        value = node.get(key)
+        if isinstance(value, str) and value.strip():
+            return True
+    metadata = node.get("metadata")
+    if isinstance(metadata, dict):
+        for key in ("icon_label", "raw_caption", "normalized_label", "ocr_confidence"):
+            value = metadata.get(key)
+            if value is not None and str(value).strip():
+                return True
+    return False
+
+
+def _has_action_signal(node: Dict[str, Any]) -> bool:
+    actions = node.get("actions")
+    if isinstance(actions, list):
+        return any(str(action).strip() for action in actions)
+    return actions is not None and str(actions).strip() != ""
+
+
+def _node_actions(node: Dict[str, Any]) -> set[str]:
+    actions = node.get("actions")
+    if isinstance(actions, list):
+        return {str(action).strip().lower() for action in actions if str(action).strip()}
+    if actions is None:
+        return set()
+    action = str(actions).strip().lower()
+    return {action} if action else set()
+
+
+def _normalized_control_type(node: Dict[str, Any]) -> str:
+    value = str(node.get("control_type") or node.get("role") or "").lower()
+    value = value.removeprefix("controltype.")
+    return value.replace(" ", "").replace("_", "").replace("-", "")
+
+
+def derive_action_hints(node: Dict[str, Any]) -> List[str]:
+    """Return agent-facing action hints derived from role and low-level actions."""
+    control = _normalized_control_type(node)
+    actions = _node_actions(node)
+    hints: List[str] = []
+
+    def add(*values: str) -> None:
+        for value in values:
+            if value and value not in hints:
+                hints.append(value)
+
+    if (
+        "invoke" in actions
+        or "click" in actions
+        or control in PRIMARY_ACTION_CONTROL_TYPES
+    ):
+        add("click", "press")
+    if "select" in actions or control in SELECTION_CONTROL_TYPES:
+        add("click", "select")
+    if "toggle" in actions or control in TOGGLE_CONTROL_TYPES:
+        add("click", "toggle")
+    if "expand" in actions or control in {"combobox", "splitbutton"}:
+        add("expand")
+    if "set_value" in actions or control in TEXT_ENTRY_CONTROL_TYPES:
+        add("focus", "type")
+        if "set_value" in actions:
+            add("set_value")
+    elif "text" in actions:
+        add("focus", "type")
+    if "scroll" in actions or control in SCROLL_CONTROL_TYPES:
+        add("scroll")
+
+    if node.get("enabled") is False:
+        return []
+    return hints
+
+
+def enrich_nodes_with_action_hints(nodes: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """Attach action_hints without mutating caller-owned node dictionaries."""
+    enriched: List[Dict[str, Any]] = []
+    for node in nodes:
+        public_node = dict(node)
+        public_node["action_hints"] = derive_action_hints(public_node)
+        enriched.append(public_node)
+    return enriched
+
+
+def _control_role_score(control: str, has_text: bool) -> float:
+    """Rank roles similarly to Tactile's concise element summaries."""
+    if control in TEXT_ENTRY_CONTROL_TYPES:
+        return 45.0
+    if control in PRIMARY_ACTION_CONTROL_TYPES:
+        return 40.0
+    if control in SELECTION_CONTROL_TYPES:
+        return 34.0
+    if has_text and control in TEXT_CONTENT_CONTROL_TYPES:
+        return 24.0
+    if any(hint in control for hint in INTERACTIVE_CONTROL_HINTS):
+        return 30.0
+    if any(hint in control for hint in CONTAINER_CONTROL_HINTS):
+        return -20.0
+    return 0.0
+
+
+def _node_bbox_area(node: Dict[str, Any]) -> Optional[float]:
+    bbox = node.get("bbox")
+    if not isinstance(bbox, (list, tuple)) or len(bbox) != 4:
+        return None
+    try:
+        width = max(0.0, float(bbox[2]) - float(bbox[0]))
+        height = max(0.0, float(bbox[3]) - float(bbox[1]))
+    except (TypeError, ValueError):
+        return None
+    area = width * height
+    return area if area > 0 else None
+
+
+def _node_area_score(node: Dict[str, Any]) -> float:
+    area = _node_bbox_area(node)
+    if area is None:
+        return -12.0
+    if area <= 0:
+        return -12.0
+    # Prefer visible, specific controls over full-window containers.
+    if area < 25:
+        return 1.0
+    if area < 2_500:
+        return 6.0
+    if area < 80_000:
+        return 4.0
+    return 1.0
+
+
+def node_return_priority(node: Dict[str, Any]) -> float:
+    """Rank nodes for bounded payloads without changing cached element indexes."""
+    score = 0.0
+    source = str(node.get("source") or "").lower()
+    control = _normalized_control_type(node)
+    has_text = _has_textual_signal(node)
+
+    if _has_action_signal(node):
+        score += 60.0
+    if has_text:
+        score += 35.0
+    score += _control_role_score(control, has_text)
+
+    if source == "uia":
+        score += 12.0
+    elif source == "msaa":
+        score += 11.0
+    elif source == "vision":
+        score += 10.0
+
+    if node.get("enabled") is False:
+        score -= 15.0
+    if node.get("is_offscreen") is True:
+        score -= 40.0
+    if node.get("focused") is True or node.get("is_focused") is True:
+        score += 20.0
+    if node.get("selected") is True or node.get("is_selected") is True:
+        score += 10.0
+
+    confidence = node.get("confidence", node.get("ocr_confidence"))
+    try:
+        score += min(max(float(confidence), 0.0), 1.0) * 5.0
+    except (TypeError, ValueError):
+        pass
+
+    score += _node_area_score(node)
+    return score
+
+
+def limit_nodes_for_response(
+    nodes: List[Dict[str, Any]],
+    max_nodes: Optional[int],
+) -> List[Dict[str, Any]]:
+    """Return highest-priority nodes for payload size control.
+
+    ``max_nodes=None`` or ``0`` means unbounded. Sorting is stable for equal
+    priorities, and element indexes are not rewritten.
+    """
+    if max_nodes is None or max_nodes == 0 or len(nodes) <= max_nodes:
+        return list(nodes)
+    ranked = sorted(
+        enumerate(nodes),
+        key=lambda item: (-node_return_priority(item[1]), item[0]),
+    )
+    return [node for _, node in ranked[:max_nodes]]
+
+
+def build_accessibility_hint(
+    *,
+    uia_quality: str,
+    msaa_quality: str,
+    vision_quality: str,
+    uia_node_count: int,
+    msaa_node_count: int,
+    vision_node_count: int,
+    returned_node_count: int,
+    filtered_node_count: int,
+    nodes_truncated: bool,
+    query: Optional[str],
+    force_som: bool,
+) -> Dict[str, Any]:
+    """Build a concise observation diagnostic for agents."""
+    semantic_node_count = int(uia_node_count) + int(msaa_node_count)
+    semantic_quality = _best_tree_quality(uia_quality, msaa_quality)
+    semantic_tree_sparse = semantic_quality in {"empty", "poor"} or semantic_node_count < 8
+    vision_used = int(vision_node_count) > 0
+
+    reasons: List[str] = []
+    recommendation = "use_semantic_nodes"
+    preferred_sources: List[str] = []
+
+    if not semantic_tree_sparse:
+        reasons.append("uia_msaa_semantic_tree_available")
+        preferred_sources.extend(["uia", "msaa"])
+    elif vision_used:
+        recommendation = "use_vision_or_ocr_nodes"
+        reasons.append("semantic_tree_sparse_vision_available")
+        preferred_sources.append("vision")
+    else:
+        recommendation = "use_query_zoom_or_force_som"
+        reasons.append("semantic_tree_sparse")
+        if not force_som:
+            reasons.append("vision_not_run_or_no_nodes")
+
+    if query and returned_node_count == 0:
+        recommendation = "broaden_query_or_inspect_full_state"
+        reasons.append("query_returned_no_nodes")
+    elif nodes_truncated:
+        recommendation = "narrow_with_query_or_increase_max_nodes"
+        reasons.append("nodes_truncated")
+
+    if vision_used and "vision" not in preferred_sources:
+        preferred_sources.append("vision")
+
+    return {
+        "semantic_tree_sparse": semantic_tree_sparse,
+        "semantic_quality": semantic_quality,
+        "semantic_node_count": semantic_node_count,
+        "uia_quality": uia_quality,
+        "uia_node_count": int(uia_node_count),
+        "msaa_quality": msaa_quality,
+        "msaa_node_count": int(msaa_node_count),
+        "vision_used": vision_used,
+        "vision_quality": vision_quality,
+        "vision_node_count": int(vision_node_count),
+        "nodes_truncated": bool(nodes_truncated),
+        "filtered_node_count": int(filtered_node_count),
+        "returned_node_count": int(returned_node_count),
+        "preferred_sources": preferred_sources,
+        "recommended_next_step": recommendation,
+        "reason": ";".join(reasons) if reasons else "observation_ready",
+    }
 
 
 def _rects_overlap(
@@ -1310,6 +1647,7 @@ async def get_window_state_snapshot(
     max_image_dimension: int = 1280,
     force_som: bool = False,
     include_all_nodes: bool = False,
+    max_nodes: Optional[int] = DEFAULT_RETURNED_NODE_LIMIT,
     zoom_metadata: Optional[Dict[Tuple[int, int], Dict[str, Any]]] = None,
     walk_gate: Optional[UIAWalkGate] = None,
     msaa_gate: Optional[MSAAWalkGate] = None,
@@ -1533,9 +1871,23 @@ async def get_window_state_snapshot(
         else:
             vision_metadata = {}
 
-        returned_nodes = project_nodes_to_window_resized(
-            filter_nodes_by_query(nodes, query, include_all_nodes),
-            geometry,
+        nodes = enrich_nodes_with_action_hints(nodes)
+        filtered_nodes = filter_nodes_by_query(nodes, query, include_all_nodes)
+        limited_nodes = limit_nodes_for_response(filtered_nodes, max_nodes)
+        returned_nodes = project_nodes_to_window_resized(limited_nodes, geometry)
+        nodes_truncated = len(returned_nodes) < len(filtered_nodes)
+        accessibility_hint = build_accessibility_hint(
+            uia_quality=uia_quality,
+            msaa_quality=msaa_quality,
+            vision_quality=vision_quality,
+            uia_node_count=uia_node_count,
+            msaa_node_count=msaa_node_count,
+            vision_node_count=vision_node_count,
+            returned_node_count=len(returned_nodes),
+            filtered_node_count=len(filtered_nodes),
+            nodes_truncated=nodes_truncated,
+            query=query,
+            force_som=force_som,
         )
 
         screenshot_field = save_window_state_screenshot(
@@ -1556,12 +1908,17 @@ async def get_window_state_snapshot(
             "msaa_quality": msaa_quality,
             "vision_quality": vision_quality,
             "vision_metadata": vision_metadata,
+            "accessibility_hint": accessibility_hint,
+            "observation_recommendation": accessibility_hint["recommended_next_step"],
             "capture_metadata": capture_metadata,
             "node_sources": sorted({node.get("source", "unknown") for node in nodes}),
             "merged_node_count": len(nodes),
             "unfiltered_node_count": len(nodes),
+            "filtered_node_count": len(filtered_nodes),
             "returned_node_count": len(returned_nodes),
             "nodes_filtered": bool(query and not include_all_nodes),
+            "nodes_truncated": nodes_truncated,
+            "node_limit": max_nodes,
             "nodes_coordinate_space": "window_resized",
             "uia_node_count": uia_node_count,
             "msaa_total_elements": msaa_total_elements,

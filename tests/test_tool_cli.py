@@ -13,6 +13,7 @@ from computer_server.tool_cli import (
     _DaemonHttpClient,
     _call_result_to_json,
     _collect_doctor_checks,
+    _daemon_start_args,
     _doctor_summary,
     _execute_batch,
     _is_lightweight_inprocess_call,
@@ -33,6 +34,21 @@ def test_rewrite_implicit_call() -> None:
     ]
     assert _rewrite_implicit_call(["list-tools"]) == ["list-tools"]
     assert _rewrite_implicit_call(["doctor"]) == ["doctor"]
+
+
+def test_frozen_cli_daemon_reuses_current_executable(monkeypatch, tmp_path) -> None:
+    exe = tmp_path / "cua-win.exe"
+    exe.write_text("", encoding="utf-8")
+    metadata_file = tmp_path / "cli-daemon.json"
+    monkeypatch.setattr(sys, "argv", [str(exe)])
+    monkeypatch.setattr(sys, "executable", str(exe))
+    monkeypatch.setattr(sys, "frozen", True, raising=False)
+
+    args = _daemon_start_args("127.0.0.1", 12345, "token", metadata_file)
+
+    assert args[:2] == [str(exe), "serve"]
+    assert "-m" not in args
+    assert "computer_server.tool_cli" not in args
 
 
 def test_parse_tool_arguments_requires_object() -> None:

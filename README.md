@@ -206,6 +206,13 @@ canonical `window`。微信等应用可能复用已有进程，或由不同于 l
 }
 ```
 
+### Codex Skill
+
+本仓库内置 Codex skill：`skills/cua-win`。把该目录复制或链接到
+`$CODEX_HOME/skills/cua-win`（未设置 `CODEX_HOME` 时为
+`%USERPROFILE%\.codex\skills\cua-win`）后，可在 Codex 中用
+`$cua-win` 触发这套 Windows 自动化工作流说明。
+
 ### MCP 工具
 
 **屏幕与鼠标** — `computer_screenshot` `computer_click` `computer_perform_secondary_action` `computer_mouse` `computer_drag` `computer_scroll` `computer_release_all_inputs` `computer_get_screen_size` `computer_get_cursor_position` `computer_get_window_state` `computer_zoom`
@@ -276,7 +283,14 @@ handle、绑定丢失或上下文重置后重新获取当前窗口对象；使�
 当 `computer_click`、`computer_drag`、`computer_scroll` 或 `computer_zoom` 的坐标来自
 返回截图时，传入 `screenshot_id` 可以避免后续截图刷新覆盖全局几何状态。
 返回的 `nodes` 使用 `nodes_coordinate_space="window_resized"`，其 `bbox`
-和中心坐标可直接与主截图对齐；内部 `ElementCache` 仍保留窗口全分辨率坐标。
+和中心坐标可直接与主截图对齐。默认只返回 100 个最高优先级节点，避免
+节点过多的应用一次性撑大 payload；可传 `max_nodes=0` 返回全部节点，或配合
+`query` / `max_nodes` 先筛选再调整上限。该限制只影响返回 payload，不影响内部
+`ElementCache`，后者仍保留完整窗口全分辨率坐标。
+节点同时包含底层 `actions` 和面向 agent 的 `action_hints`（如 `click`、`type`、
+`set_value`、`expand`），便于区分可点击、可输入和可展开候选。
+`accessibility_hint` / `observation_recommendation` 会说明语义树是否稀疏、
+是否已启用视觉/OCR，以及是否应继续用 `query` 或提高 `max_nodes` 收窄观察。
 `computer_get_window_state` 还返回 `screenshots` 数组：第一项是
 `role="target", zIndex=0` 的主截图；当前可见的同应用关联菜单、弹层或对话框会
 作为 `role="transient"` 项返回。每项都有独立的 `window`、`screenshot_id`、
@@ -551,6 +565,13 @@ Use `cua-win serve --no-cli-rpc` when you only want `/status + /mcp`.
 }
 ```
 
+### Codex Skill
+
+This repository includes a Codex skill at `skills/cua-win`. Copy or link that
+directory to `$CODEX_HOME/skills/cua-win` (or
+`%USERPROFILE%\.codex\skills\cua-win` when `CODEX_HOME` is unset) to invoke the
+workflow guidance in Codex with `$cua-win`.
+
 ### MCP Tools
 
 **Screen & Mouse** — `computer_screenshot` `computer_click` `computer_perform_secondary_action` `computer_mouse` `computer_drag` `computer_scroll` `computer_release_all_inputs` `computer_get_screen_size` `computer_get_cursor_position` `computer_get_window_state` `computer_zoom`
@@ -630,7 +651,18 @@ origin, resize ratio, and backend. Pass `screenshot_id` to
 coordinates come from a returned screenshot, so later observations cannot
 overwrite the geometry used for coordinate conversion.
 Returned `nodes` use `nodes_coordinate_space="window_resized"`, so their
-bounding boxes and centers align directly with the target screenshot.
+bounding boxes and centers align directly with the target screenshot. By
+default only the 100 highest-priority nodes are returned to keep large apps
+from producing oversized payloads. Pass `max_nodes=0` to return every node, or
+combine `query` and `max_nodes` to filter first and then adjust the cap. This
+limit only affects the returned payload; the internal `ElementCache` still
+stores complete window-full-resolution coordinates.
+Nodes include low-level `actions` and agent-facing `action_hints` such as
+`click`, `type`, `set_value`, and `expand`, making actionable/editable/expandable
+candidates easier to distinguish. `accessibility_hint` and
+`observation_recommendation` describe whether semantic UIA/MSAA data is
+sufficient, whether vision/OCR was needed, and whether callers should narrow
+with `query` or raise `max_nodes`.
 `computer_get_window_state` also returns a `screenshots` array. The first item
 is the target (`role="target", zIndex=0`); visible related menus, popovers, and
 dialogs are returned as `role="transient"` items. Each item has its own

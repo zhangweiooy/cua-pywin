@@ -69,3 +69,23 @@ The wheel includes models but not Python itself or third-party dependency
 wheels. Installing it can still download Python dependencies from the package
 index. A fully offline, one-click distribution would require a separate
 installer or wheelhouse and is not part of the current release format.
+
+## Nuitka Standalone Build
+
+For local executable testing, build a standalone directory:
+
+```powershell
+./scripts/build_nuitka.ps1
+```
+
+For fast local iteration after the virtual environment is already synced:
+
+```powershell
+./scripts/build_nuitka.ps1 -SkipSync -SkipChecks
+```
+
+The output is `dist-nuitka/cua-win.dist/cua-win.exe` plus its dependency
+DLLs, Python extension modules, bundled models, and runtime data files. This is
+not cryptographically uncrackable; it removes plain source files from the main
+application path and raises the reverse-engineering cost. The model files and
+third-party libraries remain readable by the local process.

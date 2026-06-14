@@ -227,6 +227,12 @@ def validate_max_image_dimension(max_image_dimension: int) -> int:
     return validate_int_range("max_image_dimension", max_image_dimension, 64, 4096)
 
 
+def validate_max_nodes(max_nodes: Optional[int]) -> Optional[int]:
+    if max_nodes is None:
+        return None
+    return validate_int_range("max_nodes", max_nodes, 0, 5000)
+
+
 def validate_zoom_rect(x1: int, y1: int, x2: int, y2: int) -> tuple[int, int, int, int]:
     x1 = validate_coordinate("x1", x1)
     y1 = validate_coordinate("y1", y1)

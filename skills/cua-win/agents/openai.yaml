@@ -1,0 +1,4 @@
+interface:
+  display_name: "cua-win"
+  short_description: "Windows desktop automation via cua-win"
+  default_prompt: "Use $cua-win to inspect a Windows app, operate it safely, and verify the result."

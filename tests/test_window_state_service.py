@@ -10,15 +10,20 @@ from PIL import Image
 import computer_server.services.window_state_service as window_state_service
 from computer_server.handlers.element_cache import CachedElement
 from computer_server.services.window_state_service import (
+    DEFAULT_RETURNED_NODE_LIMIT,
     MSAAWalkGate,
     UIAWalkGate,
     WindowSnapshotGeometry,
+    build_accessibility_hint,
     create_zoom_image,
+    derive_action_hints,
     filter_nodes_by_query,
     get_accessibility_tree_snapshot,
     get_window_state_snapshot,
+    limit_nodes_for_response,
     list_related_transient_windows,
     node_matches_query,
+    node_return_priority,
     prepare_direct_window_snapshot_image,
     prepare_window_snapshot_image,
     project_nodes_to_window_resized,
@@ -256,6 +261,107 @@ def test_filter_nodes_by_query_can_return_all_nodes_when_requested():
     assert filtered is not nodes
 
 
+def test_limit_nodes_for_response_keeps_highest_priority_nodes():
+    nodes = [
+        {
+            "element_index": 1,
+            "source": "uia",
+            "control_type": "Pane",
+            "name": "",
+            "bbox": [0, 0, 1000, 800],
+            "actions": [],
+        },
+        {
+            "element_index": 2,
+            "source": "uia",
+            "control_type": "Button",
+            "name": "保存",
+            "bbox": [10, 10, 80, 40],
+            "actions": ["invoke"],
+        },
+        {
+            "element_index": 3,
+            "source": "vision",
+            "control_type": "text",
+            "name": "提示",
+            "bbox": [10, 50, 80, 80],
+            "actions": [],
+            "confidence": 0.8,
+        },
+    ]
+
+    limited = limit_nodes_for_response(nodes, 2)
+
+    assert [node["element_index"] for node in limited] == [2, 3]
+    assert node_return_priority(nodes[1]) > node_return_priority(nodes[0])
+
+
+def test_node_return_priority_prefers_tactile_style_actionable_roles():
+    edit = {
+        "element_index": 1,
+        "source": "uia",
+        "control_type": "Edit",
+        "name": "",
+        "bbox": [10, 10, 180, 34],
+        "actions": ["set_value"],
+        "enabled": True,
+    }
+    button = {
+        "element_index": 2,
+        "source": "uia",
+        "control_type": "Button",
+        "name": "",
+        "bbox": [10, 50, 80, 82],
+        "actions": ["invoke"],
+        "enabled": True,
+    }
+    offscreen_button = {
+        **button,
+        "element_index": 3,
+        "is_offscreen": True,
+    }
+    no_geometry_button = {
+        **button,
+        "element_index": 4,
+        "bbox": [0, 0, 0, 0],
+    }
+
+    assert node_return_priority(edit) > node_return_priority(button)
+    assert node_return_priority(button) > node_return_priority(offscreen_button)
+    assert node_return_priority(button) > node_return_priority(no_geometry_button)
+
+
+def test_derive_action_hints_from_role_and_actions():
+    assert derive_action_hints({
+        "control_type": "Button",
+        "actions": ["invoke"],
+        "enabled": True,
+    }) == ["click", "press"]
+    assert derive_action_hints({
+        "control_type": "Edit",
+        "actions": ["set_value"],
+        "enabled": True,
+    }) == ["focus", "type", "set_value"]
+    assert derive_action_hints({
+        "control_type": "CheckBox",
+        "actions": ["toggle"],
+        "enabled": True,
+    }) == ["click", "toggle"]
+    assert derive_action_hints({
+        "control_type": "SplitButton",
+        "actions": ["invoke", "expand"],
+        "enabled": False,
+    }) == []
+
+
+def test_limit_nodes_for_response_zero_or_none_returns_all_nodes_copy():
+    nodes = [{"element_index": index} for index in range(3)]
+
+    assert limit_nodes_for_response(nodes, 0) == nodes
+    assert limit_nodes_for_response(nodes, None) == nodes
+    assert limit_nodes_for_response(nodes, 0) is not nodes
+
+
 def test_node_matches_query_checks_icon_label_metadata():
     node = {
         "source": "vision",
@@ -267,6 +373,59 @@ def test_node_matches_query_checks_icon_label_metadata():
 
     assert node_matches_query(node, "send")
     assert node_matches_query(node, "tinyclip") is False
+
+
+def test_node_matches_query_checks_action_hints():
+    node = {
+        "source": "uia",
+        "control_type": "Edit",
+        "name": "",
+        "actions": ["set_value"],
+        "action_hints": ["focus", "type", "set_value"],
+    }
+
+    assert node_matches_query(node, "type")
+    assert node_matches_query(node, "delete") is False
+
+
+def test_build_accessibility_hint_recommends_visual_nodes_for_sparse_semantics():
+    hint = build_accessibility_hint(
+        uia_quality="poor",
+        msaa_quality="empty",
+        vision_quality="ok",
+        uia_node_count=2,
+        msaa_node_count=0,
+        vision_node_count=18,
+        returned_node_count=20,
+        filtered_node_count=20,
+        nodes_truncated=False,
+        query=None,
+        force_som=False,
+    )
+
+    assert hint["semantic_tree_sparse"] is True
+    assert hint["vision_used"] is True
+    assert hint["preferred_sources"] == ["vision"]
+    assert hint["recommended_next_step"] == "use_vision_or_ocr_nodes"
+
+
+def test_build_accessibility_hint_recommends_query_when_truncated():
+    hint = build_accessibility_hint(
+        uia_quality="rich",
+        msaa_quality="empty",
+        vision_quality="empty",
+        uia_node_count=150,
+        msaa_node_count=0,
+        vision_node_count=0,
+        returned_node_count=100,
+        filtered_node_count=150,
+        nodes_truncated=True,
+        query=None,
+        force_som=False,
+    )
+
+    assert hint["semantic_tree_sparse"] is False
+    assert hint["recommended_next_step"] == "narrow_with_query_or_increase_max_nodes"
 
 
 def test_merge_som_vision_exposes_confidence_on_nodes(monkeypatch):
@@ -591,7 +750,10 @@ async def test_get_window_state_snapshot_filters_returned_nodes_not_cache(monkey
         query="搜索",
     )
 
-    assert result["nodes"] == [nodes[1]]
+    assert len(result["nodes"]) == 1
+    assert result["nodes"][0]["element_index"] == nodes[1]["element_index"]
+    assert result["nodes"][0]["name"] == nodes[1]["name"]
+    assert result["nodes"][0]["action_hints"] == ["focus", "type", "set_value"]
     assert result["node_count"] == 1
     assert result["returned_node_count"] == 1
     assert result["unfiltered_node_count"] == 2
@@ -600,6 +762,9 @@ async def test_get_window_state_snapshot_filters_returned_nodes_not_cache(monkey
     assert result["capture_metadata"]["capture_mode"] == "screen_crop"
     assert result["capture_metadata"]["occlusion_risk"] is True
     assert result["node_sources"] == ["uia"]
+    assert result["accessibility_hint"]["semantic_tree_sparse"] is True
+    assert result["accessibility_hint"]["recommended_next_step"] == "use_query_zoom_or_force_som"
+    assert result["observation_recommendation"] == "use_query_zoom_or_force_som"
 
 
 @pytest.mark.asyncio
@@ -661,11 +826,125 @@ async def test_get_window_state_snapshot_can_return_all_nodes_with_query(monkeyp
         include_all_nodes=True,
     )
 
-    assert result["nodes"] == nodes
+    assert [node["element_index"] for node in result["nodes"]] == [1, 2]
+    assert result["nodes"][0]["name"] == nodes[0]["name"]
+    assert result["nodes"][1]["name"] == nodes[1]["name"]
+    assert result["nodes"][0]["action_hints"] == ["click", "press"]
+    assert result["nodes"][1]["action_hints"] == ["focus", "type", "set_value"]
     assert result["node_count"] == 2
     assert result["returned_node_count"] == 2
     assert result["unfiltered_node_count"] == 2
     assert result["nodes_filtered"] is False
+
+
+@pytest.mark.asyncio
+async def test_get_window_state_snapshot_limits_returned_nodes_by_default(monkeypatch):
+    nodes = [
+        {
+            "element_index": index,
+            "source": "uia",
+            "control_type": "Pane",
+            "name": "",
+            "center_x": 1,
+            "center_y": 1,
+            "bbox": [0, 0, 20, 20],
+            "actions": [],
+            "enabled": True,
+        }
+        for index in range(DEFAULT_RETURNED_NODE_LIMIT + 5)
+    ]
+    nodes[-1] = {
+        "element_index": 999,
+        "source": "uia",
+        "control_type": "Button",
+        "name": "发送",
+        "center_x": 5,
+        "center_y": 5,
+        "bbox": [1, 1, 9, 9],
+        "actions": ["invoke"],
+        "enabled": True,
+    }
+
+    async def fake_collect_uia_nodes(*args, **kwargs):
+        return {
+            "nodes": list(nodes),
+            "total_elements": len(nodes),
+            "uia_node_count": len(nodes),
+            "tree_markdown": "- many nodes",
+            "uia_quality": "rich",
+            "tree_quality": "rich",
+        }
+
+    async def fake_collect_msaa_nodes(*args, **kwargs):
+        return {
+            "nodes": [],
+            "total_elements": 0,
+            "msaa_node_count": 0,
+            "tree_markdown": "",
+            "msaa_quality": "empty",
+        }
+
+    monkeypatch.setattr(window_state_service, "collect_uia_nodes", fake_collect_uia_nodes)
+    monkeypatch.setattr(window_state_service, "collect_msaa_nodes", fake_collect_msaa_nodes)
+    monkeypatch.setattr(window_state_service, "detect_popover_candidates", lambda *args: "")
+    monkeypatch.setattr(window_state_service, "save_window_state_screenshot", lambda *args: "shot.jpg")
+
+    result = await get_window_state_snapshot(
+        _FakeAutomationHandler(),
+        pid=123,
+        window_id=456,
+    )
+
+    assert result["node_count"] == DEFAULT_RETURNED_NODE_LIMIT
+    assert result["returned_node_count"] == DEFAULT_RETURNED_NODE_LIMIT
+    assert result["filtered_node_count"] == DEFAULT_RETURNED_NODE_LIMIT + 5
+    assert result["unfiltered_node_count"] == DEFAULT_RETURNED_NODE_LIMIT + 5
+    assert result["nodes_truncated"] is True
+    assert result["node_limit"] == DEFAULT_RETURNED_NODE_LIMIT
+    assert result["nodes"][0]["element_index"] == 999
+
+
+@pytest.mark.asyncio
+async def test_get_window_state_snapshot_can_disable_node_limit(monkeypatch):
+    nodes = [
+        {
+            "element_index": index,
+            "source": "uia",
+            "control_type": "Button",
+            "name": f"按钮 {index}",
+            "center_x": 5,
+            "center_y": 5,
+            "bbox": [1, 1, 9, 9],
+            "actions": ["invoke"],
+            "enabled": True,
+        }
+        for index in range(DEFAULT_RETURNED_NODE_LIMIT + 1)
+    ]
+
+    async def fake_collect_uia_nodes(*args, **kwargs):
+        return {
+            "nodes": list(nodes),
+            "total_elements": len(nodes),
+            "uia_node_count": len(nodes),
+            "tree_markdown": "- many nodes",
+            "uia_quality": "rich",
+            "tree_quality": "rich",
+        }
+
+    monkeypatch.setattr(window_state_service, "collect_uia_nodes", fake_collect_uia_nodes)
+    monkeypatch.setattr(window_state_service, "detect_popover_candidates", lambda *args: "")
+    monkeypatch.setattr(window_state_service, "save_window_state_screenshot", lambda *args: "shot.jpg")
+
+    result = await get_window_state_snapshot(
+        _FakeAutomationHandler(),
+        pid=123,
+        window_id=456,
+        max_nodes=0,
+    )
+
+    assert result["node_count"] == DEFAULT_RETURNED_NODE_LIMIT + 1
+    assert result["nodes_truncated"] is False
+    assert result["node_limit"] == 0
 
 
 @pytest.mark.asyncio

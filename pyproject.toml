@@ -102,12 +102,21 @@ dev = [
     "ruff>=0.0.241",
     "mypy>=0.971",
 ]
+build = [
+    "nuitka>=2.7",
+    "ordered-set>=4.1",
+    "zstandard>=0.23",
+]
 
 [tool.pdm.scripts]
 api = "cua-win serve"
 
 [tool.ruff]
 extend-exclude = ["computer_server/models/omniparser_v2/icon_caption"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests", "som/tests"]
+norecursedirs = [".git", ".venv", ".claude", "build", "dist", "dist-nuitka"]
 
 [tool.ruff.lint.per-file-ignores]
 "computer_server/handlers/windows.py" = ["E402"]

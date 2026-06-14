@@ -35,6 +35,35 @@ from .tool_rpc import (
 )
 
 
+def _bootstrap_frozen_runtime_paths() -> None:
+    if not (getattr(sys, "frozen", False) or "__compiled__" in globals()):
+        return
+    script_path = Path(sys.argv[0])
+    if script_path.suffix.lower() == ".exe":
+        base_dir = script_path.resolve().parent
+    else:
+        base_dir = Path(sys.executable).resolve().parent
+    for relative in ("win32", "win32/lib", "Pythonwin"):
+        path = base_dir / relative
+        if path.exists():
+            text = str(path)
+            if text not in sys.path:
+                sys.path.append(text)
+    pywin32_system32 = base_dir / "pywin32_system32"
+    if pywin32_system32.exists():
+        os.environ["PATH"] = (
+            str(pywin32_system32) + os.pathsep + os.environ.get("PATH", "")
+        )
+        if hasattr(os, "add_dll_directory"):
+            try:
+                os.add_dll_directory(str(pywin32_system32))
+            except OSError:
+                pass
+
+
+_bootstrap_frozen_runtime_paths()
+
+
 CLI_NAME = "cua-win"
 DEFAULT_HOST = "127.0.0.1"
 DEFAULT_PORT = 8000
@@ -313,6 +342,44 @@ def _daemon_python_executable() -> str:
     return sys.executable
 
 
+def _is_frozen_cli_executable() -> bool:
+    script_path = Path(sys.argv[0])
+    adjacent_python = script_path.parent / "python.exe"
+    return (
+        script_path.suffix.lower() == ".exe"
+        and not adjacent_python.exists()
+        and (getattr(sys, "frozen", False) or "__compiled__" in globals())
+    )
+
+
+def _daemon_start_args(
+    host: str,
+    port: int,
+    token: str,
+    metadata_file: Path,
+) -> list[str]:
+    serve_args = [
+        "serve",
+        "--host",
+        host,
+        "--port",
+        str(port),
+        "--token",
+        token,
+        "--metadata-file",
+        str(metadata_file),
+        "--quiet",
+    ]
+    if _is_frozen_cli_executable():
+        return [str(Path(sys.argv[0]).resolve()), *serve_args]
+    return [
+        _daemon_python_executable(),
+        "-m",
+        "computer_server.tool_cli",
+        *serve_args,
+    ]
+
+
 def _http_json(
     info: DaemonInfo,
     method: str,
@@ -381,21 +448,7 @@ def _start_daemon(timeout: float = DEFAULT_START_TIMEOUT) -> DaemonInfo:
         **os.environ,
         "PYTHONIOENCODING": "utf-8",
     }
-    args = [
-        _daemon_python_executable(),
-        "-m",
-        "computer_server.tool_cli",
-        "serve",
-        "--host",
-        host,
-        "--port",
-        str(port),
-        "--token",
-        token,
-        "--metadata-file",
-        str(metadata_file),
-        "--quiet",
-    ]
+    args = _daemon_start_args(host, port, token, metadata_file)
 
     creationflags = 0
     if sys.platform == "win32" and hasattr(subprocess, "CREATE_NO_WINDOW"):
