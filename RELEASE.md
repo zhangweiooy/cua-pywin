@@ -7,12 +7,15 @@ are distributed through GitHub Releases rather than PyPI.
 ## Release Boundary
 
 - A manual `Build and release` workflow run builds and validates a candidate.
-  It does not create a GitHub Release.
+  It uploads a short-lived candidate artifact but does not create a GitHub
+  Release.
 - Pushing a tag such as `v0.1.0` runs the same validation, builds the Windows
   installer, and creates the GitHub Release.
 - The repository is currently private. Decide whether it should become public
   before announcing a user-facing release.
 - Do not publish from a checkout containing unresolved Git LFS pointers.
+- Do not move an existing release tag for documentation-only changes. Move a
+  release tag only to correct a failed or incomplete release workflow.
 
 ## Prepare
 
@@ -52,9 +55,33 @@ are distributed through GitHub Releases rather than PyPI.
    ```
 
 3. Wait for the `Build and release` workflow to finish.
-4. Download the installer, wheel, and checksum files from the GitHub Release
-   and verify the checksum on another Windows machine.
-5. Review generated release notes before announcing the release.
+4. Download the installer, wheel, and checksum files from the GitHub Release.
+5. Verify the installer checksum and run the post-publish smoke below on a
+   second Windows machine before announcing the release.
+6. Review generated release notes before announcing the release.
+
+## Post-Publish Smoke
+
+For the normal Windows installer path:
+
+```powershell
+Get-FileHash .\cua-win-0.1.0-win64-setup.exe -Algorithm SHA256
+.\cua-win-0.1.0-win64-setup.exe
+cua-win doctor
+cua-win list-tools
+cua-win start
+cua-win computer_get_screen_size
+cua-win call computer_get_window '{"active":true}'
+cua-win stop
+```
+
+For wheel validation in a clean Python 3.12 environment:
+
+```powershell
+pip install .\cua_pywin-0.1.0-py3-none-any.whl
+cua-win doctor
+cua-win list-tools
+```
 
 ## Updating Bundled Models
 

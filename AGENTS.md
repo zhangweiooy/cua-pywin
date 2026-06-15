@@ -588,9 +588,10 @@ uv run cua-win stop
 
 ## Release Process
 
-- Release wheels include OmniParser V2 YOLO, Florence-2, and RapidOCR model
-  files and are approximately 1 GB. Publish them through GitHub Releases, not
-  normal PyPI.
+- Release artifacts include the Windows installer, wheel, and SHA-256 files.
+  The installer is the normal user-facing artifact; the wheel is mainly for
+  Python environments and developer validation. Publish them through GitHub
+  Releases, not normal PyPI.
 - `scripts/build_release.ps1` performs the locked install, source/model
   validation, Ruff, tests, compile checks, wheel build, wheel-internal model
   validation, and SHA-256 generation.
@@ -601,7 +602,8 @@ uv run cua-win stop
 - `uv.lock` is committed release input. Regenerate and commit it whenever
   dependency metadata changes; clean CI checkouts use `uv sync --locked`.
 - Manual `Build and release` workflow runs create a seven-day candidate
-  artifact. A pushed `v*` tag creates the GitHub Release after the same checks.
+  artifact. A pushed `v*` tag builds the wheel and installer, then creates the
+  GitHub Release after the same checks.
 - Keep the repository visibility decision separate from release mechanics. The
   repository is currently private and must not be made public implicitly.
 - Follow `RELEASE.md` for version updates, clean-environment smoke tests,
@@ -621,36 +623,54 @@ uv run cua-win stop
 
 ## Current Priorities
 
+### Current State
+
+- `v0.1.0` has been published through GitHub Releases with installer, wheel,
+  and separate SHA-256 files. The repository is still private.
+- Do not move an existing release tag for documentation-only cleanup. Move a
+  release tag only when correcting a failed or incomplete release workflow.
+- Keep the public MCP surface at 25 tools for now. Do not merge distinct
+  high-level operations such as click/drag/scroll, screenshot/window-state/zoom,
+  or window discovery/observation/management without concrete agent-usage
+  evidence.
+
 ### P1: High-Value Development
 
-- Before publishing `v0.1.0`, decide whether the currently private GitHub
-  repository should become public, verify the candidate wheel on a second
-  Windows machine, finalize `CHANGELOG.md`, and then push the annotated tag.
-- Defer `CUA_TOOL_PROFILE=core|full` until the merged 25-tool surface has had
-  enough real agent usage to show which low-level primitives should stay hidden
-  by default.
-- Keep the public surface at 25 tools for now. Do not merge distinct high-level
-  operations such as click/drag/scroll, screenshot/window-state/zoom, or
-  window discovery/observation/management without concrete agent-usage evidence.
+- Verify the published installer on a second Windows machine. Check the
+  installer SHA-256, install normally, then run `cua-win doctor`,
+  `cua-win list-tools`, `cua-win start`, `cua-win computer_get_screen_size`,
+  one `computer_get_window_state` smoke, and `cua-win stop`.
+- Keep the repository visibility decision separate from release mechanics. The
+  repository must remain private unless the user explicitly chooses to make it
+  public.
+- Before the next tagged release, update `CHANGELOG.md`, version metadata, and
+  `uv.lock` if dependencies changed; then run the full release workflow.
 
 ### P2: Useful, But Not Blocking
 
 - Run `scripts/agent_smoke_fixture.py` plus `scripts/run_agent_smoke.py` against
-  at least Codex before release, and save transcripts when comparing agent
-  behavior across tool prompt revisions.
+  at least Codex after meaningful tool prompt or skill changes, and save
+  transcripts when comparing agent behavior across revisions.
 - Build a reviewed Windows icon-caption corpus for WeChat, DingTalk, Chrome,
   and classic controls. Track Florence incorrect-label and unknown rates,
   especially phone, pin, mute, and application-specific icons.
 - Deduplicate EnumWindows search strategies for process/title matching.
 - Explore broader MSAA-backed actions only when the action contract is
-  observable and verification-gated.
+  observable and verification-gated. Dropdown expand-edge click is acceptable
+  because it is explicit and observable; broader MSAA default-action dispatch
+  needs action-path metadata and post-action verification.
 - Run the WGC smoke suite on a real mixed-DPI multi-monitor setup. The
   2026-06-06 controlled run verified occlusion-safe identical frames,
   minimized-window rejection, and 192-DPI primary-monitor capture; Chrome and
   DingTalk live samples completed in roughly 172-219 ms per WGC capture.
+  Continue collecting protected-content, GPU-app, WebView2/Electron, and
+  mixed-DPI multi-monitor results.
 
 ### P3: Defer Until Evidence Accumulates
 
+- Defer `CUA_TOOL_PROFILE=core|full` until the merged 25-tool surface has had
+  enough real agent usage to show which low-level primitives should stay hidden
+  by default.
 - Consider request flags for screenshot, tree, nodes, and vision only if real
   usage shows `computer_get_window_state` response cost or payload size is a
   recurring problem. Current latency does not justify the added API complexity.
@@ -664,52 +684,8 @@ uv run cua-win stop
   from becoming the default icon-semantic backend.
 - Keep YOLO + OCR parallelism disabled by default; the prior EasyOCR CPU speedup
   was about 8%, and RapidOCR needs fresh benchmarks before adding complexity.
-
-## Deferred Refactors
-
-- Continue monitoring `computer_click` helper boundaries after Windows runs;
-  it now separates element dispatch, coordinate resolution, force-frontmost
-  click, and pixel click execution.
-- EnumWindows search strategies for process/title matching still have duplicated
-  closure patterns.
-- Review overlay architecture after more Windows runs: GDI thread safety,
-  animation shutdown, and pipeline modularity.
-- Add a CDP WebSocket connection pool if browser page tools become high-frequency.
-- Consider isolating UIA/MSAA COM work in disposable worker processes if leaked
-  provider calls become a real operational issue. Current gates stop tool-level
-  hangs and repeated stacking, but Python still cannot kill an individual stuck
-  cross-process COM call inside the main process.
-
-## Official Approach Follow-ups
-
-- Harden the Windows.Graphics.Capture backend with broader Windows-app testing.
-  WGC is now the preferred target-window observation path and screen crop is the
-  fallback. `scripts/wgc_smoke.py` now covers controlled occlusion, minimized
-  windows, per-monitor DPI capture, and filtered live-app sampling. Continue
-  collecting protected-content, GPU-app, WebView2/Electron, and mixed-DPI
-  multi-monitor results.
-- Keep UIA and MSAA as parallel observation passes. MSAA is cheap enough to run
-  alongside UIA, and it preserves classic Win32 roles that UIA providers often lose.
-  Continue attaching MSAA-specific metadata to nodes instead of collapsing it
-  into generic UIA fields.
-- Explore MSAA-backed actions only where the action contract is verifiable.
-  Dropdown expand-edge click is acceptable because it is explicit and observable;
-  broader MSAA default-action dispatch needs action-path metadata and
-  post-action verification before becoming a recommended path.
 - Do not productize a broad background `dispatch` mode yet. Some apps accept
   background clicks but fail to perform follow-up UI transitions, so background
   dispatch can create false success. Revisit only with per-action observability,
   app capability evidence, and verification-gated fallbacks to foreground HID
   input.
-- Use `capture_metadata.stage_timings` and the WGC smoke report to compare WGC
-  against screen crop with concrete latency and failure-rate data.
-
-## Future Exploration
-
-- MobileCLIP-S0 remains a possible lower-memory alternative if Florence-2 is too
-  expensive. Use the PyTorch/checkpoint path for this Windows server; CoreML is
-  not the primary runtime.
-- YOLO + EasyOCR `ThreadPoolExecutor` parallelism was evaluated on 2026-06-01
-  with a 1280x830 WGC screenshot on CPU: serial averaged 3.31s, parallel
-  averaged 3.07s, about 8% faster. This is historical EasyOCR data; re-benchmark
-  with RapidOCR before enabling OCR parallelism.
