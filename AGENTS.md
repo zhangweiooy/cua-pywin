@@ -313,6 +313,11 @@ is internal replay metadata.
 - High-privilege control flows through MCP tools.
 - `python -m computer_server` is not a supported compatibility entrypoint;
   use `cua-win serve`.
+- `cua-win doctor` is a read-only local diagnostic command. In addition to
+  dependency, model, state-dir, and daemon probes, it checks the current
+  Windows session/desktop, EnumWindows visibility, and full-screen screenshot
+  availability without starting the daemon or sending input. Use
+  `--no-desktop` for CI or headless environments.
 
 ### Runtime Permissions
 

@@ -858,6 +858,249 @@ def _check_state_dir() -> DoctorCheck:
     )
 
 
+def _windows_desktop_name(handle: int) -> str | None:
+    if sys.platform != "win32" or not handle:
+        return None
+    import ctypes
+
+    user32 = ctypes.WinDLL("user32", use_last_error=True)
+    user32.GetUserObjectInformationW.argtypes = [
+        ctypes.c_void_p,
+        ctypes.c_int,
+        ctypes.c_void_p,
+        ctypes.c_ulong,
+        ctypes.POINTER(ctypes.c_ulong),
+    ]
+    user32.GetUserObjectInformationW.restype = ctypes.c_bool
+
+    UOI_NAME = 2
+    needed = ctypes.c_ulong(0)
+    user32.GetUserObjectInformationW(handle, UOI_NAME, None, 0, ctypes.byref(needed))
+    if needed.value <= 0:
+        return None
+    char_count = max(1, needed.value // ctypes.sizeof(ctypes.c_wchar))
+    buffer = ctypes.create_unicode_buffer(char_count)
+    if not user32.GetUserObjectInformationW(
+        handle,
+        UOI_NAME,
+        buffer,
+        needed,
+        ctypes.byref(needed),
+    ):
+        return None
+    return buffer.value or None
+
+
+def _check_interactive_desktop() -> DoctorCheck:
+    if sys.platform != "win32":
+        return DoctorCheck(
+            name="desktop:interactive",
+            status="fail",
+            message="interactive desktop diagnostics require Windows",
+            details={"platform": sys.platform},
+        )
+    import ctypes
+
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    user32 = ctypes.WinDLL("user32", use_last_error=True)
+
+    session_id = ctypes.c_ulong(0)
+    session_known = bool(
+        kernel32.ProcessIdToSessionId(
+            os.getpid(),
+            ctypes.byref(session_id),
+        )
+    )
+    active_console = int(kernel32.WTSGetActiveConsoleSessionId())
+
+    user32.GetThreadDesktop.argtypes = [ctypes.c_ulong]
+    user32.GetThreadDesktop.restype = ctypes.c_void_p
+    user32.OpenInputDesktop.argtypes = [ctypes.c_ulong, ctypes.c_bool, ctypes.c_ulong]
+    user32.OpenInputDesktop.restype = ctypes.c_void_p
+    user32.CloseDesktop.argtypes = [ctypes.c_void_p]
+    user32.CloseDesktop.restype = ctypes.c_bool
+
+    current_desktop_handle = user32.GetThreadDesktop(kernel32.GetCurrentThreadId())
+    current_desktop = _windows_desktop_name(current_desktop_handle)
+
+    DESKTOP_READOBJECTS = 0x0001
+    input_desktop_handle = user32.OpenInputDesktop(0, False, DESKTOP_READOBJECTS)
+    input_desktop = _windows_desktop_name(input_desktop_handle)
+    if input_desktop_handle:
+        user32.CloseDesktop(input_desktop_handle)
+
+    sid = int(session_id.value) if session_known else None
+    details = {
+        "session_id": sid,
+        "active_console_session_id": active_console
+        if active_console != 0xFFFFFFFF
+        else None,
+        "current_desktop": current_desktop,
+        "input_desktop": input_desktop,
+    }
+    if sid == 0:
+        return DoctorCheck(
+            name="desktop:interactive",
+            status="fail",
+            message="running in Windows Session 0; desktop automation requires an interactive user session",
+            details=details,
+        )
+    if not session_known:
+        return DoctorCheck(
+            name="desktop:interactive",
+            status="warn",
+            message="could not determine Windows session id",
+            details=details,
+        )
+    if not current_desktop or not input_desktop:
+        return DoctorCheck(
+            name="desktop:interactive",
+            status="warn",
+            message="could not inspect current or input desktop; screen may be locked or unavailable",
+            details=details,
+        )
+    if current_desktop.lower() != input_desktop.lower():
+        return DoctorCheck(
+            name="desktop:interactive",
+            status="warn",
+            message=f"current desktop {current_desktop!r} differs from input desktop {input_desktop!r}",
+            details=details,
+        )
+    if current_desktop.lower() != "default":
+        return DoctorCheck(
+            name="desktop:interactive",
+            status="warn",
+            message=f"running on non-default desktop {current_desktop!r}",
+            details=details,
+        )
+    return DoctorCheck(
+        name="desktop:interactive",
+        status="ok",
+        message=f"interactive session {sid} on desktop {current_desktop}",
+        details=details,
+    )
+
+
+def _check_window_enumeration() -> DoctorCheck:
+    if sys.platform != "win32":
+        return DoctorCheck(
+            name="desktop:windows",
+            status="fail",
+            message="window enumeration requires Windows",
+            details={"platform": sys.platform},
+        )
+    try:
+        import win32gui
+    except Exception as exc:
+        return DoctorCheck(
+            name="desktop:windows",
+            status="fail",
+            message=f"win32gui import failed: {exc}",
+        )
+
+    total = 0
+    visible = 0
+    titled = 0
+    samples: list[dict[str, Any]] = []
+
+    def _enum(hwnd: int, _ctx: None) -> bool:
+        nonlocal total, visible, titled
+        total += 1
+        try:
+            is_visible = bool(win32gui.IsWindowVisible(hwnd))
+            title = win32gui.GetWindowText(hwnd) or ""
+        except Exception:
+            return True
+        if is_visible:
+            visible += 1
+        if title:
+            titled += 1
+        if is_visible and title and len(samples) < 8:
+            samples.append({"hwnd": hwnd, "title": title[:120]})
+        return True
+
+    try:
+        win32gui.EnumWindows(_enum, None)
+        foreground_hwnd = int(win32gui.GetForegroundWindow() or 0)
+        foreground_title = (
+            win32gui.GetWindowText(foreground_hwnd) if foreground_hwnd else ""
+        )
+    except Exception as exc:
+        return DoctorCheck(
+            name="desktop:windows",
+            status="fail",
+            message=f"EnumWindows failed: {exc}",
+            details={"total_windows": total, "visible_windows": visible},
+        )
+
+    details = {
+        "total_windows": total,
+        "visible_windows": visible,
+        "titled_windows": titled,
+        "foreground": {
+            "hwnd": foreground_hwnd,
+            "title": foreground_title[:120],
+        },
+        "samples": samples,
+    }
+    if visible == 0:
+        return DoctorCheck(
+            name="desktop:windows",
+            status="warn",
+            message="EnumWindows succeeded but no visible top-level windows were found",
+            details=details,
+        )
+    return DoctorCheck(
+        name="desktop:windows",
+        status="ok",
+        message=f"EnumWindows sees {visible} visible top-level windows",
+        details=details,
+    )
+
+
+def _check_screenshot_capture() -> DoctorCheck:
+    if sys.platform != "win32":
+        return DoctorCheck(
+            name="desktop:screenshot",
+            status="fail",
+            message="screenshot diagnostics require Windows",
+            details={"platform": sys.platform},
+        )
+    started = time.perf_counter()
+    try:
+        from PIL import ImageGrab
+
+        image = ImageGrab.grab(all_screens=True)
+        width, height = image.size
+    except Exception as exc:
+        return DoctorCheck(
+            name="desktop:screenshot",
+            status="fail",
+            message=f"full-screen capture failed: {exc}",
+            details={"elapsed_ms": round((time.perf_counter() - started) * 1000, 1)},
+        )
+    elapsed_ms = round((time.perf_counter() - started) * 1000, 1)
+    details = {
+        "width": width,
+        "height": height,
+        "mode": getattr(image, "mode", None),
+        "elapsed_ms": elapsed_ms,
+    }
+    if width <= 1 or height <= 1:
+        return DoctorCheck(
+            name="desktop:screenshot",
+            status="fail",
+            message=f"full-screen capture returned invalid size {width}x{height}",
+            details=details,
+        )
+    return DoctorCheck(
+        name="desktop:screenshot",
+        status="ok",
+        message=f"full-screen capture works ({width}x{height}, {elapsed_ms} ms)",
+        details=details,
+    )
+
+
 def _check_omniparser_weight() -> DoctorCheck:
     model_dir = OMNIPARSER_YOLO_DIR
     path = model_dir / "model.pt"
@@ -1141,6 +1384,7 @@ def _collect_doctor_checks(
     *,
     timeout: float = 2.0,
     dependencies: bool = True,
+    desktop: bool = True,
     daemon: bool = True,
 ) -> dict[str, Any]:
     checks: list[DoctorCheck] = []
@@ -1170,6 +1414,14 @@ def _collect_doctor_checks(
     checks.append(_check_florence2_bundle())
     checks.append(_check_rapidocr_bundle())
 
+    if desktop:
+        checks.extend(
+            (
+                _check_interactive_desktop(),
+                _check_window_enumeration(),
+                _check_screenshot_capture(),
+            )
+        )
     if dependencies:
         checks.extend(
             _check_dependency(import_name, distribution_name, purpose)
@@ -1451,6 +1703,7 @@ def _cmd_doctor(args: argparse.Namespace) -> int:
     payload = _collect_doctor_checks(
         timeout=args.timeout,
         dependencies=not args.no_dependencies,
+        desktop=not args.no_desktop,
         daemon=not args.no_daemon,
     )
     if args.json:
@@ -1643,6 +1896,11 @@ def build_parser() -> argparse.ArgumentParser:
         "--no-dependencies",
         action="store_true",
         help="Skip dependency import-spec checks.",
+    )
+    doctor.add_argument(
+        "--no-desktop",
+        action="store_true",
+        help="Skip interactive desktop, window enumeration, and screenshot probes.",
     )
     doctor.add_argument(
         "--no-daemon",

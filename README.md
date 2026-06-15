@@ -205,7 +205,7 @@ canonical `window`。微信等应用可能复用已有进程，或由不同于 l
 }
 ```
 
-`cua-win doctor` 执行只读本机诊断：平台、Python 版本、依赖可发现性、打包模型文件、状态目录和现有 daemon 可达性。它不会启动 daemon 或调用桌面控制工具。
+`cua-win doctor` 执行只读本机诊断：平台、Python 版本、依赖可发现性、打包模型文件、状态目录、interactive desktop、窗口枚举、全屏截图可用性和现有 daemon 可达性。它不会启动 daemon 或执行输入动作；可用 `--no-desktop` 跳过桌面探测。
 
 如果只需要 `/status + /mcp`，可用 `cua-win serve --no-cli-rpc` 关闭 CLI JSON RPC 路由。
 
@@ -594,9 +594,10 @@ merge is shallow and each action's arguments take precedence:
 ```
 
 `cua-win doctor` performs read-only local diagnostics for platform, Python
-version, dependency availability, bundled model files, state directory, and
-existing daemon reachability. It does not start the daemon or call desktop
-control tools.
+version, dependency availability, bundled model files, state directory,
+interactive desktop, window enumeration, full-screen screenshot availability,
+and existing daemon reachability. It does not start the daemon or send input;
+pass `--no-desktop` to skip desktop probes.
 
 Use `cua-win serve --no-cli-rpc` when you only want `/status + /mcp`.
 

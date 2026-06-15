@@ -14,6 +14,9 @@ from computer_server.tool_cli import (
     _batch_dry_run,
     _call_result_to_json,
     _collect_doctor_checks,
+    _check_interactive_desktop,
+    _check_screenshot_capture,
+    _check_window_enumeration,
     _daemon_start_args,
     _doctor_summary,
     _execute_batch,
@@ -488,6 +491,7 @@ def test_doctor_parser_accepts_options() -> None:
             "--timeout",
             "0.5",
             "--no-dependencies",
+            "--no-desktop",
             "--no-daemon",
         ]
     )
@@ -496,6 +500,7 @@ def test_doctor_parser_accepts_options() -> None:
     assert args.json is True
     assert args.timeout == 0.5
     assert args.no_dependencies is True
+    assert args.no_desktop is True
     assert args.no_daemon is True
 
 
@@ -510,7 +515,7 @@ def test_doctor_summary_counts_statuses() -> None:
 
 
 def test_collect_doctor_checks_can_skip_slow_sections() -> None:
-    payload = _collect_doctor_checks(dependencies=False, daemon=False)
+    payload = _collect_doctor_checks(dependencies=False, desktop=False, daemon=False)
 
     names = {check["name"] for check in payload["checks"]}
     assert {
@@ -522,7 +527,47 @@ def test_collect_doctor_checks_can_skip_slow_sections() -> None:
         "model:rapidocr_ppocrv4",
     }.issubset(names)
     assert "daemon" not in names
+    assert not any(name.startswith("desktop:") for name in names)
     assert not any(name.startswith("dependency:") for name in names)
+
+
+def test_collect_doctor_checks_includes_desktop_section(monkeypatch) -> None:
+    import computer_server.tool_cli as tool_cli
+
+    monkeypatch.setattr(
+        tool_cli,
+        "_check_interactive_desktop",
+        lambda: DoctorCheck("desktop:interactive", "ok", "interactive"),
+    )
+    monkeypatch.setattr(
+        tool_cli,
+        "_check_window_enumeration",
+        lambda: DoctorCheck("desktop:windows", "ok", "windows"),
+    )
+    monkeypatch.setattr(
+        tool_cli,
+        "_check_screenshot_capture",
+        lambda: DoctorCheck("desktop:screenshot", "ok", "screenshot"),
+    )
+
+    payload = _collect_doctor_checks(dependencies=False, daemon=False)
+
+    names = {check["name"] for check in payload["checks"]}
+    assert {
+        "desktop:interactive",
+        "desktop:windows",
+        "desktop:screenshot",
+    }.issubset(names)
+
+
+def test_desktop_doctor_checks_fail_on_non_windows(monkeypatch) -> None:
+    import computer_server.tool_cli as tool_cli
+
+    monkeypatch.setattr(tool_cli.sys, "platform", "linux")
+
+    assert _check_interactive_desktop().status == "fail"
+    assert _check_window_enumeration().status == "fail"
+    assert _check_screenshot_capture().status == "fail"
 
 
 def test_florence_doctor_rejects_git_lfs_pointer(monkeypatch, tmp_path) -> None:
