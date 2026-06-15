@@ -227,7 +227,11 @@ class IconCaptionService:
             except Exception as exc:
                 self._state = "failed"
                 self._failure = str(exc)
-                logger.warning("Florence-2 icon captioner disabled: %s", exc)
+                logger.warning(
+                    "Florence-2 icon captioner disabled: %s",
+                    exc,
+                    exc_info=True,
+                )
                 return False
 
     @staticmethod

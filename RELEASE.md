@@ -1,15 +1,15 @@
 # Release Guide
 
-`cua-pywin` ships its OmniParser V2 YOLO, Florence-2, and RapidOCR models
-inside the wheel. The resulting artifact is approximately 1 GB and is
-distributed through GitHub Releases rather than PyPI.
+`cua-pywin` ships its OmniParser V2 YOLO, Florence-2, and RapidOCR models in
+the Windows installer and release wheel. The resulting artifacts are large and
+are distributed through GitHub Releases rather than PyPI.
 
 ## Release Boundary
 
 - A manual `Build and release` workflow run builds and validates a candidate.
   It does not create a GitHub Release.
-- Pushing a tag such as `v0.1.0` runs the same validation and creates the
-  GitHub Release.
+- Pushing a tag such as `v0.1.0` runs the same validation, builds the Windows
+  installer, and creates the GitHub Release.
 - The repository is currently private. Decide whether it should become public
   before announcing a user-facing release.
 - Do not publish from a checkout containing unresolved Git LFS pointers.
@@ -52,8 +52,8 @@ distributed through GitHub Releases rather than PyPI.
    ```
 
 3. Wait for the `Build and release` workflow to finish.
-4. Download the wheel and `SHA256SUMS.txt` from the GitHub Release and verify
-   the checksum on another Windows machine.
+4. Download the installer, wheel, and checksum files from the GitHub Release
+   and verify the checksum on another Windows machine.
 5. Review generated release notes before announcing the release.
 
 ## Updating Bundled Models
@@ -63,12 +63,11 @@ update each `model_manifest.json` source revision and SHA-256 entries, run the
 full release build, and verify that the wheel works without network model
 downloads. Users should never need to fetch model files separately.
 
-## Current Packaging Limit
+## Wheel Packaging Limit
 
 The wheel includes models but not Python itself or third-party dependency
 wheels. Installing it can still download Python dependencies from the package
-index. For normal Windows users, prefer the Nuitka + Inno Setup installer
-described below.
+index. For normal Windows users, use the Nuitka + Inno Setup installer.
 
 ## Nuitka Standalone Build
 

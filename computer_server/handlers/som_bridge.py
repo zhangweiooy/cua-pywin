@@ -95,7 +95,7 @@ def is_available() -> bool:
 
                     _som_available = True
                 except Exception as exc:
-                    logger.info("SOM not available: %s", exc)
+                    logger.warning("SOM not available: %s", exc, exc_info=True)
                     _som_available = False
     return _som_available
 

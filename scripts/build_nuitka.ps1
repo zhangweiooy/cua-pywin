@@ -144,6 +144,12 @@ function Copy-RuntimeSitePackages {
         "zstandard-*.dist-info",
         "pytest",
         "pytest-*.dist-info",
+        "playwright",
+        "playwright-*.dist-info",
+        "polars",
+        "polars-*.dist-info",
+        "_polars_runtime_*",
+        "polars_runtime_*.dist-info",
         "ruff",
         "ruff-*.dist-info",
         "black",
@@ -179,6 +185,25 @@ function Copy-StdlibPackage {
     }
 }
 
+function Copy-StdlibFile {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$Name,
+
+        [Parameter(Mandatory = $true)]
+        [string]$Destination
+    )
+
+    $stdlib = (& uv run python -c "import sysconfig; print(sysconfig.get_paths()['stdlib'])")
+    if ($LASTEXITCODE -ne 0) {
+        throw "failed to locate stdlib"
+    }
+    $source = Join-Path ([string]$stdlib) $Name
+    if (Test-Path -LiteralPath $source) {
+        Copy-Item -LiteralPath $source -Destination (Join-Path $Destination $Name) -Force
+    }
+}
+
 function Write-RuntimeBootstrap {
     param(
         [Parameter(Mandatory = $true)]
@@ -193,6 +218,7 @@ import sys
 from pathlib import Path
 
 _BASE = Path(__file__).resolve().parent
+_DLL_DIRECTORY_HANDLES = []
 for _relative in ("win32", "win32/lib", "Pythonwin"):
     _path = _BASE / _relative
     if _path.exists():
@@ -200,15 +226,56 @@ for _relative in ("win32", "win32/lib", "Pythonwin"):
         if _text not in sys.path:
             sys.path.append(_text)
 
-_pywin32_system32 = _BASE / "pywin32_system32"
-if _pywin32_system32.exists():
-    os.environ["PATH"] = str(_pywin32_system32) + os.pathsep + os.environ.get("PATH", "")
-    if hasattr(os, "add_dll_directory"):
-        try:
-            os.add_dll_directory(str(_pywin32_system32))
-        except OSError:
-            pass
+for _relative in (
+    "pywin32_system32",
+    "cv2",
+    "numpy.libs",
+    "scipy.libs",
+    "torch/lib",
+    "onnxruntime/capi",
+):
+    _path = _BASE / _relative
+    if _path.exists():
+        os.environ["PATH"] = str(_path) + os.pathsep + os.environ.get("PATH", "")
+        if hasattr(os, "add_dll_directory"):
+            try:
+                _DLL_DIRECTORY_HANDLES.append(os.add_dll_directory(str(_path)))
+            except OSError:
+                pass
 '@ | Set-Content -LiteralPath (Join-Path $Destination "sitecustomize.py") -Encoding utf8
+}
+
+function Remove-RuntimeBloat {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$Destination
+    )
+
+    Get-ChildItem -LiteralPath $Destination -Recurse -Directory -Filter "__pycache__" -ErrorAction SilentlyContinue |
+        ForEach-Object {
+            Remove-Item -LiteralPath $_.FullName -Recurse -Force -ErrorAction SilentlyContinue
+        }
+
+    $removeFilePatterns = @(
+        "*.a",
+        "*.c",
+        "*.chm",
+        "*.cpp",
+        "*.cuh",
+        "*.h",
+        "*.hpp",
+        "*.lib",
+        "*.pdb",
+        "*.pxd",
+        "*.pyc",
+        "*.pyo",
+        "*.pyi",
+        "*.pyx"
+    )
+    foreach ($pattern in $removeFilePatterns) {
+        Get-ChildItem -LiteralPath $Destination -Recurse -File -Filter $pattern -ErrorAction SilentlyContinue |
+            Remove-Item -Force -ErrorAction SilentlyContinue
+    }
 }
 
 function Get-ProjectVersion {
@@ -278,7 +345,6 @@ try {
         "PIL",
         "aiohttp",
         "anyio",
-        "cv2",
         "fastapi",
         "fastmcp",
         "mcp",
@@ -334,11 +400,18 @@ try {
         "--output-filename=cua-win.exe",
         "--include-package=computer_server",
         "--include-package=som",
+        "--include-package=ctypes",
         "--include-package=email",
         "--include-package=html",
         "--include-package=http",
         "--include-package=logging",
+        "--include-package=unittest",
         "--include-package=xml",
+        "--include-module=cProfile",
+        "--include-module=pydoc",
+        "--include-module=plistlib",
+        "--include-module=pstats",
+        "--include-module=profile",
         "--include-module=zoneinfo",
         "--include-module=_zoneinfo",
         "--nofollow-import-to=*.tests",
@@ -408,12 +481,19 @@ try {
             Copy-RuntimeSitePackages -Destination $DistDir
         }
         Invoke-TimedStep "copy stdlib runtime data" {
+            Copy-StdlibPackage -Name "ctypes" -Destination $DistDir
             Copy-StdlibPackage -Name "email" -Destination $DistDir
             Copy-StdlibPackage -Name "html" -Destination $DistDir
             Copy-StdlibPackage -Name "http" -Destination $DistDir
             Copy-StdlibPackage -Name "logging" -Destination $DistDir
+            Copy-StdlibPackage -Name "unittest" -Destination $DistDir
             Copy-StdlibPackage -Name "xml" -Destination $DistDir
             Copy-StdlibPackage -Name "zoneinfo" -Destination $DistDir
+            Copy-StdlibFile -Name "cProfile.py" -Destination $DistDir
+            Copy-StdlibFile -Name "pydoc.py" -Destination $DistDir
+            Copy-StdlibFile -Name "plistlib.py" -Destination $DistDir
+            Copy-StdlibFile -Name "profile.py" -Destination $DistDir
+            Copy-StdlibFile -Name "pstats.py" -Destination $DistDir
             Write-RuntimeBootstrap -Destination $DistDir
         }
     }
@@ -426,6 +506,9 @@ try {
             -Destination (Join-Path $DistDir "som\weights")
         Copy-Item -LiteralPath (Join-Path $ProjectRoot "LICENSE") -Destination $DistDir -Force
         Copy-Item -LiteralPath (Join-Path $ProjectRoot "README.md") -Destination $DistDir -Force
+    }
+    Invoke-TimedStep "prune runtime bloat" {
+        Remove-RuntimeBloat -Destination $DistDir
     }
 
     Invoke-TimedStep "hash output" {

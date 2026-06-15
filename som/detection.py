@@ -1,7 +1,32 @@
+# ruff: noqa: E402
 import logging
+import os
+import sys
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
+_DLL_DIRECTORY_HANDLES = []
+
+
+def _add_packaged_dll_paths() -> None:
+    bases = [Path(__file__).resolve().parents[1], Path(sys.executable).resolve().parent]
+    for base in bases:
+        for relative in ("cv2", "numpy.libs", "scipy.libs", "torch/lib", "onnxruntime/capi"):
+            path = base / relative
+            if not path.exists():
+                continue
+            os.environ["PATH"] = str(path) + os.pathsep + os.environ.get("PATH", "")
+            if hasattr(os, "add_dll_directory"):
+                try:
+                    _DLL_DIRECTORY_HANDLES.append(os.add_dll_directory(str(path)))
+                except OSError:
+                    pass
+
+
+_add_packaged_dll_paths()
+
+# Heavy C-extension imports must happen after packaged DLL directories are
+# registered for the standalone Nuitka runtime.
 import torch
 import torchvision
 from PIL import Image
