@@ -116,15 +116,17 @@ if ($Version -notmatch '^\d+\.\d+\.\d+(?:[a-zA-Z0-9.-]+)?$') {
 Push-Location $ProjectRoot
 try {
     if ($BuildNuitka) {
-        $NuitkaArgs = @("-Version", $Version)
+        $NuitkaArgs = @{
+            Version = $Version
+        }
         if ($SkipSync) {
-            $NuitkaArgs += "-SkipSync"
+            $NuitkaArgs["SkipSync"] = $true
         }
         if ($SkipChecks) {
-            $NuitkaArgs += "-SkipChecks"
+            $NuitkaArgs["SkipChecks"] = $true
         }
         if ($SkipTests) {
-            $NuitkaArgs += "-SkipTests"
+            $NuitkaArgs["SkipTests"] = $true
         }
         & (Join-Path $ScriptRoot "build_nuitka.ps1") @NuitkaArgs
     }
