@@ -67,8 +67,8 @@ downloads. Users should never need to fetch model files separately.
 
 The wheel includes models but not Python itself or third-party dependency
 wheels. Installing it can still download Python dependencies from the package
-index. A fully offline, one-click distribution would require a separate
-installer or wheelhouse and is not part of the current release format.
+index. For normal Windows users, prefer the Nuitka + Inno Setup installer
+described below.
 
 ## Nuitka Standalone Build
 
@@ -92,3 +92,33 @@ DLLs, Python extension modules, bundled models, and runtime data files. This is
 not cryptographically uncrackable; it removes plain source files from the main
 application path and raises the reverse-engineering cost. The model files and
 third-party libraries remain readable by the local process.
+
+## Windows Installer Build
+
+Install Inno Setup 6 so `ISCC.exe` is available on PATH or in the default
+`Program Files` location. Then build the installer from the standalone output:
+
+```powershell
+./scripts/build_nuitka.ps1 -Version 0.1.0
+./scripts/build_installer.ps1 -Version 0.1.0
+```
+
+For a one-command local build:
+
+```powershell
+./scripts/build_installer.ps1 -Version 0.1.0 -BuildNuitka -SkipSync -SkipChecks
+```
+
+The output is:
+
+```text
+dist-installer/cua-win-0.1.0-win64-setup.exe
+dist-installer/SHA256SUMS.txt
+```
+
+The installer is per-user by default and installs to
+`%LocalAppData%\Programs\cua-win`, so it does not require administrator
+privileges. It creates Start Menu shortcuts and offers an optional current-user
+PATH entry. The full `cua-win.dist` directory is installed; do not build a
+Nuitka onefile executable because the bundled model payload is too large and
+would add slow extraction on startup.

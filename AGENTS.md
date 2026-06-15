@@ -139,6 +139,9 @@ uv run --no-sync python "C:\Users\vinfl\.codex\skills\.system\skill-creator\scri
 ./scripts/build_nuitka.ps1
 ./scripts/build_nuitka.ps1 -Version 0.1.0
 
+# Build a Windows setup.exe from the standalone output
+./scripts/build_installer.ps1 -Version 0.1.0
+
 # Fast local Nuitka iteration after dependencies are already synced
 ./scripts/build_nuitka.ps1 -SkipSync -SkipChecks
 ```
@@ -591,6 +594,10 @@ uv run cua-win stop
 - `scripts/build_release.ps1` performs the locked install, source/model
   validation, Ruff, tests, compile checks, wheel build, wheel-internal model
   validation, and SHA-256 generation.
+- `scripts/build_installer.ps1` builds the normal Windows setup.exe from
+  `dist-nuitka/cua-win.dist` using Inno Setup 6. It installs per-user to
+  `%LocalAppData%\Programs\cua-win`, creates Start Menu entries, and optionally
+  adds `cua-win.exe` to the current user's PATH.
 - `uv.lock` is committed release input. Regenerate and commit it whenever
   dependency metadata changes; clean CI checkouts use `uv sync --locked`.
 - Manual `Build and release` workflow runs create a seven-day candidate

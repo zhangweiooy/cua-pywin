@@ -84,15 +84,26 @@ cua-pywin/
 ### 安装
 
 正式发布包从 [GitHub Releases](https://github.com/zhangweiooy/cua-pywin/releases)
-下载。wheel 已内置 OmniParser V2 YOLO、
-Florence-2 和 RapidOCR 模型，用户不需要单独下载模型：
+下载。普通 Windows 用户优先使用安装器：
+
+```powershell
+.\cua-win-0.1.0-win64-setup.exe
+cua-win doctor
+```
+
+安装器会把完整 standalone 运行目录安装到
+`%LocalAppData%\Programs\cua-win`，不需要管理员权限；安装时可选把
+`cua-win.exe` 加入当前用户 PATH。模型随安装器一起交付，用户不需要单独下载。
+
+wheel 也内置 OmniParser V2 YOLO、Florence-2 和 RapidOCR 模型，适合 Python
+环境或开发验证：
 
 ```powershell
 pip install .\cua_pywin-0.1.0-py3-none-any.whl
 cua-win doctor
 ```
 
-wheel 约 1 GB，因此不通过常规 PyPI 分发。安装过程仍可能从包索引下载
+wheel 约 1 GB，因此不通过常规 PyPI 分发。wheel 安装过程仍可能从包索引下载
 Python 依赖；完整的开发者发布流程见 [`RELEASE.md`](RELEASE.md)。
 
 源码开发安装：
@@ -438,10 +449,24 @@ cua-pywin/
 
 ### Installation
 
-Download the release wheel from
-[GitHub Releases](https://github.com/zhangweiooy/cua-pywin/releases). It
-contains the OmniParser V2 YOLO, Florence-2, and RapidOCR models, so users do
-not download model files separately:
+Download releases from
+[GitHub Releases](https://github.com/zhangweiooy/cua-pywin/releases). Normal
+Windows users should use the installer:
+
+```powershell
+.\cua-win-0.1.0-win64-setup.exe
+cua-win doctor
+```
+
+The installer places the full standalone runtime under
+`%LocalAppData%\Programs\cua-win` and does not require administrator
+privileges. It can optionally add `cua-win.exe` to the current user's PATH.
+The bundled models are installed with the app; users do not download model
+files separately.
+
+The release wheel also contains the OmniParser V2 YOLO, Florence-2, and
+RapidOCR models, and is intended for Python environments or developer
+validation:
 
 ```powershell
 pip install .\cua_pywin-0.1.0-py3-none-any.whl
@@ -449,7 +474,7 @@ cua-win doctor
 ```
 
 The wheel is approximately 1 GB and is not distributed through normal PyPI.
-Installation can still download Python dependencies from the package index.
+Wheel installation can still download Python dependencies from the package index.
 See [`RELEASE.md`](RELEASE.md) for the developer release process.
 
 For source development:

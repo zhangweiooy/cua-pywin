@@ -33,9 +33,22 @@ function Invoke-Checked {
         [string[]]$Arguments = @()
     )
 
-    & $Command @Arguments
-    if ($LASTEXITCODE -ne 0) {
-        throw "$Command failed with exit code $LASTEXITCODE"
+    $nativeErrorPreference = Get-Variable -Name PSNativeCommandUseErrorActionPreference -ErrorAction SilentlyContinue
+    $previousNativeErrorPreference = $null
+    if ($null -ne $nativeErrorPreference) {
+        $previousNativeErrorPreference = $nativeErrorPreference.Value
+        $PSNativeCommandUseErrorActionPreference = $false
+    }
+    try {
+        & $Command @Arguments
+        if ($LASTEXITCODE -ne 0) {
+            throw "$Command failed with exit code $LASTEXITCODE"
+        }
+    }
+    finally {
+        if ($null -ne $nativeErrorPreference) {
+            $PSNativeCommandUseErrorActionPreference = $previousNativeErrorPreference
+        }
     }
 }
 
