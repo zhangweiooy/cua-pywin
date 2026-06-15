@@ -261,8 +261,10 @@ Rules:
 ## Post-Action Observation
 
 Use `capture_after=true` on supported action tools when the next step depends
-on visible UI changes. The result includes `capture_after`; when the tool can
-capture both before and after the action, it also includes `post_action_delta`.
+on visible UI changes. The result includes `capture_after`. Add
+`include_post_action_delta=true` only when a lightweight before/after comparison
+is worth the extra pre-action observation; then the result also includes
+`post_action_delta`.
 
 `post_action_delta` is a lightweight hint, not a full semantic diff. It reports
 node-count deltas, added/removed node samples, changed text samples,

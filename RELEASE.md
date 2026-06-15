@@ -76,7 +76,10 @@ For local executable testing, build a standalone directory:
 
 ```powershell
 ./scripts/build_nuitka.ps1
+./scripts/build_nuitka.ps1 -Version 0.1.0
 ```
+
+When `-Version` is omitted, the script reads the version from `pyproject.toml`.
 
 For fast local iteration after the virtual environment is already synced:
 

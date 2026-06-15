@@ -20,6 +20,7 @@ def test_extract_tool_names_from_jsonl_handles_nested_events():
     transcript = """
 {"type":"tool_call","name":"computer_get_window_state","arguments":{}}
 {"event":{"tool":"computer_click","arguments":{"x":1,"y":2}}}
+{"event":{"type":"mcp_tool_call","tool_name":"computer_scroll","arguments":{}}}
 not-json
 {"name":"not_a_computer_tool"}
 """
@@ -27,7 +28,17 @@ not-json
     assert extract_tool_names_from_jsonl(transcript) == [
         "computer_get_window_state",
         "computer_click",
+        "computer_scroll",
     ]
+
+
+def test_extract_tool_names_ignores_tool_list_schemas():
+    transcript = """
+{"type":"tools/list","tools":[{"name":"computer_get_screen_size","description":"schema only"}]}
+{"payload":{"tools":[{"name":"computer_click","input_schema":{"type":"object"}}]}}
+"""
+
+    assert extract_tool_names_from_jsonl(transcript) == []
 
 
 def test_fixture_required_tools():

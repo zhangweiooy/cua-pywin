@@ -999,8 +999,14 @@ def create_mcp_server() -> FastMCP:
         pid: Optional[int],
         window_id: Optional[int],
         capture_after: bool,
+        include_post_action_delta: bool,
     ) -> Optional[Dict[str, Any]]:
-        if not capture_after or pid is None or window_id is None:
+        if (
+            not include_post_action_delta
+            or not capture_after
+            or pid is None
+            or window_id is None
+        ):
             return None
         return await _capture_and_detect(pid, window_id)
 
@@ -1073,6 +1079,7 @@ def create_mcp_server() -> FastMCP:
         capture_after: bool,
         verify_query: Optional[str],
         require_verification: bool,
+        include_post_action_delta: bool,
         pre_action_capture: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Any]:
         """Attach capture_after and optional post-action verification."""
@@ -1094,7 +1101,7 @@ def create_mcp_server() -> FastMCP:
         if capture_after:
             post_capture = await _capture_and_detect(pid, window_id)
             result["capture_after"] = post_capture
-            if pre_action_capture is not None:
+            if include_post_action_delta and pre_action_capture is not None:
                 from computer_server.services.action_delta_service import (
                     build_post_action_delta,
                 )
@@ -1119,6 +1126,17 @@ def create_mcp_server() -> FastMCP:
                 result["error_code"] = "post_action_verification_failed"
                 result["error"] = f"Post-action verification failed for query: {verify_query}"
         return result
+
+    def _validate_post_action_delta_request(
+        capture_after: bool,
+        include_post_action_delta: bool,
+    ) -> None:
+        if not isinstance(include_post_action_delta, bool):
+            raise ValueError("include_post_action_delta must be a boolean")
+        if include_post_action_delta and not capture_after:
+            raise ValueError(
+                "include_post_action_delta=True requires capture_after=True"
+            )
 
     # ============================================================
     # SCREEN & MOUSE ACTIONS
@@ -1221,6 +1239,7 @@ def create_mcp_server() -> FastMCP:
         el: Any,
         recorded_element_ref: Optional[Dict[str, Any]],
         capture_after: bool,
+        include_post_action_delta: bool,
         verify_query: Optional[str],
         require_verification: bool,
     ) -> Optional[Dict[str, Any]]:
@@ -1249,6 +1268,7 @@ def create_mcp_server() -> FastMCP:
                 pid,
                 window_id,
                 capture_after,
+                include_post_action_delta,
             )
 
             invoked, invoke_error = await _run_uia_action_with_timeout(
@@ -1312,6 +1332,7 @@ def create_mcp_server() -> FastMCP:
                 capture_after=capture_after,
                 verify_query=verify_query,
                 require_verification=require_verification,
+                include_post_action_delta=include_post_action_delta,
                 pre_action_capture=pre_action_capture,
             )
             wr = _build_window_ref(pid, window_id, screen_pt[0], screen_pt[1])
@@ -1389,6 +1410,7 @@ def create_mcp_server() -> FastMCP:
         element_index: Optional[int],
         from_zoom: bool,
         capture_after: bool,
+        include_post_action_delta: bool,
         verify_query: Optional[str],
         require_verification: bool,
     ) -> Tuple[Optional[Dict[str, Any]], Optional[int], Optional[int], Optional[Dict[str, Any]]]:
@@ -1444,6 +1466,7 @@ def create_mcp_server() -> FastMCP:
             el,
             recorded_element_ref,
             capture_after,
+            include_post_action_delta,
             verify_query,
             require_verification,
         )
@@ -1556,6 +1579,7 @@ def create_mcp_server() -> FastMCP:
         count: int,
         modifier: Optional[List[str]],
         capture_after: bool,
+        include_post_action_delta: bool,
         verify_query: Optional[str],
         require_verification: bool,
         coordinate_source: str,
@@ -1592,6 +1616,7 @@ def create_mcp_server() -> FastMCP:
                 pid,
                 window_id,
                 capture_after,
+                include_post_action_delta,
             )
             _mouse_event_click(actual_x, actual_y, button, count)
             result: Dict[str, Any] = {
@@ -1621,6 +1646,7 @@ def create_mcp_server() -> FastMCP:
                 capture_after=capture_after,
                 verify_query=verify_query,
                 require_verification=require_verification,
+                include_post_action_delta=include_post_action_delta,
                 pre_action_capture=pre_action_capture,
             )
             wr = _build_window_ref(pid, window_id, actual_x, actual_y)
@@ -1698,6 +1724,7 @@ def create_mcp_server() -> FastMCP:
         debug_image_out: Optional[str] = None,
         force_frontmost: bool = False,
         capture_after: bool = False,
+        include_post_action_delta: bool = False,
         verify_query: Optional[str] = None,
         require_verification: bool = False,
     ) -> Any:
@@ -1735,6 +1762,8 @@ def create_mcp_server() -> FastMCP:
             debug_image_out: Optional path to save a debug image with click crosshair.
             force_frontmost: When True, calls SetForegroundWindow before click.
             capture_after: When True, take a fresh screenshot + SOM after the action.
+            include_post_action_delta: When True with capture_after, also capture before the action
+                and return a lightweight before/after delta.
             verify_query: Optional query to search in a fresh window snapshot after the action.
             require_verification: When True, return success=False if verify_query is not found.
         """
@@ -1755,6 +1784,10 @@ def create_mcp_server() -> FastMCP:
             y = validate_optional_coordinate("y", y)
             modifier = validate_modifiers(modifier)
             verify_query = validate_optional_query("verify_query", verify_query)
+            _validate_post_action_delta_request(
+                capture_after,
+                include_post_action_delta,
+            )
             if not isinstance(require_verification, bool):
                 raise ValueError("require_verification must be a boolean")
             if require_verification and verify_query is None:
@@ -1821,6 +1854,7 @@ def create_mcp_server() -> FastMCP:
             element_index,
             from_zoom,
             capture_after,
+            include_post_action_delta,
             verify_query,
             require_verification,
         )
@@ -1872,6 +1906,7 @@ def create_mcp_server() -> FastMCP:
                 count,
                 modifier,
                 capture_after,
+                include_post_action_delta,
                 verify_query,
                 require_verification,
                 "element" if element_index is not None else coordinate_space,
@@ -1905,6 +1940,7 @@ def create_mcp_server() -> FastMCP:
             pid,
             window_id,
             capture_after,
+            include_post_action_delta,
         )
         result = await _perform_pixel_click(
             automation_handler,
@@ -1948,6 +1984,7 @@ def create_mcp_server() -> FastMCP:
             capture_after=capture_after,
             verify_query=verify_query,
             require_verification=require_verification,
+            include_post_action_delta=include_post_action_delta,
             pre_action_capture=pre_action_capture,
         )
 
@@ -1980,6 +2017,7 @@ def create_mcp_server() -> FastMCP:
         window: Optional[Dict[str, Any]] = None,
         snapshot_id: Optional[str] = None,
         capture_after: bool = False,
+        include_post_action_delta: bool = False,
         verify_query: Optional[str] = None,
         require_verification: bool = False,
     ) -> Any:
@@ -1999,6 +2037,8 @@ def create_mcp_server() -> FastMCP:
             window: Canonical window object from list/get_window_state output.
             snapshot_id: Snapshot id used to reject stale node observations.
             capture_after: Capture a fresh window state after the action.
+            include_post_action_delta: When True with capture_after, also capture before the action
+                and return a lightweight before/after delta.
             verify_query: Query to verify in the post-action window state.
             require_verification: Fail when verify_query is not observed.
         """
@@ -2019,6 +2059,10 @@ def create_mcp_server() -> FastMCP:
             )
             action = validate_secondary_action(action)
             verify_query = validate_optional_query("verify_query", verify_query)
+            _validate_post_action_delta_request(
+                capture_after,
+                include_post_action_delta,
+            )
             if not isinstance(require_verification, bool):
                 raise ValueError("require_verification must be a boolean")
             if require_verification and verify_query is None:
@@ -2087,6 +2131,7 @@ def create_mcp_server() -> FastMCP:
             pid,
             window_id,
             capture_after,
+            include_post_action_delta,
         )
         result = await _perform_pixel_click(
             _get_handlers().automation,
@@ -2115,6 +2160,7 @@ def create_mcp_server() -> FastMCP:
             capture_after=capture_after,
             verify_query=verify_query,
             require_verification=require_verification,
+            include_post_action_delta=include_post_action_delta,
             pre_action_capture=pre_action_capture,
         )
 
@@ -2503,6 +2549,7 @@ def create_mcp_server() -> FastMCP:
         zoom_id: Optional[str] = None,
         coordinate_space: Optional[str] = None,
         capture_after: bool = False,
+        include_post_action_delta: bool = False,
     ) -> Any:
         """
         Scroll at the specified position or on a cached element.
@@ -2527,6 +2574,8 @@ def create_mcp_server() -> FastMCP:
             zoom_id: Zoom id returned by computer_zoom.
             coordinate_space: Explicit coordinate space for x/y or element_index.
             capture_after: When True, take a fresh screenshot + nodes after the action.
+            include_post_action_delta: When True with capture_after, also capture before the action
+                and return a lightweight before/after delta.
         """
         from computer_server.services.validation_service import (
             error_result,
@@ -2546,6 +2595,10 @@ def create_mcp_server() -> FastMCP:
             direction = validate_scroll_direction(direction)
             by = validate_scroll_by(by)
             amount = validate_scroll_amount(amount)
+            _validate_post_action_delta_request(
+                capture_after,
+                include_post_action_delta,
+            )
         except ValueError as e:
             return error_result(e)
 
@@ -2688,6 +2741,7 @@ def create_mcp_server() -> FastMCP:
             pid,
             window_id,
             capture_after,
+            include_post_action_delta,
         )
         if smooth and scroll_y != 0:
             # Emit many small individual wheel ticks for smooth human-like scrolling
@@ -2734,6 +2788,7 @@ def create_mcp_server() -> FastMCP:
             capture_after=capture_after,
             verify_query=None,
             require_verification=False,
+            include_post_action_delta=include_post_action_delta,
             pre_action_capture=pre_action_capture,
         )
         if scroll_ax is not None and pid is not None and window_id is not None:
@@ -2776,6 +2831,7 @@ def create_mcp_server() -> FastMCP:
     async def computer_type(
         text: str,
         capture_after: bool = False,
+        include_post_action_delta: bool = False,
         pid: Optional[int] = None,
         window_id: Optional[int] = None,
         window: Optional[Dict[str, Any]] = None,
@@ -2791,11 +2847,23 @@ def create_mcp_server() -> FastMCP:
         Args:
             text: The text to type
             capture_after: When True, take a fresh screenshot + nodes after the action.
+            include_post_action_delta: When True with capture_after, also capture before the action
+                and return a lightweight before/after delta.
             pid: Top-level process ID for the target/capture_after look-up.
             window_id: Top-level window ID to activate before typing.
             window: Canonical window object from list/get_window_state output.
             sensitive: When True, redact text in recording metadata.
         """
+        from computer_server.services.validation_service import error_result
+
+        try:
+            _validate_post_action_delta_request(
+                capture_after,
+                include_post_action_delta,
+            )
+        except ValueError as exc:
+            return error_result(exc)
+
         pid, window_id, ref_error = await _activate_input_window(
             window,
             pid,
@@ -2811,6 +2879,7 @@ def create_mcp_server() -> FastMCP:
             pid,
             window_id,
             capture_after,
+            include_post_action_delta,
         )
         result = await automation_handler.type_text(text)
         _attach_input_window(result, pid, window_id)
@@ -2835,6 +2904,7 @@ def create_mcp_server() -> FastMCP:
             capture_after=capture_after,
             verify_query=None,
             require_verification=False,
+            include_post_action_delta=include_post_action_delta,
             pre_action_capture=pre_action_capture,
         )
         await _recording_hook(_recorded_turn(

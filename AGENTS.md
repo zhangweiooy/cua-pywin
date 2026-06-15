@@ -137,6 +137,7 @@ uv run --no-sync python "C:\Users\vinfl\.codex\skills\.system\skill-creator\scri
 
 # Build a local Nuitka standalone executable directory
 ./scripts/build_nuitka.ps1
+./scripts/build_nuitka.ps1 -Version 0.1.0
 
 # Fast local Nuitka iteration after dependencies are already synced
 ./scripts/build_nuitka.ps1 -SkipSync -SkipChecks
@@ -336,9 +337,10 @@ is internal replay metadata.
   not observed. `pid` and `window_id` are required for verification.
 - `capture_after=True` is supported by click, scroll, type, and secondary-action
   tools. It returns a fresh snapshot with `snapshot_id`, `screenshot_id`, and
-  `capture`; when a pre-action observation is available, it also returns a
-  lightweight `post_action_delta` summarizing node count, added/removed nodes,
-  text changes, tree-quality changes, and before/after screenshot ids.
+  `capture`. Pass `include_post_action_delta=True` only when a lightweight
+  before/after comparison is worth an extra pre-action observation; then the
+  result also includes `post_action_delta` summarizing node count, added/removed
+  nodes, text changes, tree-quality changes, and before/after screenshot ids.
 - Window snapshots include `capture_metadata` with screenshot provenance,
   crop geometry, resize metadata, capture backend, fallback reason, and
   explicit occlusion-risk warnings. `capture_metadata.stage_timings` includes

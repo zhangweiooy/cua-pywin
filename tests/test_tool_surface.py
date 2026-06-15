@@ -1587,6 +1587,115 @@ async def test_screenshot_id_rejects_stale_capture(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_capture_after_does_not_build_delta_unless_requested(monkeypatch):
+    import computer_server.mcp_server as mcp_module
+    import computer_server.services.window_state_service as window_state_service
+
+    async def noop_animate(_x: int, _y: int) -> None:
+        return None
+
+    calls = 0
+
+    async def fake_get_window_state_snapshot(
+        _automation_handler,
+        pid,
+        window_id,
+        **_kwargs,
+    ):
+        nonlocal calls
+        calls += 1
+        return {
+            "success": True,
+            "node_count": 1,
+            "unfiltered_node_count": 1,
+            "returned_node_count": 1,
+            "filtered_node_count": 1,
+            "nodes": [
+                {
+                    "element_index": calls,
+                    "control_type": "Text",
+                    "name": f"state {calls}",
+                }
+            ],
+            "tree_markdown": "",
+            "screen_width": 10,
+            "screen_height": 10,
+            "capture_metadata": {"capture_backend": "wgc"},
+            "_capture_geometry": {
+                "compression_ratio": 1.0,
+                "window_origin_x": 0,
+                "window_origin_y": 0,
+                "crop_origin_screen_x": 0,
+                "crop_origin_screen_y": 0,
+            },
+        }
+
+    monkeypatch.setattr(mcp_module, "_scale_x", 1.0)
+    monkeypatch.setattr(mcp_module, "_scale_y", 1.0)
+    monkeypatch.setattr(mcp_module, "_animate_cursor_to", noop_animate)
+    monkeypatch.setattr(
+        window_state_service,
+        "get_window_state_snapshot",
+        fake_get_window_state_snapshot,
+    )
+    monkeypatch.setattr(
+        mcp_module,
+        "_handlers",
+        SimpleNamespace(automation=_FakeAutomation()),
+    )
+    mcp = create_mcp_server()
+
+    default_result = await mcp.call_tool(
+        "computer_click",
+        {
+            "x": 1,
+            "y": 2,
+            "pid": 123,
+            "window_id": 456,
+            "coordinate_space": "screen",
+            "capture_after": True,
+        },
+    )
+    assert default_result.structured_content["success"] is True
+    assert calls == 1
+    assert "capture_after" in default_result.structured_content
+    assert "post_action_delta" not in default_result.structured_content
+
+    delta_result = await mcp.call_tool(
+        "computer_click",
+        {
+            "x": 1,
+            "y": 2,
+            "pid": 123,
+            "window_id": 456,
+            "coordinate_space": "screen",
+            "capture_after": True,
+            "include_post_action_delta": True,
+        },
+    )
+    assert delta_result.structured_content["success"] is True
+    assert calls == 3
+    assert delta_result.structured_content["post_action_delta"]["success"] is True
+
+
+@pytest.mark.asyncio
+async def test_post_action_delta_requires_capture_after():
+    result = await create_mcp_server().call_tool(
+        "computer_click",
+        {
+            "x": 1,
+            "y": 2,
+            "include_post_action_delta": True,
+        },
+    )
+
+    assert result.structured_content == {
+        "success": False,
+        "error": "include_post_action_delta=True requires capture_after=True",
+    }
+
+
+@pytest.mark.asyncio
 async def test_zoom_uses_screenshot_id_capture_metadata(monkeypatch):
     import computer_server.mcp_server as mcp_module
     import computer_server.services.window_state_service as window_state_service

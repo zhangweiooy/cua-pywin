@@ -164,9 +164,10 @@ cua-win serve --host 0.0.0.0 --port 8000 \
 使用 `cua-win batch --dry-run` 可以只校验并汇总展开后的动作，不启动 daemon，
 也不会发送输入。
 
-支持 `capture_after` 的动作会返回后置窗口快照；当工具能取得动作前快照时，还会
-附带轻量 `post_action_delta`，汇总节点数量变化、新增/移除节点、文本变化、
-tree quality 变化以及前后 `screenshot_id`。
+支持 `capture_after` 的动作会返回后置窗口快照。需要轻量前后对比时，再额外传
+`include_post_action_delta=true`；这会增加一次动作前窗口观察，并返回
+`post_action_delta`，汇总节点数量变化、新增/移除节点、文本变化、tree quality
+变化以及前后 `screenshot_id`。
 
 `computer_launch_app` 默认只报告进程启动结果。需要立即执行窗口操作时可传
 `{"wait_for_window":true,"wait_timeout":10}`；工具会等待可定位的顶层窗口并返回
@@ -533,8 +534,9 @@ sequences do not wait on visual animation; the actual drag `duration` remains
 unchanged. Use `cua-win batch --dry-run` to validate and summarize the expanded
 actions without starting the daemon or sending input.
 
-Actions that support `capture_after` return a post-action window snapshot.
-When the tool can collect a pre-action snapshot, it also attaches a lightweight
+Actions that support `capture_after` return a post-action window snapshot. Pass
+`include_post_action_delta=true` only when a lightweight before/after comparison
+is needed; it adds one pre-action window observation and returns
 `post_action_delta` with node-count, added/removed node, text-change,
 tree-quality, and before/after `screenshot_id` summaries.
 

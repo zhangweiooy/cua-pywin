@@ -10,6 +10,12 @@ from typing import Any, Iterable
 
 FIXTURE_SCENARIO = "fixture-basic"
 LIST_TOOLS_SCENARIO = "list-tools"
+TOOL_CALL_TYPES = {
+    "tool_call",
+    "mcp_tool_call",
+    "function_call",
+    "function_call_arguments.done",
+}
 
 
 def build_prompt(scenario: str, *, window_title: str) -> str:
@@ -35,14 +41,37 @@ Do not use raw screen coordinates unless the structured state is insufficient.
 Report the tools you used and the final observed counter text."""
 
 
-def _walk_json(value: Any) -> Iterable[Any]:
+def _walk_event_json(value: Any) -> Iterable[Any]:
     yield value
     if isinstance(value, dict):
-        for child in value.values():
-            yield from _walk_json(child)
+        for key in ("event", "data", "payload", "item", "message"):
+            child = value.get(key)
+            if child is not None:
+                yield from _walk_event_json(child)
     elif isinstance(value, list):
         for child in value:
-            yield from _walk_json(child)
+            yield from _walk_event_json(child)
+
+
+def _tool_name_from_event(item: dict[str, Any]) -> str | None:
+    event_type = item.get("type")
+    event_type_text = event_type if isinstance(event_type, str) else ""
+    has_arguments = isinstance(item.get("arguments"), (dict, str)) or isinstance(
+        item.get("args"),
+        (dict, str),
+    )
+
+    if event_type_text not in TOOL_CALL_TYPES and not has_arguments:
+        return None
+    if event_type_text not in TOOL_CALL_TYPES and any(
+        key in item for key in ("description", "parameters", "input_schema", "schema")
+    ):
+        return None
+
+    name = item.get("tool") or item.get("tool_name") or item.get("name")
+    if isinstance(name, str) and name.startswith("computer_"):
+        return name
+    return None
 
 
 def extract_tool_names_from_jsonl(text: str) -> list[str]:
@@ -55,11 +84,11 @@ def extract_tool_names_from_jsonl(text: str) -> list[str]:
             payload = json.loads(stripped)
         except json.JSONDecodeError:
             continue
-        for item in _walk_json(payload):
+        for item in _walk_event_json(payload):
             if not isinstance(item, dict):
                 continue
-            name = item.get("tool") or item.get("tool_name") or item.get("name")
-            if isinstance(name, str) and name.startswith("computer_"):
+            name = _tool_name_from_event(item)
+            if name is not None:
                 names.append(name)
     return names
 

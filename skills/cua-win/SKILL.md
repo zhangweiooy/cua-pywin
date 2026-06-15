@@ -152,8 +152,8 @@ input timing such as drag duration.
 Verify after state-changing work. Use the cheapest adequate check:
 
 - `capture_after=true` on supported tools for immediate post-action state;
-  when available, use `post_action_delta` as a lightweight first-pass change
-  summary before inspecting full nodes.
+  add `include_post_action_delta=true` only when a lightweight before/after
+  comparison is worth the extra pre-action observation.
 - `verify_query` with `require_verification=true` for text-based confirmation.
 - A fresh `computer_get_window_state` when the UI may have changed.
 - `computer_page` for browser DOM inspection only when CDP is intentionally

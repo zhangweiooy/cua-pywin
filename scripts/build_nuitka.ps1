@@ -1,6 +1,8 @@
 param(
     [string]$OutDir = "dist-nuitka",
 
+    [string]$Version = "",
+
     [ValidateSet("hybrid", "full")]
     [string]$Profile = "hybrid",
 
@@ -196,7 +198,29 @@ if _pywin32_system32.exists():
 '@ | Set-Content -LiteralPath (Join-Path $Destination "sitecustomize.py") -Encoding utf8
 }
 
+function Get-ProjectVersion {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$ProjectRoot
+    )
+
+    $pyproject = Join-Path $ProjectRoot "pyproject.toml"
+    foreach ($line in Get-Content -LiteralPath $pyproject -Encoding utf8) {
+        if ($line -match '^\s*version\s*=\s*"([^"]+)"\s*$') {
+            return $Matches[1]
+        }
+    }
+    throw "project version not found in $pyproject"
+}
+
 $ProjectRoot = (Resolve-Path (Join-Path $PSScriptRoot "..")).Path
+$Version = $Version.Trim()
+if (-not $Version) {
+    $Version = Get-ProjectVersion -ProjectRoot $ProjectRoot
+}
+if ($Version -notmatch '^\d+\.\d+\.\d+(?:[a-zA-Z0-9.-]+)?$') {
+    throw "Version must be a semantic version without a leading v: $Version"
+}
 $ResolvedOutDir = [System.IO.Path]::GetFullPath((Join-Path $ProjectRoot $OutDir))
 $ProjectRootPrefix = $ProjectRoot.TrimEnd('\') + '\'
 if (
@@ -219,7 +243,7 @@ try {
     if (-not $SkipChecks) {
         Invoke-TimedStep "release validation" {
             Invoke-Checked -Command "uv" -Arguments (
-                $UvRun + @("python", "scripts/validate_release.py", "--version", "0.1.0")
+                $UvRun + @("python", "scripts/validate_release.py", "--version", $Version)
             )
         }
         Invoke-TimedStep "ruff" {
