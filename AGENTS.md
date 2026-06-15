@@ -643,10 +643,12 @@ uv run cua-win stop
 
 ### P1: High-Value Development
 
-- Verify the published installer on a second Windows machine. Check the
-  installer SHA-256, install normally, then run `cua-win doctor`,
-  `cua-win list-tools`, `cua-win start`, `cua-win computer_get_screen_size`,
-  one `computer_get_window_state` smoke, and `cua-win stop`.
+- Local release smoke has been completed on the development machine. Before
+  treating a future installer as broadly validated, repeat the smoke on a clean
+  non-development Windows machine: check the installer SHA-256, install
+  normally, then run `cua-win doctor`, `cua-win list-tools`, `cua-win start`,
+  `cua-win computer_get_screen_size`, one `computer_get_window_state` smoke,
+  and `cua-win stop`.
 - Keep the repository visibility decision separate from release mechanics. The
   repository must remain private unless the user explicitly chooses to make it
   public.
@@ -661,7 +663,8 @@ uv run cua-win stop
 - Build a reviewed Windows icon-caption corpus for WeChat, DingTalk, Chrome,
   and classic controls. Track Florence incorrect-label and unknown rates,
   especially phone, pin, mute, and application-specific icons.
-- Deduplicate EnumWindows search strategies for process/title matching.
+- Periodically run localized Windows app discovery and launch smoke tests on
+  real WeChat, DingTalk, and similar Chinese desktop apps.
 - Explore broader MSAA-backed actions only when the action contract is
   observable and verification-gated. Dropdown expand-edge click is acceptable
   because it is explicit and observable; broader MSAA default-action dispatch

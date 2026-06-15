@@ -194,10 +194,15 @@ cua-win describe computer_get_window_state
 Use UTF-8 stdin for Chinese text or nested JSON:
 
 ```powershell
+$OutputEncoding = [System.Text.UTF8Encoding]::new($false)
 @'
 {"query":"微信"}
 '@ | cua-win call computer_list_windows -
 ```
+
+PowerShell may replace Chinese characters before `cua-win` receives them when
+`$OutputEncoding` is left at a legacy code page. UTF-8 files with
+`cua-win call TOOL @args.json` are also safe.
 
 Implicit tool call:
 
