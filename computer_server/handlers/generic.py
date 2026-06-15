@@ -28,7 +28,8 @@ logger = logging.getLogger(__name__)
 
 
 # ---------------------------------------------------------------------------
-# Shared window filter — used by both list_windows and get_app_windows
+# Legacy generic window filter. MCP window discovery uses
+# services.window_identity_service for the shared Win32 matching contract.
 # ---------------------------------------------------------------------------
 
 IS_WINDOWS_PLATFORM = platform.system() == "Windows"

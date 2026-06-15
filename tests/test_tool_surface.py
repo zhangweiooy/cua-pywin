@@ -178,6 +178,53 @@ async def test_launch_app_window_wait_timeout_is_explicit(monkeypatch):
     assert "no targetable window appeared" in content["warning"]
 
 
+@pytest.mark.asyncio
+async def test_launch_app_falls_back_to_running_alias_window(monkeypatch):
+    import computer_server.mcp_server as mcp_module
+    import computer_server.services.window_identity_service as identity_module
+
+    class Window(_FakeWindow):
+        async def launch(self, app, args=None):
+            return {"success": False, "error": "Could not locate app"}
+
+    window = Window()
+
+    def find_app_window(**kwargs):
+        assert kwargs["app_hint"] == "微信"
+        assert kwargs["title_hint"] == "微信"
+        return {
+            "id": 456,
+            "window_id": 456,
+            "pid": 222,
+            "app": "Weixin.exe",
+            "process_name": "Weixin.exe",
+            "title": "微信",
+        }
+
+    monkeypatch.setattr(
+        mcp_module,
+        "_handlers",
+        SimpleNamespace(window=window),
+    )
+    monkeypatch.setattr(identity_module, "find_app_window", find_app_window)
+
+    result = await create_mcp_server().call_tool(
+        "computer_launch_app",
+        {"app": "微信", "wait_for_window": True, "wait_timeout": 1},
+    )
+
+    content = result.structured_content
+    assert content["success"] is True
+    assert content["already_running"] is True
+    assert content["window_ready"] is True
+    assert content["window_id"] == 456
+    assert content["pid"] == 222
+    assert content["window"]["process_name"] == "Weixin.exe"
+    assert content["activation"]["success"] is True
+    assert window.activations == [456]
+    assert content["launch_fallback"]["launch_error"] == "Could not locate app"
+
+
 EXPECTED_PUBLIC_TOOLS = {
     "computer_screenshot",
     "computer_get_screen_size",
@@ -452,7 +499,6 @@ async def test_list_windows_marks_minimized_window_off_screen(monkeypatch):
     import win32gui
     import win32process
 
-    import computer_server.handlers.generic as generic
     import computer_server.services.window_identity_service as identity
 
     monkeypatch.setattr(
@@ -477,7 +523,7 @@ async def test_list_windows_marks_minimized_window_off_screen(monkeypatch):
         "GetWindowThreadProcessId",
         lambda _hwnd: (1, 123),
     )
-    monkeypatch.setattr(generic, "_is_meaningful_window", lambda _hwnd: True)
+    monkeypatch.setattr(identity, "_is_meaningful_window", lambda _hwnd: True)
     monkeypatch.setattr(
         identity,
         "is_window_minimized",
@@ -499,12 +545,44 @@ async def test_list_windows_marks_minimized_window_off_screen(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_list_apps_uses_shared_window_records(monkeypatch):
+    import computer_server.services.window_identity_service as identity
+
+    monkeypatch.setattr(
+        identity,
+        "enumerate_window_records",
+        lambda: [
+            {
+                "id": 456,
+                "window_id": 456,
+                "pid": 123,
+                "title": "微信",
+                "app": "Weixin.exe",
+                "process_name": "Weixin.exe",
+                "x": 0,
+                "y": 0,
+                "width": 800,
+                "height": 600,
+                "is_on_screen": True,
+                "minimized": False,
+            }
+        ],
+    )
+
+    result = await create_mcp_server().call_tool("computer_list_apps", {})
+
+    apps = result.structured_content["apps"]
+    assert len(apps) == 1
+    assert apps[0]["name"] == "Weixin.exe"
+    assert apps[0]["windows"][0]["window"]["id"] == 456
+
+
+@pytest.mark.asyncio
 async def test_list_windows_query_matches_unicode_window_title(monkeypatch):
     import win32con
     import win32gui
     import win32process
 
-    import computer_server.handlers.generic as generic
     import computer_server.services.window_identity_service as identity
 
     monkeypatch.setattr(
@@ -525,7 +603,7 @@ async def test_list_windows_query_matches_unicode_window_title(monkeypatch):
         "GetWindowThreadProcessId",
         lambda _hwnd: (1, 123),
     )
-    monkeypatch.setattr(generic, "_is_meaningful_window", lambda _hwnd: True)
+    monkeypatch.setattr(identity, "_is_meaningful_window", lambda _hwnd: True)
     monkeypatch.setattr(
         identity,
         "is_window_minimized",

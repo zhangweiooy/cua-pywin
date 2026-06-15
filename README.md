@@ -162,7 +162,9 @@ cua-win serve --host 0.0.0.0 --port 8000 \
 包含中文或复杂嵌套参数时，推荐通过 UTF-8 stdin
 （`'<json>' | cua-win call <tool> -`）或 UTF-8 文件
 （`cua-win call <tool> '@arguments.json'`）传入，避免 PowerShell/native
-参数转义和控制台代码页改变内容。内联 JSON 仍保持兼容。
+参数转义和控制台代码页改变内容。PowerShell 管道中文前需确保
+`$OutputEncoding = [System.Text.UTF8Encoding]::new($false)`，否则文本可能在
+进入 `cua-win` 前就被替换。内联 JSON 仍保持兼容。
 
 `cua-win batch` 从标准输入、内联 JSON 或 UTF-8 JSON 文件读取动作数组，或
 `{"defaults":...,"actions":[...]}` 对象，并在同一 CLI 进程中通过常驻 daemon
@@ -799,7 +801,9 @@ known icon-shape misreads requires `CUA_OCR_DENOISE=strict`. Set
 - **Limited SOM YOLO/OCR parallelism gain**: the 2026-06-01 EasyOCR CPU benchmark on a 1280x830 WGC screenshot measured 3.31s serial vs 3.07s with `ThreadPoolExecutor` parallelism, about 8% faster; re-benchmark with RapidOCR before enabling parallelism
 - **Learning IME not supported in terminals**: PowerShell/CMD lack UIA ValuePattern. Falls back to pinyin + OCR
 - **Recording coordinates are absolute**: window position changes break replay. `window_ref` recalculates if window is alive; falls back to process-name/title search for stale IDs
-- **GBK encoding**: set `PYTHONIOENCODING=utf-8` in subprocess environments
+- **GBK encoding**: set `PYTHONIOENCODING=utf-8` in subprocess environments.
+  For PowerShell pipelines carrying Chinese JSON, also set
+  `$OutputEncoding = [System.Text.UTF8Encoding]::new($false)` before piping.
 
 ### Development
 

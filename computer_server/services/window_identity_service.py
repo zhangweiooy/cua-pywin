@@ -9,6 +9,12 @@ from typing import Any, Dict, Mapping, Optional, Tuple
 from computer_server.services.validation_service import ValidationError
 
 
+WINDOW_SEARCH_ALIASES: tuple[tuple[str, ...], ...] = (
+    ("微信", "weixin", "wechat"),
+    ("钉钉", "dingtalk", "dingding"),
+)
+
+
 @dataclass(frozen=True)
 class ResolvedWindow:
     """Normalized target window identity."""
@@ -81,6 +87,25 @@ def _get_window_class(window_id: Optional[int]) -> str:
         return ""
 
 
+def _is_meaningful_window(window_id: int) -> bool:
+    """Conservative top-level window filter shared by discovery paths."""
+    try:
+        import win32con
+        import win32gui
+
+        if not win32gui.IsWindow(int(window_id)):
+            return False
+        style = win32gui.GetWindowLong(int(window_id), win32con.GWL_STYLE)
+        if style & win32con.WS_CHILD:
+            return False
+        rect = win32gui.GetWindowRect(int(window_id))
+        if rect[2] - rect[0] <= 0 or rect[3] - rect[1] <= 0:
+            return False
+        return True
+    except Exception:
+        return True
+
+
 def _get_window_rect(window_id: Optional[int]) -> Optional[Tuple[int, int, int, int]]:
     if window_id is None:
         return None
@@ -148,6 +173,236 @@ def is_live_window(window_id: Any) -> bool:
         return False
 
 
+def _fold_search_text(value: Any) -> str:
+    return str(value or "").strip().casefold()
+
+
+def _alias_expanded_terms(value: Any) -> set[str]:
+    base = _fold_search_text(value)
+    if not base:
+        return set()
+    terms = {base}
+    path_name = Path(base).name
+    if path_name:
+        terms.add(path_name)
+        stem = Path(path_name).stem
+        if stem:
+            terms.add(stem)
+    for group in WINDOW_SEARCH_ALIASES:
+        if any(term and term in terms for term in group):
+            terms.update(group)
+    return {term for term in terms if term}
+
+
+def _record_search_terms(record: Mapping[str, Any]) -> set[str]:
+    terms: set[str] = set()
+    for key in (
+        "title",
+        "app",
+        "process_name",
+        "class_name",
+        "id",
+        "window_id",
+        "pid",
+    ):
+        terms.update(_alias_expanded_terms(record.get(key)))
+    return terms
+
+
+def _record_matches_terms(
+    record: Mapping[str, Any],
+    filter_value: Optional[str],
+    fields: tuple[str, ...],
+) -> bool:
+    terms = _alias_expanded_terms(filter_value)
+    if not terms:
+        return True
+    haystack_terms: set[str] = set()
+    for field in fields:
+        haystack_terms.update(_alias_expanded_terms(record.get(field)))
+    return any(needle in haystack for needle in terms for haystack in haystack_terms)
+
+
+def _record_matches_query(record: Mapping[str, Any], query: Optional[str]) -> bool:
+    terms = _alias_expanded_terms(query)
+    if not terms:
+        return True
+    haystack_terms = _record_search_terms(record)
+    return any(needle in haystack for needle in terms for haystack in haystack_terms)
+
+
+def enumerate_window_records(
+    *,
+    pid: Optional[int] = None,
+    on_screen_only: bool = False,
+    require_meaningful: bool = True,
+) -> list[Dict[str, Any]]:
+    """Enumerate Win32 top-level windows with normalized metadata."""
+    try:
+        import win32con
+        import win32gui
+        import win32process
+    except Exception:
+        return []
+
+    pid_filter = _coerce_optional_int("pid", pid)
+    process_cache: dict[int, str] = {}
+    records: list[Dict[str, Any]] = []
+
+    def _process_name_cached(process_id: int) -> str:
+        if process_id not in process_cache:
+            process_cache[process_id] = _get_process_name(process_id)
+        return process_cache[process_id]
+
+    def _visit(hwnd: int, _extra: Any) -> bool:
+        try:
+            style = win32gui.GetWindowLong(hwnd, win32con.GWL_STYLE)
+            if not (style & win32con.WS_VISIBLE):
+                return True
+            if require_meaningful and not _is_meaningful_window(hwnd):
+                return True
+            _, win_pid = win32process.GetWindowThreadProcessId(hwnd)
+            win_pid = int(win_pid)
+            if pid_filter is not None and win_pid != pid_filter:
+                return True
+            rect = win32gui.GetWindowRect(hwnd)
+            width = int(rect[2] - rect[0])
+            height = int(rect[3] - rect[1])
+            if width <= 0 or height <= 0:
+                return True
+            visible = bool(win32gui.IsWindowVisible(hwnd))
+            minimized = is_window_minimized(hwnd, rect)
+            is_on_screen = bool(visible and minimized is not True)
+            if on_screen_only and not is_on_screen:
+                return True
+            process_name = _process_name_cached(win_pid)
+            record: Dict[str, Any] = {
+                "id": int(hwnd),
+                "window_id": int(hwnd),
+                "pid": win_pid,
+                "title": win32gui.GetWindowText(hwnd) or "",
+                "x": int(rect[0]),
+                "y": int(rect[1]),
+                "width": width,
+                "height": height,
+                "is_on_screen": is_on_screen,
+                "minimized": minimized,
+            }
+            if process_name:
+                record["app"] = process_name
+                record["process_name"] = process_name
+            class_name = _get_window_class(hwnd)
+            if class_name:
+                record["class_name"] = class_name
+            records.append(record)
+        except Exception:
+            pass
+        return True
+
+    try:
+        win32gui.EnumWindows(_visit, None)
+    except Exception:
+        return []
+    return records
+
+
+def filter_window_records(
+    records: list[Dict[str, Any]],
+    *,
+    app: Optional[str] = None,
+    title: Optional[str] = None,
+    query: Optional[str] = None,
+) -> list[Dict[str, Any]]:
+    """Apply the shared app/title/query matching contract."""
+    result: list[Dict[str, Any]] = []
+    for record in records:
+        if not _record_matches_terms(record, app, ("app", "process_name", "title")):
+            continue
+        if not _record_matches_terms(record, title, ("title",)):
+            continue
+        if not _record_matches_query(record, query):
+            continue
+        result.append(record)
+    return result
+
+
+def _window_match_score(
+    record: Mapping[str, Any],
+    *,
+    pid: Optional[int] = None,
+    process_name: Optional[str] = None,
+    app_hint: Optional[str] = None,
+    title_hint: Optional[str] = None,
+) -> int:
+    score = 0
+    if pid is not None and record.get("pid") == pid:
+        score = max(score, 100)
+
+    process_terms = _alias_expanded_terms(process_name)
+    app_terms = _alias_expanded_terms(app_hint)
+    title_terms = _alias_expanded_terms(title_hint)
+    record_process_terms = _record_search_terms(
+        {
+            "app": record.get("app"),
+            "process_name": record.get("process_name"),
+        }
+    )
+    record_title_terms = _alias_expanded_terms(record.get("title"))
+    record_terms = _record_search_terms(record)
+
+    if process_terms and process_terms & record_process_terms:
+        score = max(score, 90)
+    elif process_terms and any(
+        needle in haystack
+        for needle in process_terms
+        for haystack in record_process_terms
+    ):
+        score = max(score, 85)
+    if app_terms and app_terms & record_process_terms:
+        score = max(score, 80)
+    elif app_terms and any(
+        needle in haystack
+        for needle in app_terms
+        for haystack in record_terms
+    ):
+        score = max(score, 70)
+    if title_terms and any(
+        needle in haystack
+        for needle in title_terms
+        for haystack in record_title_terms
+    ):
+        score = max(score, 65)
+    return score
+
+
+def find_best_window_record(
+    *,
+    pid: Optional[int] = None,
+    process_name: Optional[str] = None,
+    app_hint: Optional[str] = None,
+    title_hint: Optional[str] = None,
+) -> Optional[Dict[str, Any]]:
+    """Find the best live top-level window using the shared matching contract."""
+    expected_pid = _coerce_optional_int("pid", pid)
+    scored: list[tuple[int, int, int, int, Dict[str, Any]]] = []
+    for record in enumerate_window_records():
+        score = _window_match_score(
+            record,
+            pid=expected_pid,
+            process_name=process_name,
+            app_hint=app_hint,
+            title_hint=title_hint,
+        )
+        if score <= 0:
+            continue
+        area = int(record.get("width", 0) or 0) * int(record.get("height", 0) or 0)
+        has_title = 1 if record.get("title") else 0
+        scored.append((score, has_title, area, int(record["window_id"]), record))
+    if not scored:
+        return None
+    return max(scored, key=lambda item: item[:4])[4]
+
+
 def rehydrate_window(window_id: Any, app: Optional[str] = None) -> Dict[str, Any]:
     """Rebuild a public canonical window object for a currently open HWND."""
     wid = _coerce_optional_int("id", window_id)
@@ -187,69 +442,20 @@ def find_app_window(
     title_hint: Optional[str] = None,
 ) -> Optional[Dict[str, Any]]:
     """Find the best live top-level window for a launched application."""
-    try:
-        import win32gui
-        import win32process
-    except Exception:
+    record = find_best_window_record(
+        pid=pid,
+        process_name=process_name,
+        app_hint=app_hint,
+        title_hint=title_hint,
+    )
+    if record is None:
         return None
-
-    expected_pid = _coerce_optional_int("pid", pid)
-    process_basename = Path(process_name).name.casefold() if process_name else ""
-    process_stem = Path(process_basename).stem
-    app_text = (app_hint or "").strip().casefold()
-    app_basename = Path(app_text).name
-    app_stem = Path(app_basename).stem
-    expected_title = (title_hint or "").strip().casefold()
-    candidates: list[tuple[int, int, int, int, str]] = []
-
-    def _visit(hwnd: int, _extra: Any) -> bool:
-        try:
-            if not win32gui.IsWindow(hwnd) or not win32gui.IsWindowVisible(hwnd):
-                return True
-            left, top, right, bottom = win32gui.GetWindowRect(hwnd)
-            width = int(right - left)
-            height = int(bottom - top)
-            if width <= 0 or height <= 0:
-                return True
-            _, candidate_pid = win32process.GetWindowThreadProcessId(hwnd)
-            candidate_pid = int(candidate_pid)
-            title = (win32gui.GetWindowText(hwnd) or "").strip()
-            title_folded = title.casefold()
-            candidate_process = _get_process_name(candidate_pid).casefold()
-            candidate_stem = Path(candidate_process).stem
-
-            score = 0
-            if expected_pid is not None and candidate_pid == expected_pid:
-                score = max(score, 100)
-            if process_basename and candidate_process == process_basename:
-                score = max(score, 90)
-            if process_stem and candidate_stem == process_stem:
-                score = max(score, 85)
-            if app_basename and candidate_process == app_basename:
-                score = max(score, 80)
-            if app_stem and candidate_stem == app_stem:
-                score = max(score, 75)
-            if expected_title and expected_title in title_folded:
-                score = max(score, 65)
-            if app_text and app_text in title_folded:
-                score = max(score, 50)
-            if score:
-                candidates.append(
-                    (score, 1 if title else 0, width * height, int(hwnd), title)
-                )
-        except Exception:
-            pass
-        return True
-
-    try:
-        win32gui.EnumWindows(_visit, None)
-    except Exception:
-        return None
-    if not candidates:
-        return None
-
-    _, _, _, hwnd, title = max(candidates)
-    return build_window(hwnd, title=title)
+    return build_window(
+        record["window_id"],
+        pid=record.get("pid"),
+        title=record.get("title"),
+        app=record.get("process_name") or record.get("app"),
+    )
 
 
 def normalize_window_input(window: Optional[Mapping[str, Any]]) -> tuple[Optional[int], Optional[int]]:
@@ -544,57 +750,19 @@ def resolve_live_window(source: Dict[str, Any]) -> Optional[Tuple[int, tuple]]:
         except Exception:
             pass
 
-    proc_name = source.get("process_name", "")
-    if proc_name:
-        try:
-            import psutil
-            import win32gui
-            import win32process
-
-            candidates: list[int] = []
-
-            def _by_proc(hwnd, ctx):
-                try:
-                    _, pid = win32process.GetWindowThreadProcessId(hwnd)
-                    if (
-                        pid
-                        and psutil.Process(pid).name().lower() == proc_name.lower()
-                        and win32gui.IsWindowVisible(hwnd)
-                    ):
-                        ctx.append(hwnd)
-                except Exception:
-                    pass
-
-            win32gui.EnumWindows(_by_proc, candidates)
-            if candidates:
-                hwnd = candidates[0]
-                rect = win32gui.GetWindowRect(hwnd)
-                if rect:
-                    return hwnd, rect
-        except Exception:
-            pass
-
-    title = source.get("window_title", "")
-    if title:
+    record = find_best_window_record(
+        process_name=source.get("process_name") or source.get("app"),
+        app_hint=source.get("app"),
+        title_hint=source.get("window_title") or source.get("title"),
+    )
+    if record is not None:
         try:
             import win32gui
 
-            candidates: list[int] = []
-
-            def _by_title(hwnd, ctx):
-                try:
-                    wt = win32gui.GetWindowText(hwnd) or ""
-                    if title.lower() in wt.lower() and win32gui.IsWindowVisible(hwnd):
-                        ctx.append(hwnd)
-                except Exception:
-                    pass
-
-            win32gui.EnumWindows(_by_title, candidates)
-            if candidates:
-                hwnd = candidates[0]
-                rect = win32gui.GetWindowRect(hwnd)
-                if rect:
-                    return hwnd, rect
+            hwnd = int(record["window_id"])
+            rect = win32gui.GetWindowRect(hwnd)
+            if rect:
+                return hwnd, rect
         except Exception:
             pass
 

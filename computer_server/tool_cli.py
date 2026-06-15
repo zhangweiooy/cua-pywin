@@ -512,11 +512,29 @@ def _ensure_daemon(timeout: float = DEFAULT_START_TIMEOUT) -> DaemonInfo:
     return _start_daemon(timeout=timeout)
 
 
+def _read_stdin_utf8() -> str:
+    """Read stdin as UTF-8 when raw bytes are available.
+
+    ``cua-win`` documents stdin JSON as UTF-8.  Using ``sys.stdin.read()``
+    routes through Python's text wrapper and can inherit a legacy Windows
+    console encoding in subprocess contexts.  Prefer the raw buffer so pipes
+    and redirected files keep Chinese text intact; StringIO tests still use the
+    text fallback.
+    """
+    buffer = getattr(sys.stdin, "buffer", None)
+    if buffer is not None:
+        try:
+            return buffer.read().decode("utf-8-sig")
+        except UnicodeDecodeError as exc:
+            raise SystemExit(f"stdin must be UTF-8 JSON: {exc}") from exc
+    return sys.stdin.read().lstrip("\ufeff")
+
+
 def _parse_tool_arguments(raw: str | None) -> dict[str, Any]:
     if raw is None or not raw.strip():
         return {}
     if raw == "-":
-        source = sys.stdin.read()
+        source = _read_stdin_utf8()
     elif raw.startswith("@"):
         path_text = raw[1:]
         if not path_text:
@@ -539,7 +557,7 @@ def _parse_tool_arguments(raw: str | None) -> dict[str, Any]:
 
 def _parse_batch_actions(raw: str | None) -> list[dict[str, Any]]:
     if raw is None or raw == "-":
-        source = sys.stdin.read()
+        source = _read_stdin_utf8()
     else:
         stripped = raw.lstrip()
         if stripped.startswith(("[", "{")):

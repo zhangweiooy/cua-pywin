@@ -7,6 +7,8 @@ from computer_server.services.window_identity_service import (
     add_window_field,
     build_window,
     build_window_ref,
+    filter_window_records,
+    find_best_window_record,
     is_window_minimized,
     normalize_window_input,
     rehydrate_window,
@@ -241,6 +243,78 @@ def test_rehydrate_window_allows_app_hint_mismatch(monkeypatch):
 
     assert result["success"] is True
     assert result["window"]["app"] == "Actual.exe"
+
+
+def test_filter_window_records_matches_chinese_app_aliases():
+    records = [
+        {
+            "id": 123,
+            "window_id": 123,
+            "pid": 456,
+            "title": "",
+            "app": "Weixin.exe",
+            "process_name": "Weixin.exe",
+            "class_name": "Qt51514QWindowIcon",
+        },
+        {
+            "id": 124,
+            "window_id": 124,
+            "pid": 457,
+            "title": "",
+            "app": "Other.exe",
+            "process_name": "Other.exe",
+        },
+    ]
+
+    assert filter_window_records(records, query="微信") == [records[0]]
+    assert filter_window_records(records, app="微信") == [records[0]]
+
+
+def test_filter_window_records_does_not_reverse_substring_match():
+    records = [
+        {
+            "id": 123,
+            "window_id": 123,
+            "pid": 456,
+            "title": "Editor",
+            "app": "Code.exe",
+            "process_name": "Code.exe",
+        }
+    ]
+
+    assert filter_window_records(records, query="Codex") == []
+
+
+def test_find_best_window_record_uses_shared_alias_scoring(monkeypatch):
+    import computer_server.services.window_identity_service as identity
+
+    records = [
+        {
+            "id": 123,
+            "window_id": 123,
+            "pid": 456,
+            "title": "",
+            "app": "Weixin.exe",
+            "process_name": "Weixin.exe",
+            "width": 100,
+            "height": 100,
+        },
+        {
+            "id": 124,
+            "window_id": 124,
+            "pid": 457,
+            "title": "微信",
+            "app": "Helper.exe",
+            "process_name": "Helper.exe",
+            "width": 200,
+            "height": 100,
+        },
+    ]
+    monkeypatch.setattr(identity, "enumerate_window_records", lambda: records)
+
+    match = find_best_window_record(app_hint="微信")
+
+    assert match is records[0]
 
 
 def test_build_window_ref_includes_version_and_pid(monkeypatch):

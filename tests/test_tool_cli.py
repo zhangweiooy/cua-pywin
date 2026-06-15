@@ -31,6 +31,11 @@ from computer_server.tool_cli import (
 from computer_server.tool_rpc import BATCH_HEADER
 
 
+class _BinaryStdin:
+    def __init__(self, payload: bytes) -> None:
+        self.buffer = io.BytesIO(payload)
+
+
 def test_rewrite_implicit_call() -> None:
     assert _rewrite_implicit_call(["computer_get_screen_size"]) == [
         "call",
@@ -73,6 +78,14 @@ def test_parse_tool_arguments_accepts_utf8_stdin_and_file(tmp_path, monkeypatch)
     assert _parse_tool_arguments(f"@{argument_file}") == {"query": "微信"}
 
 
+def test_parse_tool_arguments_prefers_raw_utf8_stdin(monkeypatch) -> None:
+    encoded = "\ufeff" + '{"query":"微信"}'
+
+    monkeypatch.setattr(sys, "stdin", _BinaryStdin(encoded.encode("utf-8")))
+
+    assert _parse_tool_arguments("-") == {"query": "微信"}
+
+
 def test_parse_batch_actions_accepts_inline_file_and_stdin(tmp_path, monkeypatch) -> None:
     actions = [{"tool": "computer_get_screen_size", "arguments": {}}]
     encoded = '[{"tool":"computer_get_screen_size","arguments":{}}]'
@@ -84,6 +97,16 @@ def test_parse_batch_actions_accepts_inline_file_and_stdin(tmp_path, monkeypatch
 
     monkeypatch.setattr(sys, "stdin", io.StringIO("\ufeff" + encoded))
     assert _parse_batch_actions("-") == actions
+
+
+def test_parse_batch_actions_prefers_raw_utf8_stdin(monkeypatch) -> None:
+    encoded = '\ufeff[{"tool":"computer_type","arguments":{"text":"微信"}}]'
+
+    monkeypatch.setattr(sys, "stdin", _BinaryStdin(encoded.encode("utf-8")))
+
+    assert _parse_batch_actions("-") == [
+        {"tool": "computer_type", "arguments": {"text": "微信"}}
+    ]
 
 
 def test_parse_batch_actions_merges_tool_defaults_shallowly() -> None:

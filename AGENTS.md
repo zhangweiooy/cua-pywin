@@ -571,7 +571,9 @@ functions. When the SDK is upgraded past the fix:
 - `cua-win call TOOL -` reads one UTF-8 JSON argument object from stdin, and
   `cua-win call TOOL @path.json` reads one from a UTF-8 file. Prefer these forms
   for Chinese text or nested JSON to avoid PowerShell/native argument escaping
-  and console code-page transformations.
+  and console code-page transformations. When piping Chinese JSON through
+  PowerShell, set `$OutputEncoding = [System.Text.UTF8Encoding]::new($false)`;
+  otherwise PowerShell can replace characters before `cua-win` receives them.
 - Subprocess environments should set `PYTHONIOENCODING=utf-8` to avoid GBK output
   issues.
 - One-shot `cua-win --no-daemon` schema queries and explicitly safe read-only
@@ -664,6 +666,11 @@ uv run cua-win stop
   observable and verification-gated. Dropdown expand-edge click is acceptable
   because it is explicit and observable; broader MSAA default-action dispatch
   needs action-path metadata and post-action verification.
+- Continue improving the layered action pipeline only through narrow,
+  observable cases. Useful additions are better UIA/MSAA failure reasons,
+  fallback-path metadata, and verified secondary actions for specific control
+  types; do not add broad accessibility default-action dispatch without
+  app/control evidence.
 - Run the WGC smoke suite on a real mixed-DPI multi-monitor setup. The
   2026-06-06 controlled run verified occlusion-safe identical frames,
   minimized-window rejection, and 192-DPI primary-monitor capture; Chrome and
@@ -694,3 +701,10 @@ uv run cua-win stop
   dispatch can create false success. Revisit only with per-action observability,
   app capability evidence, and verification-gated fallbacks to foreground HID
   input.
+- Do not expose PostMessage/background input as a public path without a tested
+  compatibility matrix; it is too easy to report success while the target UI
+  state remains unchanged.
+- Keep the HTTP localhost daemon. A named-pipe daemon is not justified unless
+  localhost HTTP becomes a concrete deployment or security blocker.
+- Keep the overlay as a single agent cursor. Multi-agent synthetic cursors are
+  a visualization feature, not a current reliability requirement.

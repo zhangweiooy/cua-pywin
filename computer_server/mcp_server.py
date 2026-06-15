@@ -3310,7 +3310,32 @@ def create_mcp_server() -> FastMCP:
 
         window_handler = _get_handlers().window
         result = await window_handler.launch(app, args)
-        if result.get("success") and wait_for_window:
+        if not result.get("success") and wait_for_window and not args:
+            target_window = find_app_window(app_hint=app, title_hint=app)
+            if target_window is not None:
+                activation_result = await window_handler.activate_window(
+                    int(target_window["id"])
+                )
+                refreshed_window = find_app_window(app_hint=app, title_hint=app)
+                if refreshed_window is not None:
+                    target_window = refreshed_window
+                actual_pid = target_window.get("pid")
+                result = {
+                    "success": True,
+                    "app": app,
+                    "already_running": True,
+                    "window_ready": True,
+                    "window": target_window,
+                    "window_id": target_window["id"],
+                    "activation": activation_result,
+                    "launch_fallback": {
+                        "reason": "launch_failed_existing_window_found",
+                        "launch_error": result.get("error"),
+                    },
+                }
+                if actual_pid is not None:
+                    result["pid"] = actual_pid
+        if result.get("success") and wait_for_window and not result.get("already_running"):
             launch_pid = result.get("pid")
             resolved_path = result.get("resolved_path")
             process_name = (
@@ -3533,43 +3558,27 @@ def create_mcp_server() -> FastMCP:
             Dictionary with 'apps' list containing app info (name, pid, bundle_id, running, active).
         """
         try:
-            import win32gui
-            import win32process
-            import win32api
+            from computer_server.services.window_identity_service import (
+                add_window_field,
+                enumerate_window_records,
+            )
 
             app_map: Dict[int, Dict[str, Any]] = {}
-
-            def _enum_apps(hwnd, _):
-                if not win32gui.IsWindowVisible(hwnd):
-                    return True
-                try:
-                    _, hwnd_pid = win32process.GetWindowThreadProcessId(hwnd)
-                    title = win32gui.GetWindowText(hwnd) or ""
-                    if hwnd_pid not in app_map:
-                        try:
-                            handle = win32api.OpenProcess(0x0400 | 0x0010, False, hwnd_pid)
-                            exe = win32process.GetModuleFileNameEx(handle, 0)
-                            name = exe.rsplit("\\", 1)[-1]
-                            win32api.CloseHandle(handle)
-                        except Exception:
-                            name = title or f"PID:{hwnd_pid}"
-                        app_map[hwnd_pid] = {
-                            "name": name,
-                            "pid": hwnd_pid,
-                            "running": True,
-                            "windows": [],
-                        }
-                    app_map[hwnd_pid]["windows"].append(_add_window_field({
-                        "id": hwnd,
-                        "window_id": hwnd,
+            for record in enumerate_window_records():
+                hwnd_pid = int(record["pid"])
+                if hwnd_pid not in app_map:
+                    app_map[hwnd_pid] = {
+                        "name": (
+                            record.get("process_name")
+                            or record.get("app")
+                            or record.get("title")
+                            or f"PID:{hwnd_pid}"
+                        ),
                         "pid": hwnd_pid,
-                        "title": title,
-                    }))
-                except Exception:
-                    pass
-                return True
-
-            win32gui.EnumWindows(_enum_apps, None)
+                        "running": True,
+                        "windows": [],
+                    }
+                app_map[hwnd_pid]["windows"].append(add_window_field(record))
             return {"success": True, "apps": list(app_map.values())}
         except Exception as e:
             return {"success": False, "error": str(e)}
@@ -3604,12 +3613,10 @@ def create_mcp_server() -> FastMCP:
             and XAML entries carry 'source': 'uia_xaml'.
         """
         try:
-            import win32gui
-            import win32process
-            import win32con
-            from computer_server.handlers.generic import _is_meaningful_window
             from computer_server.services.window_identity_service import (
-                is_window_minimized,
+                add_window_field,
+                enumerate_window_records,
+                filter_window_records,
             )
 
             app_text = app.strip() if isinstance(app, str) else ""
@@ -3620,64 +3627,17 @@ def create_mcp_server() -> FastMCP:
                         pid = app_pid
                 except (TypeError, ValueError):
                     pass
-            app_filter = app_text.lower() if app_text and not app_text.isdigit() else None
-            title_filter = title.lower() if isinstance(title, str) and title else None
-            query_filter = query.lower() if isinstance(query, str) and query else None
+            app_filter = app_text if app_text and not app_text.isdigit() else None
 
-            def _matches_filters(record: Dict[str, Any]) -> bool:
-                record_title = str(record.get("title") or "").lower()
-                record_app = str(record.get("app") or record.get("process_name") or "").lower()
-                record_class = str(record.get("class_name") or "").lower()
-                record_id = str(record.get("window_id") or record.get("id") or "").lower()
-                if app_filter and app_filter not in record_app and app_filter not in record_title:
-                    return False
-                if title_filter and title_filter not in record_title:
-                    return False
-                if query_filter:
-                    haystack = " ".join((record_title, record_app, record_class, record_id))
-                    if query_filter not in haystack:
-                        return False
-                return True
-
-            windows: List[Dict[str, Any]] = []
-
-            def _enum_windows(hwnd, _):
-                try:
-                    visible = win32gui.IsWindowVisible(hwnd)
-                    style = win32gui.GetWindowLong(hwnd, win32con.GWL_STYLE)
-                    if not (style & win32con.WS_VISIBLE):
-                        return True
-                    _, win_pid = win32process.GetWindowThreadProcessId(hwnd)
-                    if pid is not None and win_pid != pid:
-                        return True
-                    if not _is_meaningful_window(hwnd):
-                        return True
-                    title = win32gui.GetWindowText(hwnd) or ""
-                    rect = win32gui.GetWindowRect(hwnd)
-                    minimized = is_window_minimized(hwnd, rect)
-                    is_on_screen = bool(visible and minimized is not True)
-                    if on_screen_only and not is_on_screen:
-                        return True
-                    w, h = rect[2] - rect[0], rect[3] - rect[1]
-                    record = _add_window_field({
-                        "id": hwnd,
-                        "window_id": hwnd,
-                        "pid": win_pid,
-                        "title": title,
-                        "x": rect[0],
-                        "y": rect[1],
-                        "width": w,
-                        "height": h,
-                        "is_on_screen": is_on_screen,
-                        "minimized": minimized,
-                    })
-                    if _matches_filters(record):
-                        windows.append(record)
-                except Exception:
-                    pass
-                return True
-
-            win32gui.EnumWindows(_enum_windows, None)
+            windows = [
+                add_window_field(record)
+                for record in filter_window_records(
+                    enumerate_window_records(pid=pid, on_screen_only=on_screen_only),
+                    app=app_filter,
+                    title=title,
+                    query=query,
+                )
+            ]
 
             # XAML popup detection via UIA (optional, off by default)
             if include_xaml:
@@ -3713,7 +3673,12 @@ def create_mcp_server() -> FastMCP:
                                 "minimized": False,
                                 "source": "uia_xaml",
                             })
-                            if _matches_filters(record):
+                            if filter_window_records(
+                                [record],
+                                app=app_filter,
+                                title=title,
+                                query=query,
+                            ):
                                 windows.append(record)
                         except Exception:
                             pass
