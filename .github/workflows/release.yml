@@ -76,12 +76,10 @@ jobs:
         with:
           name: cua-pywin-${{ env.RELEASE_VERSION }}-windows
           path: |
-            dist/*.whl
             dist/SHA256SUMS-wheel.txt
-            dist-installer/*-setup.exe
             dist-installer/SHA256SUMS-installer.txt
-          compression-level: 0
-          retention-days: 7
+          compression-level: 9
+          retention-days: 1
           if-no-files-found: error
 
       - name: Create GitHub Release
