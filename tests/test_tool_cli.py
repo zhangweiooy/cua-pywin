@@ -68,6 +68,27 @@ def test_parse_tool_arguments_requires_object() -> None:
         _parse_tool_arguments("[1, 2, 3]")
 
 
+def test_parse_tool_arguments_accepts_narrow_lenient_inline_object() -> None:
+    assert _parse_tool_arguments("{action:status}") == {"action": "status"}
+    assert _parse_tool_arguments("{pid:1234,window_id:5678,active:true}") == {
+        "pid": 1234,
+        "window_id": 5678,
+        "active": True,
+    }
+    assert _parse_tool_arguments("{query:'wechat'}") == {"query": "wechat"}
+
+
+def test_parse_tool_arguments_rejects_complex_lenient_inline_object() -> None:
+    with pytest.raises(SystemExit) as exc_info:
+        _parse_tool_arguments("{action:status,window:{id:1}}")
+
+    message = str(exc_info.value)
+    assert "invalid JSON arguments" in message
+    assert "PowerShell 5.1" in message
+    assert "PowerShell 7+" in message
+    assert "cua-win call computer_learn -" in message
+
+
 def test_parse_tool_arguments_accepts_utf8_stdin_and_file(tmp_path, monkeypatch) -> None:
     encoded = '{"query":"\u5fae\u4fe1"}'
     argument_file = tmp_path / "arguments.json"
@@ -84,6 +105,18 @@ def test_parse_tool_arguments_prefers_raw_utf8_stdin(monkeypatch) -> None:
     monkeypatch.setattr(sys, "stdin", _BinaryStdin(encoded.encode("utf-8")))
 
     assert _parse_tool_arguments("-") == {"query": "微信"}
+
+
+def test_parse_tool_arguments_keeps_stdin_strict_json(monkeypatch) -> None:
+    monkeypatch.setattr(sys, "stdin", io.StringIO("{action:status}"))
+
+    with pytest.raises(SystemExit) as exc_info:
+        _parse_tool_arguments("-")
+
+    message = str(exc_info.value)
+    assert "invalid JSON arguments" in message
+    assert "UTF-8 JSON object" in message
+    assert "PowerShell 5.1" not in message
 
 
 def test_parse_batch_actions_accepts_inline_file_and_stdin(tmp_path, monkeypatch) -> None:

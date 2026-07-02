@@ -13,6 +13,7 @@ import logging
 import math
 import os
 import platform
+import re
 import secrets
 import socket
 import subprocess
@@ -530,9 +531,87 @@ def _read_stdin_utf8() -> str:
     return sys.stdin.read().lstrip("\ufeff")
 
 
+_LENIENT_OBJECT_RE = re.compile(r"^\{\s*(.*?)\s*\}$", re.DOTALL)
+_LENIENT_KEY_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_-]*$")
+_LENIENT_NUMBER_RE = re.compile(r"^-?(?:0|[1-9][0-9]*)(?:\.[0-9]+)?$")
+_LENIENT_BARE_STRING_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_.-]*$")
+
+
+def _parse_lenient_tool_arguments(source: str) -> dict[str, Any] | None:
+    """Parse a deliberately tiny JSON-like object for hostile Windows shells.
+
+    This is not JSON5.  It only accepts a flat object with bare ASCII keys and
+    primitive values, e.g. ``{action:status}`` or ``{pid:123,active:true}``.
+    Anything nested, ambiguous, or string-like with spaces must use real JSON
+    through stdin or @file.
+    """
+    match = _LENIENT_OBJECT_RE.match(source.strip())
+    if not match:
+        return None
+    body = match.group(1).strip()
+    if not body:
+        return {}
+
+    parsed: dict[str, Any] = {}
+    for item in body.split(","):
+        if ":" not in item:
+            return None
+        raw_key, raw_value = item.split(":", 1)
+        key = raw_key.strip()
+        value_text = raw_value.strip()
+        if not _LENIENT_KEY_RE.fullmatch(key) or not value_text:
+            return None
+        if any(char in value_text for char in "{}[],"):
+            return None
+
+        lowered = value_text.lower()
+        if lowered == "true":
+            value: Any = True
+        elif lowered == "false":
+            value = False
+        elif lowered == "null":
+            value = None
+        elif _LENIENT_NUMBER_RE.fullmatch(value_text):
+            value = float(value_text) if "." in value_text else int(value_text)
+        elif (
+            len(value_text) >= 2
+            and value_text[0] == value_text[-1]
+            and value_text[0] in {"'", '"'}
+        ):
+            value = value_text[1:-1]
+        elif _LENIENT_BARE_STRING_RE.fullmatch(value_text):
+            value = value_text
+        else:
+            return None
+        parsed[key] = value
+    return parsed
+
+
+def _invalid_json_arguments_error(exc: json.JSONDecodeError, *, inline: bool) -> str:
+    message = f"invalid JSON arguments: {exc.msg}"
+    if inline:
+        message += (
+            "\n"
+            "hint: PowerShell 5.1 strips quotes around JSON field names in\n"
+            "      multi-field args. Pipe the JSON via stdin instead:\n"
+            "        '{\"action\":\"status\"}' | cua-win call computer_learn -\n"
+            "\n"
+            "      Or use an argument file:\n"
+            "        cua-win call computer_learn @args.json\n"
+            "\n"
+            "      Or use PowerShell 7+ (pwsh) which preserves the quotes.\n"
+            "      A narrow shorthand like {action:status} is accepted for "
+            "flat primitive objects only."
+        )
+    else:
+        message += "\nhint: use a UTF-8 JSON object for stdin or @file arguments."
+    return message
+
+
 def _parse_tool_arguments(raw: str | None) -> dict[str, Any]:
     if raw is None or not raw.strip():
         return {}
+    inline = False
     if raw == "-":
         source = _read_stdin_utf8()
     elif raw.startswith("@"):
@@ -545,11 +624,16 @@ def _parse_tool_arguments(raw: str | None) -> dict[str, Any]:
             raise SystemExit(f"could not read argument file {path_text!r}: {exc}") from exc
     else:
         source = raw
+        inline = True
     source = source.lstrip("\ufeff")
     try:
         parsed = json.loads(source)
     except json.JSONDecodeError as exc:
-        raise SystemExit(f"invalid JSON arguments: {exc.msg}") from exc
+        if inline:
+            lenient = _parse_lenient_tool_arguments(source)
+            if lenient is not None:
+                return lenient
+        raise SystemExit(_invalid_json_arguments_error(exc, inline=inline)) from exc
     if not isinstance(parsed, dict):
         raise SystemExit("tool arguments must be a JSON object")
     return parsed
