@@ -107,6 +107,8 @@ def test_complete_observation_links_action_and_updates_metrics():
     assert recorder._session.metrics["pending_observations"] == 0
     assert recorder._session.metrics["observation_count"] == 1
     assert recorder._session.metrics["last_observation_at"] == 12
+    assert recorder._session.metrics["degraded_observations"] == 1
+    assert recorder._session.metrics["target_profile_counts"] == {"unknown": 1}
 
 
 def test_build_observation_uses_lightweight_uia_context():
@@ -123,7 +125,12 @@ def test_build_observation_uses_lightweight_uia_context():
     observation = recorder._build_observation(job)
 
     assert observation.capture_backend == "none"
+    assert observation.capture_reliability == "not_captured"
     assert observation.tree_quality == "poor"
+    assert observation.semantic_degraded_reason == "lightweight_semantic_context"
+    assert observation.target_profile["family"] == "generic"
+    assert observation.target_profile["process_name"] == "notepad.exe"
+    assert observation.delivery_risk == "focused_input_required"
     assert observation.semantic_nodes[0]["role"] == "edit"
     assert observation.semantic_nodes[0]["source"] == "uia"
     assert "Window: Notepad" in observation.state_text
@@ -158,6 +165,9 @@ def test_status_dict_reports_additive_timeline_metrics():
     assert data["pending_observations"] == 1
     assert data["timeout_count"] == 2
     assert data["sensitive_skip_count"] == 3
+    assert data["degraded_observations"] == 0
+    assert data["capture_warning_count"] == 0
+    assert data["target_profile_counts"] == {}
     assert data["current_app"] == "Notepad"
     assert data["listener_healthy"] is True
 
@@ -193,3 +203,5 @@ def test_observation_skip_and_error_counters_are_non_fatal():
     assert recorder._session.metrics["timeout_count"] == 1
     assert recorder._session.metrics["sensitive_skip_count"] == 1
     assert recorder._session.metrics["error_count"] == 1
+    assert recorder._session.metrics["degraded_observations"] == 2
+    assert recorder._session.metrics["target_profile_counts"] == {"unknown": 2}

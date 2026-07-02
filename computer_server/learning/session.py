@@ -214,6 +214,10 @@ class LearningObservation:
     semantic_nodes: list[dict[str, Any]] = field(default_factory=list)
     tree_quality: str | None = None
     capture_backend: str | None = None
+    target_profile: dict[str, Any] | None = None
+    capture_reliability: str | None = None
+    semantic_degraded_reason: str | None = None
+    delivery_risk: str | None = None
     timing: dict[str, Any] = field(default_factory=dict)
     skip_reason: str | None = None
     error: str | None = None
@@ -233,12 +237,17 @@ class LearningObservation:
             "state_text": self.state_text,
             "tree_quality": self.tree_quality,
             "capture_backend": self.capture_backend,
+            "capture_reliability": self.capture_reliability,
+            "semantic_degraded_reason": self.semantic_degraded_reason,
+            "delivery_risk": self.delivery_risk,
             "skip_reason": self.skip_reason,
             "error": self.error,
         }
         for key, value in optional_values.items():
             if value is not None:
                 d[key] = value
+        if self.target_profile is not None:
+            d["target_profile"] = self.target_profile
         if self.element_context is not None:
             d["element"] = self.element_context.to_dict()
         if self.semantic_nodes:
@@ -280,6 +289,9 @@ def default_learning_metrics() -> dict[str, Any]:
         "timeout_count": 0,
         "sensitive_skip_count": 0,
         "error_count": 0,
+        "degraded_observations": 0,
+        "capture_warning_count": 0,
+        "target_profile_counts": {},
         "last_event_at": None,
         "last_observation_at": None,
     }

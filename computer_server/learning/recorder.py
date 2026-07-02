@@ -39,6 +39,10 @@ from .session import (
     ObservedAction,
     ObservedActionType,
 )
+from computer_server.services.target_profile_service import (
+    assess_delivery_risk,
+    target_profile_for_observation,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -236,6 +240,9 @@ class LearningRecorder:
                 "dropped_observations": metrics["dropped_observations"],
                 "timeout_count": metrics["timeout_count"],
                 "sensitive_skip_count": metrics["sensitive_skip_count"],
+                "degraded_observations": metrics["degraded_observations"],
+                "capture_warning_count": metrics["capture_warning_count"],
+                "target_profile_counts": metrics["target_profile_counts"],
                 "last_event_at": metrics["last_event_at"],
                 "last_observation_at": metrics["last_observation_at"],
                 "duration_seconds": int(duration),
@@ -296,6 +303,9 @@ class LearningRecorder:
             "dropped_observations": 0,
             "timeout_count": 0,
             "sensitive_skip_count": 0,
+            "degraded_observations": 0,
+            "capture_warning_count": 0,
+            "target_profile_counts": {},
             "last_event_at": None,
             "last_observation_at": None,
             "duration_seconds": 0,
@@ -309,6 +319,9 @@ class LearningRecorder:
         metrics.setdefault("dropped_observations", 0)
         metrics.setdefault("timeout_count", 0)
         metrics.setdefault("sensitive_skip_count", 0)
+        metrics.setdefault("degraded_observations", 0)
+        metrics.setdefault("capture_warning_count", 0)
+        metrics.setdefault("target_profile_counts", {})
         metrics.setdefault("last_event_at", None)
         metrics.setdefault("last_observation_at", None)
         return metrics
@@ -390,7 +403,18 @@ class LearningRecorder:
                     timestamp=time.perf_counter_ns(),
                     error=str(exc),
                     capture_backend="none",
+                    capture_reliability="not_captured",
                     tree_quality="empty",
+                    semantic_degraded_reason="observation_error",
+                    target_profile=(
+                        self._target_profile_dict(
+                            job.app_name,
+                            job.app_bundle_id,
+                            job.window_title,
+                        )
+                        if job is not None
+                        else {"family": "generic"}
+                    ),
                 )
                 if job is not None:
                     self._complete_observation(job, failed)
@@ -495,6 +519,19 @@ class LearningRecorder:
                 app_name=app_name,
                 app_bundle_id=app_bundle_id,
                 window_title=window_title,
+                target_profile=self._target_profile_dict(
+                    app_name,
+                    app_bundle_id,
+                    window_title,
+                ),
+                capture_reliability="not_captured",
+                semantic_degraded_reason="sensitive_context",
+                delivery_risk=self._delivery_risk_for_job(
+                    job,
+                    app_name,
+                    app_bundle_id,
+                    window_title,
+                ),
                 skip_reason="sensitive_context",
                 capture_backend="none",
                 tree_quality="empty",
@@ -528,6 +565,11 @@ class LearningRecorder:
 
         semantic_nodes = self._semantic_nodes_from_context(element_context, job)
         tree_quality = "poor" if semantic_nodes else "empty"
+        semantic_degraded_reason = None
+        if tree_quality == "empty":
+            semantic_degraded_reason = "semantic_tree_empty"
+        elif tree_quality == "poor":
+            semantic_degraded_reason = "lightweight_semantic_context"
         state_text = self._build_state_text(
             app_name=app_name,
             app_bundle_id=app_bundle_id,
@@ -550,8 +592,67 @@ class LearningRecorder:
             semantic_nodes=semantic_nodes,
             tree_quality=tree_quality,
             capture_backend="none",
+            target_profile=self._target_profile_dict(
+                app_name,
+                app_bundle_id,
+                window_title,
+            ),
+            capture_reliability="not_captured",
+            semantic_degraded_reason=semantic_degraded_reason,
+            delivery_risk=self._delivery_risk_for_job(
+                job,
+                app_name,
+                app_bundle_id,
+                window_title,
+            ),
             timing={"total_ms": elapsed_ms},
         )
+
+    @staticmethod
+    def _target_profile_dict(
+        app_name: str | None,
+        app_bundle_id: str | None,
+        window_title: str | None,
+    ) -> dict[str, Any]:
+        return target_profile_for_observation(
+            app_name=app_name,
+            app_bundle_id=app_bundle_id,
+            window_title=window_title,
+        ).to_dict()
+
+    @staticmethod
+    def _delivery_risk_for_job(
+        job: _ObservationJob,
+        app_name: str | None,
+        app_bundle_id: str | None,
+        window_title: str | None,
+    ) -> str:
+        profile = target_profile_for_observation(
+            app_name=app_name,
+            app_bundle_id=app_bundle_id,
+            window_title=window_title,
+        )
+        action_kind = {
+            "click": "click",
+            "typing_pause": "type",
+            "scroll_stop": "scroll",
+            "app_switch": "key",
+            "manual_stop_flush": "observe",
+        }.get(job.trigger, job.trigger)
+        risk, _note = assess_delivery_risk(
+            profile,
+            action_kind=action_kind,
+            method="human_observed",
+            used_foreground=True,
+            uses_system_input=job.trigger in {
+                "click",
+                "typing_pause",
+                "scroll_stop",
+                "app_switch",
+            },
+            requires_visible_target=job.trigger in {"click", "scroll_stop"},
+        )
+        return risk
 
     @staticmethod
     def _semantic_nodes_from_context(
@@ -647,6 +748,19 @@ class LearningRecorder:
                 self._session.metrics["sensitive_skip_count"] += 1
             if observation.error:
                 self._session.metrics["error_count"] += 1
+            if (
+                observation.semantic_degraded_reason
+                or observation.skip_reason
+                or observation.error
+                or observation.tree_quality in {"empty", "poor"}
+            ):
+                self._session.metrics["degraded_observations"] += 1
+            if observation.capture_reliability == "low":
+                self._session.metrics["capture_warning_count"] += 1
+            profile = observation.target_profile or {}
+            family = str(profile.get("family") or "unknown")
+            counts = self._session.metrics.setdefault("target_profile_counts", {})
+            counts[family] = int(counts.get(family, 0) or 0) + 1
 
     # ================================================================
     # Event handlers (called from pynput listener threads)

@@ -56,6 +56,10 @@ def test_learning_session_serializes_timeline_additively():
         semantic_nodes=[{"element_index": 0, "role": "button", "title": "Save"}],
         tree_quality="poor",
         capture_backend="none",
+        target_profile={"family": "generic"},
+        capture_reliability="not_captured",
+        semantic_degraded_reason="lightweight_semantic_context",
+        delivery_risk="visible_target_required",
         timing={"total_ms": 3},
     )
     session = LearningSession(
@@ -83,6 +87,14 @@ def test_learning_session_serializes_timeline_additively():
     assert data["actions"][0]["after_observation_id"] == "obs_1"
     assert data["observations"][0]["observation_id"] == "obs_1"
     assert data["observations"][0]["semantic_nodes"][0]["title"] == "Save"
+    assert data["observations"][0]["target_profile"] == {"family": "generic"}
+    assert data["observations"][0]["capture_reliability"] == "not_captured"
+    assert (
+        data["observations"][0]["semantic_degraded_reason"]
+        == "lightweight_semantic_context"
+    )
+    assert data["observations"][0]["delivery_risk"] == "visible_target_required"
     assert data["links"][0]["action_id"] == "act_1"
     assert data["metrics"]["action_count"] == 1
     assert data["metrics"]["observation_count"] == 1
+    assert data["metrics"]["target_profile_counts"] == {}
