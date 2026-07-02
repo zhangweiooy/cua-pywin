@@ -110,6 +110,9 @@ low-level UIA/MSAA/SOM actions into agent-facing hints such as `click`, `type`,
 `set_value`, `select`, `toggle`, `expand`, and `scroll`. Check
 `accessibility_hint` / `observation_recommendation` before deciding whether to
 trust semantic nodes, switch to vision/OCR nodes, or narrow with `query`.
+Also inspect `target_profile`, `capture_metadata.capture_reliability`,
+`semantic_degraded_reason`, and `provider_errors` when a snapshot looks empty,
+stale, minimized, or visually inconsistent.
 
 Use `query` to narrow `tree_markdown` when looking for text. Use
 `include_all_nodes=true` only when you need the full `nodes` array despite a
@@ -141,6 +144,10 @@ Prefer high-level action tools:
 
 When a canonical `window` is supplied, input tools activate and verify the
 target before sending input. Calls without a window act on current focus.
+After actions, read `action_path.target_profile`, `delivery_risk`, and
+`delivery_note` when diagnosing Chromium/Electron, terminal, WPF/WinUI, or
+classic VCL/SAL behavior. These fields explain risk; they do not mean the tool
+changed input mode.
 
 Batch stable action sequences after one state capture. Example flow:
 

@@ -296,6 +296,9 @@ handle、绑定丢失或上下文重置后重新获取当前窗口对象；使�
 `computer_click`、`computer_drag` 和 `computer_scroll` 在显式传入 `window`
 时也会先激活并验证目标窗口；激活失败时不会发送鼠标输入。仅使用旧的顶层
 `pid/window_id` 时保留原行为，不隐式改变前台窗口。
+动作结果的 `action_path` 会增量报告 `target_profile`、`delivery_risk` 和
+`delivery_note`，用于解释当前目标是否类似 Chromium、终端、WPF/WinUI、
+VCL/SAL 或通用窗口；这些字段只描述风险，不改变工具默认行为。
 
 合并后的入口约定：热键通过 `computer_press_key({"keys":[...]})` 或
 `computer_press_key({"key":"Control_L+s"})` 执行；窗口激活、最小化、最大化、
@@ -337,7 +340,7 @@ handle、绑定丢失或上下文重置后重新获取当前窗口对象；使�
 
 ### 关键设计
 
-**Per-window 截图** — Windows `PrintWindow` 对硬件加速窗口失效。`get_window_state` 优先使用 Windows.Graphics.Capture 捕获目标窗口自身的 DWM 合成帧，避免被前景遮挡窗口污染；失败时回退到 `ImageGrab.grab()` + `GetWindowRect` + PIL `crop()`。`computer_zoom` 会沿用上一次 snapshot backend：WGC snapshot 使用 WGC 做原生 zoom crop，失败才退回 screen crop。多显示器负坐标 + 部分屏外通过 `WindowSnapshotGeometry` 显式区分「真实窗口原点」与「可见裁剪原点」。`capture_metadata.stage_timings` 报告窗口边界、WGC 尝试、回退激活、全屏捕获、解码、裁剪缩放和 capture 总耗时；WGC 成功时还包含 item、D3D、session setup、frame wait 和 texture readback 分段。
+**Per-window 截图** — Windows `PrintWindow` 对硬件加速窗口失效。`get_window_state` 优先使用 Windows.Graphics.Capture 捕获目标窗口自身的 DWM 合成帧，避免被前景遮挡窗口污染；失败时回退到 `ImageGrab.grab()` + `GetWindowRect` + PIL `crop()`。`computer_zoom` 会沿用上一次 snapshot backend：WGC snapshot 使用 WGC 做原生 zoom crop，失败才退回 screen crop。多显示器负坐标 + 部分屏外通过 `WindowSnapshotGeometry` 显式区分「真实窗口原点」与「可见裁剪原点」。`capture_metadata.stage_timings` 报告窗口边界、WGC 尝试、回退激活、全屏捕获、解码、裁剪缩放和 capture 总耗时；WGC 成功时还包含 item、D3D、session setup、frame wait 和 texture readback 分段。`capture_metadata.capture_reliability`、`degraded_reason` 和 `provider_errors` 会说明 WGC 回退、最小化窗口、screen-crop 遮挡风险或 provider 失败。
 
 **UIA/MSAA 集成 + Gate** — 直接在 STA 线程内调用 COM（不再 per-property 提交到全局线程池——那会在 UIA provider 挂死时永久泄漏线程）。`UIAWalkGate` / `MSAAWalkGate` / `UIAActionGate`（挂在 `ServerContext`）提供窗口级超时边界：`wait_for + shield + done_callback`，超时时 gate 保持占用并标记不健康冷却，后续请求走 SOM、跳过 MSAA 或回退 pixel/HID，不再叠加 doomed calls。
 
@@ -349,7 +352,7 @@ handle、绑定丢失或上下文重置后重新获取当前窗口对象；使�
 
 **录制写盘** — 录制 turn 文件夹通过专用 daemon writer 线程 + 有界队列写入，不与 anyio 默认 executor 竞争；队列满时丢弃并计数（`state.dropped_turns`）。
 
-**学习 OCR 管道** — 录制中 UIA 读值，失败则截活动窗口；OCR 截图前用 `_is_sensitive_context` 二级判断（UIA `IsPassword` + 元素 title/identifier 模式匹配），密码或敏感字段跳过截图落盘。停止时 OCR 识别，全文数据存 `ocr_text`，不自动替换，留给模型分析。
+**学习 OCR 管道** — 录制中 UIA 读值，失败则截活动窗口；OCR 截图前用 `_is_sensitive_context` 二级判断（UIA `IsPassword` + 元素 title/identifier 模式匹配），密码或敏感字段跳过截图落盘。停止时 OCR 识别，全文数据存 `ocr_text`，不自动替换，留给模型分析。短会话语义时间线会在 `observations[]` 和 `metrics` 中附加 `target_profile`、`capture_reliability`、`semantic_degraded_reason` 和 `delivery_risk`。
 
 **CDP target 跟踪** — `computer_page` 按稳定 `target_id`（CDP tab id）而非 `tab_index` 跟踪页面。`get_page_info` 返回 resolved `target_id`，调用方可用它把后续调用钉到同一 tab；失败重试时按 `target_id` 重解析，不会因 tab 顺序变化漂移到错误页面。
 
@@ -707,6 +710,10 @@ always be released.
 verify the target when canonical `window` is explicitly supplied. Activation
 failure prevents mouse input. Legacy top-level `pid/window_id` calls preserve
 their prior foreground behavior.
+Action results add `action_path.target_profile`, `delivery_risk`, and
+`delivery_note` to explain Chromium, terminal, WPF/WinUI, VCL/SAL, or generic
+target risk. These fields are diagnostic only and do not change default input
+behavior.
 
 Merged entry points: hotkeys use `computer_press_key({"keys":[...]})` or
 `computer_press_key({"key":"Control_L+s"})`; activate/minimize/maximize/close,
@@ -757,7 +764,7 @@ primary target capture.
 
 ### Key Design Decisions
 
-**Per-window screenshot capture** — `PrintWindow` fails on hardware-accelerated windows. `get_window_state` now prefers Windows.Graphics.Capture for the target window's own DWM-composited frame, avoiding overlapping foreground-window pollution. If WGC fails, it falls back to `ImageGrab.grab()` + `GetWindowRect` + PIL `crop()`. `computer_zoom` follows the last snapshot backend: WGC snapshots use WGC for native zoom crops and fall back to screen crop only when WGC fails. Multi-monitor negative coordinates and partially-offscreen windows are handled by `WindowSnapshotGeometry`, which explicitly separates the real window origin from the visible crop origin. `capture_metadata.stage_timings` reports window-bounds, WGC attempt, fallback activation, screen capture, decode, crop/resize, and total capture latency. Successful WGC captures additionally expose item, D3D, session setup, frame wait, and texture readback timings.
+**Per-window screenshot capture** — `PrintWindow` fails on hardware-accelerated windows. `get_window_state` now prefers Windows.Graphics.Capture for the target window's own DWM-composited frame, avoiding overlapping foreground-window pollution. If WGC fails, it falls back to `ImageGrab.grab()` + `GetWindowRect` + PIL `crop()`. `computer_zoom` follows the last snapshot backend: WGC snapshots use WGC for native zoom crops and fall back to screen crop only when WGC fails. Multi-monitor negative coordinates and partially-offscreen windows are handled by `WindowSnapshotGeometry`, which explicitly separates the real window origin from the visible crop origin. `capture_metadata.stage_timings` reports window-bounds, WGC attempt, fallback activation, screen capture, decode, crop/resize, and total capture latency. Successful WGC captures additionally expose item, D3D, session setup, frame wait, and texture readback timings. `capture_metadata.capture_reliability`, `degraded_reason`, and `provider_errors` explain WGC fallback, minimized windows, screen-crop occlusion risk, or provider failures.
 
 **UIA/MSAA integration + gates** — COM is called directly inside its STA thread (the previous design submitted each property call to a shared executor and leaked threads when the UIA provider hung). `UIAWalkGate` / `MSAAWalkGate` / `UIAActionGate` (owned by `ServerContext`) provide per-window timeout boundaries with `wait_for + shield + done_callback`. On timeout the gate stays held and the key is marked unhealthy, so fresh requests fall through to SOM, skip MSAA, or use pixel/HID fallback instead of stacking more doomed calls.
 
@@ -813,7 +820,7 @@ known icon-shape misreads requires `CUA_OCR_DENOISE=strict`. Set
 
 **Recording disk writes** — Turn-folder writes go through a dedicated daemon writer thread + bounded queue so they don't compete with the anyio default executor; full queue drops with a counter in `state.dropped_turns`.
 
-**Learning OCR pipeline** — UIA value probe at record time; active-window screenshot on failure. Before any OCR screenshot lands on disk, `_is_sensitive_context` gates it (UIA `IsPassword` + element title/identifier pattern match) so password / sensitive fields are skipped. At stop, OCR produces full `ocr_text` with bbox+confidence. Model decides, no auto-replacement.
+**Learning OCR pipeline** — UIA value probe at record time; active-window screenshot on failure. Before any OCR screenshot lands on disk, `_is_sensitive_context` gates it (UIA `IsPassword` + element title/identifier pattern match) so password / sensitive fields are skipped. At stop, OCR produces full `ocr_text` with bbox+confidence. Model decides, no auto-replacement. The short-session semantic timeline adds `target_profile`, `capture_reliability`, `semantic_degraded_reason`, and `delivery_risk` to `observations[]` and `metrics`.
 
 **CDP target tracking** — `computer_page` tracks pages by stable `target_id` (CDP tab id) rather than `tab_index`. `get_page_info` returns the resolved `target_id` so callers can pin subsequent calls to the same tab; retries re-resolve by `target_id`, never drifting to the wrong page when tab order changes.
 

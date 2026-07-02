@@ -81,9 +81,11 @@ Expected:
 
 Run at least one smoke pass on each of:
 
+- Notepad
+- Windows Terminal
 - WeChat
 - DingTalk
-- Chrome
+- Chrome / Edge
 
 Suggested flow:
 
@@ -137,7 +139,7 @@ uv run python scripts/validate_release.py --version 0.1.2
 
 Expected current baseline:
 
-- `pytest`: 261 passed
+- `pytest`: 266 passed
 - `ruff`: all checks passed
 - tool list: 25 tools
 - MCP `computer_learn` stdin smoke: pass
@@ -175,6 +177,12 @@ Note: `cua-win.exe --version` is not currently a supported CLI command.
 - Prefer `screenshot_id` for screenshot-coordinate actions.
 - Keep `computer_get_window_state` usable as the primary observation tool; add
   complexity only when real latency, payload, or accuracy evidence justifies it.
+- Treat `action_path.target_profile`, `delivery_risk`, `capture_reliability`,
+  `semantic_degraded_reason`, and `provider_errors` as diagnostic metadata.
+  They should explain Windows risk without changing default tool behavior.
+- Keep `computer_learn` timeline additions additive. Existing `actions[]`
+  consumers must continue to work when `observations[]` and quality metrics are
+  ignored.
 - Do not expose broad background dispatch or PostMessage input without
   verification gates and app compatibility evidence.
 - Treat localized app handling as a normal product behavior, not a user-visible
