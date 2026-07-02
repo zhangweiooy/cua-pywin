@@ -60,6 +60,8 @@ validation.
 where.exe cua-win
 cua-win doctor
 cua-win list-tools
+cua-win mcp-config
+cua-win mcp-config --client claude
 cua-win start
 cua-win computer_get_screen_size
 cua-win stop
@@ -70,6 +72,9 @@ Expected:
 - `where.exe cua-win` resolves to the installed directory.
 - `doctor` has no failures.
 - `list-tools` reports 25 tools.
+- `mcp-config` prints a `.mcp.json` shape using `{"command":"cua-win","args":["mcp"]}`.
+- `mcp-config --client claude` prints a PowerShell-safe `claude mcp add-json`
+  command.
 - `computer_get_screen_size` returns screen dimensions.
 
 ## App Smoke
@@ -83,8 +88,14 @@ Run at least one smoke pass on each of:
 Suggested flow:
 
 ```powershell
-cua-win call computer_list_windows '{"query":"微信"}'
-cua-win call computer_launch_app '{"app":"微信","wait_for_window":true,"wait_timeout":10}'
+$OutputEncoding = [System.Text.UTF8Encoding]::new($false)
+@'
+{"query":"微信"}
+'@ | cua-win call computer_list_windows -
+
+@'
+{"app":"微信","wait_for_window":true,"wait_timeout":10}
+'@ | cua-win call computer_launch_app -
 ```
 
 Then use the returned canonical `window` with:
@@ -119,15 +130,17 @@ uv run pytest -q
 uv run ruff check .
 python -m compileall -q computer_server som
 uv run python scripts/mcp_test_one.py --list
+'{"action":"status"}' | uv run python scripts/mcp_test_one.py computer_learn - --timeout 120
 uv run --no-sync python "C:\Users\vinfl\.codex\skills\.system\skill-creator\scripts\quick_validate.py" skills/cua-win
 uv run python scripts/validate_release.py --version 0.1.2
 ```
 
 Expected current baseline:
 
-- `pytest`: 247 passed
+- `pytest`: 261 passed
 - `ruff`: all checks passed
 - tool list: 25 tools
+- MCP `computer_learn` stdin smoke: pass
 - skill validation: valid
 
 ## Build Commands

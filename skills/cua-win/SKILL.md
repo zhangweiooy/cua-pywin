@@ -43,7 +43,12 @@ For CLI mode:
 cua-win doctor
 cua-win start
 cua-win list-tools
+cua-win mcp-config
 ```
+
+For MCP client setup, prefer `cua-win mcp-config`,
+`cua-win mcp-config --client claude`, or
+`cua-win mcp-config --client codex` instead of hand-writing shell-escaped JSON.
 
 If the daemon is already running, reuse it. Heavy vision models are warmed once
 per daemon process. Use `--no-daemon` only for lightweight schema/status checks

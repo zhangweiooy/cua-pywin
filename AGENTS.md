@@ -96,7 +96,12 @@ python -c "import computer_server; print('OK')"  # should complete in <10s
 
 ```bash
 # Start MCP server in stdio mode
-python -m computer_server.mcp_server
+cua-win mcp
+
+# Print copy-paste-safe MCP client config / install commands
+cua-win mcp-config
+cua-win mcp-config --client claude
+cua-win mcp-config --client codex
 
 # Start foreground HTTP server
 cua-win serve --port 8000
@@ -110,16 +115,18 @@ cua-win start
 cua-win status
 cua-win list-tools
 cua-win computer_get_screen_size
-cua-win call computer_get_window_state '{\"window\":{\"id\":5678,\"pid\":1234}}'
+@'
+{"window":{"id":5678,"pid":1234}}
+'@ | cua-win call computer_get_window_state -
 cua-win computer_press_key '{\"key\":\"Control_L+s\"}'
 cua-win computer_mouse '{\"action\":\"move\",\"x\":100,\"y\":100}'
-cua-win computer_recording '{\"action\":\"status\"}'
-cua-win computer_learn '{\"action\":\"status\"}'
+cua-win computer_recording '{action:status}'
+cua-win computer_learn '{action:status}'
 '[{"type":"wait","milliseconds":100},{"tool":"computer_get_screen_size","arguments":{}}]' | cua-win batch
 cua-win stop
 
 # Single-tool tests
-uv run python scripts/mcp_test_one.py <tool_name> [json_args] --timeout 120
+uv run python scripts/mcp_test_one.py <tool_name> [json_args|-|@file] --timeout 120
 uv run python scripts/mcp_test_one.py --list
 
 # Compile checks
@@ -574,6 +581,13 @@ functions. When the SDK is upgraded past the fix:
   and console code-page transformations. When piping Chinese JSON through
   PowerShell, set `$OutputEncoding = [System.Text.UTF8Encoding]::new($false)`;
   otherwise PowerShell can replace characters before `cua-win` receives them.
+  Inline single-tool arguments also accept a narrow flat primitive shorthand
+  such as `{action:status}`. If inline JSON fails, the CLI points users at
+  stdin, `@file`, or PowerShell 7+ with a PowerShell-specific hint.
+- `cua-win mcp` is the stable stdio MCP product entrypoint. Prefer
+  `cua-win mcp-config`, `cua-win mcp-config --client claude`, or
+  `cua-win mcp-config --client codex` for client setup instead of hand-writing
+  shell-escaped MCP JSON.
 - Subprocess environments should set `PYTHONIOENCODING=utf-8` to avoid GBK output
   issues.
 - One-shot `cua-win --no-daemon` schema queries and explicitly safe read-only

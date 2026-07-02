@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import io
+import json
 import os
 import sys
 
@@ -20,8 +21,10 @@ from computer_server.tool_cli import (
     _daemon_start_args,
     _doctor_summary,
     _execute_batch,
+    _format_mcp_config,
     _is_lightweight_inprocess_call,
     _mcp_import_mode,
+    _mcp_client_config,
     _parse_batch_actions,
     _parse_tool_arguments,
     _rewrite_implicit_call,
@@ -42,6 +45,8 @@ def test_rewrite_implicit_call() -> None:
         "computer_get_screen_size",
     ]
     assert _rewrite_implicit_call(["list-tools"]) == ["list-tools"]
+    assert _rewrite_implicit_call(["mcp"]) == ["mcp"]
+    assert _rewrite_implicit_call(["mcp-config"]) == ["mcp-config"]
     assert _rewrite_implicit_call(["doctor"]) == ["doctor"]
 
 
@@ -256,6 +261,27 @@ def test_call_help_describes_utf8_argument_sources() -> None:
 
     assert "UTF-8 stdin" in help_text
     assert "'@path'" in help_text
+
+
+def test_mcp_config_outputs_safe_client_shapes() -> None:
+    assert _mcp_client_config(command="cua-win") == {
+        "mcpServers": {
+            "cua-win": {
+                "command": "cua-win",
+                "args": ["mcp"],
+                "env": {"PYTHONIOENCODING": "utf-8"},
+            }
+        }
+    }
+
+    json_config = json.loads(_format_mcp_config("json"))
+    assert json_config["mcpServers"]["cua-win"]["args"] == ["mcp"]
+
+    claude_command = _format_mcp_config("claude")
+    assert claude_command.startswith("claude mcp add-json --scope user cua-win ")
+    assert "\\\"args\\\":[\\\"mcp\\\"]" in claude_command
+
+    assert _format_mcp_config("codex") == "codex mcp add cua-win -- cua-win mcp"
 
 
 def test_batch_help_is_self_contained() -> None:

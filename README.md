@@ -129,7 +129,12 @@ OCR 文本节点会保留 `confidence`。默认去噪只做空文本过滤和确
 
 ```bash
 # MCP stdio 模式（Claude Code / Claude Desktop）
-python -m computer_server.mcp_server
+cua-win mcp
+
+# 输出 copy-paste 安全的 MCP 客户端配置 / 安装命令
+cua-win mcp-config
+cua-win mcp-config --client claude
+cua-win mcp-config --client codex
 
 # 统一 HTTP 服务（默认只监听 127.0.0.1，提供 /status + /mcp + token JSON RPC）
 cua-win serve --port 8000
@@ -144,8 +149,8 @@ cua-win computer_get_screen_size
 '@ | cua-win call computer_get_window_state -
 cua-win computer_press_key '{\"key\":\"Control_L+s\"}'
 cua-win computer_mouse '{\"action\":\"move\",\"x\":100,\"y\":100}'
-cua-win computer_recording '{\"action\":\"status\"}'
-cua-win computer_learn '{\"action\":\"status\"}'
+cua-win computer_recording '{action:status}'
+cua-win computer_learn '{action:status}'
 $batch = '[{"type":"wait","milliseconds":100},{"tool":"computer_get_screen_size","arguments":{}}]'
 $batch | cua-win batch
 cua-win stop
@@ -161,10 +166,11 @@ cua-win serve --host 0.0.0.0 --port 8000 \
 `cua-win <tool> '<json>'` 会自动等价转换为 `cua-win call <tool> '<json>'`。
 包含中文或复杂嵌套参数时，推荐通过 UTF-8 stdin
 （`'<json>' | cua-win call <tool> -`）或 UTF-8 文件
-（`cua-win call <tool> '@arguments.json'`）传入，避免 PowerShell/native
+（`cua-win call <tool> @arguments.json`）传入，避免 PowerShell/native
 参数转义和控制台代码页改变内容。PowerShell 管道中文前需确保
 `$OutputEncoding = [System.Text.UTF8Encoding]::new($false)`，否则文本可能在
-进入 `cua-win` 前就被替换。内联 JSON 仍保持兼容。
+进入 `cua-win` 前就被替换。内联 JSON 仍保持兼容；扁平 primitive 参数
+也支持窄范围简写，例如 `{action:status}`。
 
 `cua-win batch` 从标准输入、内联 JSON 或 UTF-8 JSON 文件读取动作数组，或
 `{"defaults":...,"actions":[...]}` 对象，并在同一 CLI 进程中通过常驻 daemon
@@ -213,15 +219,21 @@ canonical `window`。微信等应用可能复用已有进程，或由不同于 l
 
 ### Claude Code 集成
 
-`.mcp.json`：
+推荐直接生成配置或安装命令，避免手写 PowerShell JSON：
+
+```powershell
+cua-win mcp-config
+cua-win mcp-config --client claude
+```
+
+`.mcp.json` 等价形态：
 
 ```json
 {
   "mcpServers": {
-    "cua-computer-server": {
-      "command": "uv",
-      "args": ["run", "python", "-m", "computer_server.mcp_server"],
-      "cwd": "D:\\Documents\\Code\\cua-pywin",
+    "cua-win": {
+      "command": "cua-win",
+      "args": ["mcp"],
       "env": { "PYTHONIOENCODING": "utf-8" }
     }
   }
@@ -357,7 +369,7 @@ handle、绑定丢失或上下文重置后重新获取当前窗口对象；使�
 
 ```bash
 # 单工具测试
-uv run python scripts/mcp_test_one.py <tool_name> [json_args] --timeout 120
+uv run python scripts/mcp_test_one.py <tool_name> [json_args|-|@file] --timeout 120
 uv run python scripts/mcp_test_one.py --list
 
 # 编译检查
@@ -504,7 +516,12 @@ symbols and single characters requires `CUA_OCR_DENOISE=strict`.
 
 ```bash
 # MCP stdio mode (Claude Code / Claude Desktop)
-python -m computer_server.mcp_server
+cua-win mcp
+
+# Print copy-paste-safe MCP client config / install commands
+cua-win mcp-config
+cua-win mcp-config --client claude
+cua-win mcp-config --client codex
 
 # Unified HTTP server (binds 127.0.0.1 by default; serves /status + /mcp + token JSON RPC)
 cua-win serve --port 8000
@@ -519,8 +536,8 @@ cua-win computer_get_screen_size
 '@ | cua-win call computer_get_window_state -
 cua-win computer_press_key '{\"key\":\"Control_L+s\"}'
 cua-win computer_mouse '{\"action\":\"move\",\"x\":100,\"y\":100}'
-cua-win computer_recording '{\"action\":\"status\"}'
-cua-win computer_learn '{\"action\":\"status\"}'
+cua-win computer_recording '{action:status}'
+cua-win computer_learn '{action:status}'
 $batch = '[{"type":"wait","milliseconds":100},{"tool":"computer_get_screen_size","arguments":{}}]'
 $batch | cua-win batch
 cua-win stop
@@ -546,8 +563,10 @@ should still reuse the daemon.
 `cua-win <tool> '<json>'` is rewritten to `cua-win call <tool> '<json>'`.
 For Chinese text or deeply nested arguments, prefer UTF-8 stdin
 (`'<json>' | cua-win call <tool> -`) or a UTF-8 file
-(`cua-win call <tool> '@arguments.json'`) to avoid PowerShell/native argument
+(`cua-win call <tool> @arguments.json`) to avoid PowerShell/native argument
 escaping and console code-page transformations. Inline JSON remains supported.
+Flat primitive arguments also accept a narrow shorthand such as
+`{action:status}`.
 
 `cua-win batch` reads an action array or a
 `{"defaults":...,"actions":[...]}` object from stdin, inline JSON, or a UTF-8
@@ -605,15 +624,22 @@ Use `cua-win serve --no-cli-rpc` when you only want `/status + /mcp`.
 
 ### Claude Code Integration
 
-`.mcp.json`:
+Prefer generating the config or install command instead of hand-writing
+PowerShell JSON:
+
+```powershell
+cua-win mcp-config
+cua-win mcp-config --client claude
+```
+
+Equivalent `.mcp.json` shape:
 
 ```json
 {
   "mcpServers": {
-    "cua-computer-server": {
-      "command": "uv",
-      "args": ["run", "python", "-m", "computer_server.mcp_server"],
-      "cwd": "D:\\Documents\\Code\\cua-pywin",
+    "cua-win": {
+      "command": "cua-win",
+      "args": ["mcp"],
       "env": { "PYTHONIOENCODING": "utf-8" }
     }
   }
@@ -809,7 +835,7 @@ known icon-shape misreads requires `CUA_OCR_DENOISE=strict`. Set
 
 ```bash
 # Single-tool test
-uv run python scripts/mcp_test_one.py <tool_name> [json_args] --timeout 120
+uv run python scripts/mcp_test_one.py <tool_name> [json_args|-|@file] --timeout 120
 uv run python scripts/mcp_test_one.py --list
 
 # Compile check

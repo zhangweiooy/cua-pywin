@@ -15,6 +15,7 @@ import os
 import platform
 import re
 import secrets
+import shlex
 import socket
 import subprocess
 import sys
@@ -66,6 +67,7 @@ _bootstrap_frozen_runtime_paths()
 
 
 CLI_NAME = "cua-win"
+DEFAULT_MCP_SERVER_NAME = "cua-win"
 DEFAULT_HOST = "127.0.0.1"
 DEFAULT_PORT = 8000
 DEFAULT_START_TIMEOUT = 60.0
@@ -77,6 +79,8 @@ COMMANDS = {
     "status",
     "stop",
     "doctor",
+    "mcp",
+    "mcp-config",
     "list-tools",
     "describe",
     "call",
@@ -1877,6 +1881,69 @@ def _cmd_batch(args: argparse.Namespace) -> int:
     return 0 if payload["success"] else 1
 
 
+def _cmd_mcp(args: argparse.Namespace) -> int:
+    from .mcp_server import run_mcp_server
+
+    run_mcp_server(
+        target_width=args.width,
+        target_height=args.height,
+        detect_resolution=args.detect_resolution,
+    )
+    return 0
+
+
+def _mcp_server_config(command: str = CLI_NAME) -> dict[str, Any]:
+    return {
+        "command": command,
+        "args": ["mcp"],
+        "env": {"PYTHONIOENCODING": "utf-8"},
+    }
+
+
+def _mcp_client_config(
+    command: str = CLI_NAME,
+    server_name: str = DEFAULT_MCP_SERVER_NAME,
+) -> dict[str, Any]:
+    return {"mcpServers": {server_name: _mcp_server_config(command)}}
+
+
+def _quote_json_for_current_shell(value: dict[str, Any]) -> str:
+    text = json.dumps(value, separators=(",", ":"), ensure_ascii=False)
+    if os.name == "nt":
+        return "'" + text.replace('"', '\\"') + "'"
+    return shlex.quote(text)
+
+
+def _format_mcp_config(
+    client: str,
+    command: str = CLI_NAME,
+    server_name: str = DEFAULT_MCP_SERVER_NAME,
+) -> str:
+    if client == "json":
+        return json.dumps(
+            _mcp_client_config(command=command, server_name=server_name),
+            indent=2,
+            ensure_ascii=False,
+        )
+    if client == "claude":
+        config = _quote_json_for_current_shell(_mcp_server_config(command))
+        return f"claude mcp add-json --scope user {server_name} {config}"
+    if client == "codex":
+        return f"codex mcp add {server_name} -- {command} mcp"
+    raise ValueError(f"unsupported MCP client: {client}")
+
+
+def _cmd_mcp_config(args: argparse.Namespace) -> int:
+    print(
+        _format_mcp_config(
+            client=args.client,
+            command=args.command_path,
+            server_name=args.server_name,
+        )
+    )
+    return 0
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog=CLI_NAME,
@@ -2010,6 +2077,43 @@ def build_parser() -> argparse.ArgumentParser:
         help="Skip probing the existing background daemon.",
     )
     doctor.set_defaults(func=_cmd_doctor)
+
+    mcp = subparsers.add_parser(
+        "mcp",
+        help="run the stdio MCP server",
+        formatter_class=_HelpFormatter,
+    )
+    mcp.add_argument("--width", type=int, help="Target screenshot width for coordinate scaling")
+    mcp.add_argument("--height", type=int, help="Target screenshot height for coordinate scaling")
+    mcp.add_argument(
+        "--detect-resolution",
+        action="store_true",
+        help="Auto-detect and log the actual screen resolution at startup.",
+    )
+    mcp.set_defaults(func=_cmd_mcp)
+
+    mcp_config = subparsers.add_parser(
+        "mcp-config",
+        help="print MCP client configuration",
+        formatter_class=_HelpFormatter,
+    )
+    mcp_config.add_argument(
+        "--client",
+        choices=["json", "claude", "codex"],
+        default="json",
+        help="Output format or client install command.",
+    )
+    mcp_config.add_argument(
+        "--server-name",
+        default=DEFAULT_MCP_SERVER_NAME,
+        help="MCP server name to register.",
+    )
+    mcp_config.add_argument(
+        "--command-path",
+        default=CLI_NAME,
+        help="Command path clients should execute.",
+    )
+    mcp_config.set_defaults(func=_cmd_mcp_config)
 
     list_tools = subparsers.add_parser(
         "list-tools",

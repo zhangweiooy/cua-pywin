@@ -6,12 +6,14 @@ Starts cua-pywin MCP in a subprocess, sends one tool call,
 prints the result, and exits with code 0 (pass) or 1 (fail).
 
 Usage:
-    uv run python scripts/mcp_test_one.py <tool_name> [json_args] [--json] [--timeout N]
+    uv run python scripts/mcp_test_one.py <tool_name> [json_args|-|@file] [--json] [--timeout N]
     uv run python scripts/mcp_test_one.py --list              # list available tools
 
 Examples:
     uv run python scripts/mcp_test_one.py computer_get_screen_size
     uv run python scripts/mcp_test_one.py computer_get_window '{\"active\":true}'
+    '{"action":"status"}' | uv run python scripts/mcp_test_one.py computer_learn -
+    uv run python scripts/mcp_test_one.py computer_learn @args.json
     uv run python scripts/mcp_test_one.py computer_get_screen_size --json
     uv run python scripts/mcp_test_one.py computer_screenshot --timeout 120
 
@@ -26,6 +28,7 @@ from __future__ import annotations
 import io
 import json
 import os
+from pathlib import Path
 import subprocess
 import sys
 import threading
@@ -51,6 +54,37 @@ def die(msg: str) -> None:
 def ok(msg: str) -> None:
     """Print a PASS line to stdout."""
     print(f"PASS|{msg}")
+
+
+def _read_stdin_utf8() -> str:
+    buffer = getattr(sys.stdin, "buffer", None)
+    if buffer is not None:
+        return buffer.read().decode("utf-8-sig")
+    return sys.stdin.read().lstrip("\ufeff")
+
+
+def _parse_tool_args(raw: str | None) -> dict:
+    if raw is None:
+        return {}
+    if raw == "-":
+        source = _read_stdin_utf8()
+    elif raw.startswith("@"):
+        path_text = raw[1:]
+        if not path_text:
+            die("argument file path is required after @")
+        try:
+            source = Path(path_text).read_text(encoding="utf-8-sig")
+        except OSError as exc:
+            die(f"could not read argument file {path_text!r}: {exc}")
+    else:
+        source = raw
+    try:
+        parsed = json.loads(source)
+    except json.JSONDecodeError as exc:
+        die(f"invalid JSON args: {exc.msg}")
+    if not isinstance(parsed, dict):
+        die("JSON args must be an object")
+    return parsed
 
 
 # ---------------------------------------------------------------------------
@@ -299,6 +333,7 @@ def main() -> None:
     list_mode = False
     tool_name = None
     tool_args: dict = {}
+    tool_args_seen = False
     user_timeout: int | None = None
 
     i = 0
@@ -321,11 +356,9 @@ def main() -> None:
                 die(f"--timeout must be an integer, got: {args[i]}")
         elif tool_name is None:
             tool_name = a
-        elif not tool_args:
-            try:
-                tool_args = json.loads(a)
-            except json.JSONDecodeError:
-                die(f"invalid JSON args: {a}")
+        elif not tool_args_seen:
+            tool_args = _parse_tool_args(a)
+            tool_args_seen = True
         else:
             die(f"unexpected argument: {a}")
         i += 1

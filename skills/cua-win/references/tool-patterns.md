@@ -189,7 +189,13 @@ cua-win doctor
 cua-win status
 cua-win list-tools
 cua-win describe computer_get_window_state
+cua-win mcp-config
+cua-win mcp-config --client claude
+cua-win mcp-config --client codex
 ```
+
+Use generated MCP config commands instead of hand-writing PowerShell-escaped
+JSON for client setup.
 
 Use UTF-8 stdin for Chinese text or nested JSON:
 
