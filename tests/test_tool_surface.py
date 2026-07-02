@@ -343,13 +343,87 @@ async def test_click_returns_action_path_for_pixel_click(monkeypatch):
 
     assert result.structured_content["success"] is True
     assert result.structured_content["method"] == "pixel_click"
-    assert result.structured_content["action_path"] == {
+    action_path = result.structured_content["action_path"]
+    assert action_path == {
         "method": "pixel_click",
         "used_foreground": True,
         "uses_system_input": True,
         "requires_visible_target": True,
+        "target_profile": {"family": "generic"},
+        "delivery_risk": "visible_target_required",
+        "delivery_note": (
+            "Pixel/system input requires the target point to be visible and focused."
+        ),
         "coordinate_source": "screen",
     }
+
+
+@pytest.mark.asyncio
+async def test_type_returns_target_profile_action_path(monkeypatch):
+    import computer_server.mcp_server as mcp_module
+
+    automation = _FakeAutomation()
+    window_handler = _FakeWindow()
+    monkeypatch.setattr(
+        mcp_module,
+        "_handlers",
+        SimpleNamespace(automation=automation, window=window_handler),
+    )
+
+    result = await create_mcp_server().call_tool(
+        "computer_type",
+        {
+            "text": "hello",
+            "window": {
+                "id": 456,
+                "pid": 123,
+                "process_name": "pwsh.exe",
+                "class_name": "CASCADIA_HOSTING_WINDOW_CLASS",
+                "title": "PowerShell",
+            },
+        },
+    )
+
+    action_path = result.structured_content["action_path"]
+    assert action_path["method"] == "clipboard_type"
+    assert action_path["target_profile"]["family"] == "terminal"
+    assert action_path["delivery_risk"] == "terminal_focus_sensitive"
+    assert automation.typed_text == ["hello"]
+    assert window_handler.activations == [456]
+
+
+@pytest.mark.asyncio
+async def test_press_key_returns_target_profile_action_path(monkeypatch):
+    import computer_server.mcp_server as mcp_module
+
+    automation = _FakeAutomation()
+    window_handler = _FakeWindow()
+    monkeypatch.setattr(
+        mcp_module,
+        "_handlers",
+        SimpleNamespace(automation=automation, window=window_handler),
+    )
+
+    result = await create_mcp_server().call_tool(
+        "computer_press_key",
+        {
+            "key": "Control_L+s",
+            "window": {
+                "id": 456,
+                "pid": 123,
+                "process_name": "soffice.bin",
+                "class_name": "SALFRAME",
+                "title": "LibreOffice Writer",
+            },
+        },
+    )
+
+    action_path = result.structured_content["action_path"]
+    assert action_path["method"] == "hotkey"
+    assert action_path["target_profile"]["family"] == "vcl_sal"
+    assert action_path["delivery_risk"] == "accelerator_state_sensitive"
+    assert automation.key_events == [("hotkey", ["Control_L", "s"])]
+    assert window_handler.activations == [456]
 
 
 @pytest.mark.asyncio
@@ -673,7 +747,11 @@ async def test_press_key_accepts_hotkey_string(monkeypatch):
         {"key": "Control_L+s"},
     )
 
-    assert result.structured_content == {"success": True, "keys": ["Control_L", "s"]}
+    content = result.structured_content
+    assert content["success"] is True
+    assert content["keys"] == ["Control_L", "s"]
+    assert content["action_path"]["method"] == "hotkey"
+    assert content["action_path"]["delivery_risk"] == "focused_input_required"
 
 
 @pytest.mark.asyncio
@@ -790,16 +868,14 @@ async def test_press_key_accepts_down_and_up_actions(monkeypatch):
         {"key": "Shift", "action": "up"},
     )
 
-    assert down_result.structured_content == {
-        "success": True,
-        "key": "Shift",
-        "action": "down",
-    }
-    assert up_result.structured_content == {
-        "success": True,
-        "key": "Shift",
-        "action": "up",
-    }
+    assert down_result.structured_content["success"] is True
+    assert down_result.structured_content["key"] == "Shift"
+    assert down_result.structured_content["action"] == "down"
+    assert down_result.structured_content["action_path"]["method"] == "key_down"
+    assert up_result.structured_content["success"] is True
+    assert up_result.structured_content["key"] == "Shift"
+    assert up_result.structured_content["action"] == "up"
+    assert up_result.structured_content["action_path"]["method"] == "key_up"
     assert fake.key_events == [("down", "Shift"), ("up", "Shift")]
 
 
@@ -1017,6 +1093,9 @@ async def test_learn_status_uses_merged_tool():
     assert data["duration_seconds"] == 0
     assert data["observation_count"] == 0
     assert data["pending_observations"] == 0
+    assert data["degraded_observations"] == 0
+    assert data["capture_warning_count"] == 0
+    assert data["target_profile_counts"] == {}
 
 
 @pytest.mark.asyncio
@@ -1661,11 +1740,14 @@ async def test_screenshot_id_rejects_stale_capture(monkeypatch):
         {"screenshot_id": first.structured_content["screenshot_id"], "x": 1, "y": 2},
     )
 
-    assert result.structured_content == {
-        "success": False,
-        "error": "screenshot_id is stale for pid=123, window_id=456",
-        "suggestion": "Use the latest screenshot_id returned by computer_get_window_state or capture_after.",
-    }
+    content = result.structured_content
+    assert content["success"] is False
+    assert content["code"] == "screenshot_stale"
+    assert content["error"] == "screenshot_id is stale for pid=123, window_id=456"
+    assert content["target_profile"]["family"]
+    assert content["suggestion"] == (
+        "Use the latest screenshot_id returned by computer_get_window_state or capture_after."
+    )
 
 
 @pytest.mark.asyncio

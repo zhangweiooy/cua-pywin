@@ -526,6 +526,19 @@ def create_mcp_server() -> FastMCP:
             )
         return bool(result), error
 
+    def _build_target_profile_dict(
+        pid: Optional[int],
+        window_id: Optional[int],
+        window: Optional[Dict[str, Any]] = None,
+    ) -> Dict[str, Any]:
+        from computer_server.services.target_profile_service import classify_target_profile
+
+        return classify_target_profile(
+            window=window,
+            pid=pid,
+            window_id=window_id,
+        ).to_dict()
+
     def _resolve_snapshot_ref(
         snapshot_id: Optional[str],
         pid: Optional[int],
@@ -539,13 +552,16 @@ def create_mcp_server() -> FastMCP:
         if snapshot is None:
             return pid, window_id, {
                 "success": False,
+                "code": "snapshot_not_found",
                 "error": f"Unknown or expired snapshot_id: {snapshot_id}",
                 "suggestion": "Call computer_get_window_state again and use the returned snapshot_id.",
             }
         if not context.observations.is_latest(snapshot_id):
             return pid, window_id, {
                 "success": False,
+                "code": "snapshot_stale",
                 "error": f"snapshot_id is stale for pid={snapshot.pid}, window_id={snapshot.window_id}",
+                "target_profile": _build_target_profile_dict(snapshot.pid, snapshot.window_id),
                 "suggestion": "Use the latest snapshot_id returned by computer_get_window_state or capture_after.",
             }
         if pid is not None and int(pid) != snapshot.pid:
@@ -582,16 +598,19 @@ def create_mcp_server() -> FastMCP:
         if screenshot is None:
             return pid, window_id, None, {
                 "success": False,
+                "code": "screenshot_not_found",
                 "error": f"Unknown or expired screenshot_id: {screenshot_id}",
                 "suggestion": "Call computer_get_window_state again and use the returned screenshot_id.",
             }
         if not context.observations.is_latest_screenshot(screenshot_id):
             return pid, window_id, None, {
                 "success": False,
+                "code": "screenshot_stale",
                 "error": (
                     "screenshot_id is stale for "
                     f"pid={screenshot.pid}, window_id={screenshot.window_id}"
                 ),
+                "target_profile": _build_target_profile_dict(screenshot.pid, screenshot.window_id),
                 "suggestion": "Use the latest screenshot_id returned by computer_get_window_state or capture_after.",
             }
         if snapshot_id is not None and snapshot_id != screenshot.snapshot_id:
@@ -712,11 +731,17 @@ def create_mcp_server() -> FastMCP:
         if activation.get("success") is False:
             return resolved_pid, resolved_window_id, {
                 "success": False,
+                "code": "target_activation_failed",
                 "error": (
                     f"Failed to activate target window {resolved_window_id}: "
                     f"{activation.get('error', 'activation failed')}"
                 ),
                 "window_id": resolved_window_id,
+                "target_profile": _build_target_profile_dict(
+                    resolved_pid,
+                    resolved_window_id,
+                    window,
+                ),
                 "activation": activation,
             }
         return resolved_pid, resolved_window_id, None
@@ -970,6 +995,8 @@ def create_mcp_server() -> FastMCP:
                 "screenshot_id": fresh.get("screenshot_id"),
                 "capture": fresh.get("capture"),
                 "capture_metadata": fresh.get("capture_metadata"),
+                "capture_reliability": fresh.get("capture_reliability"),
+                "target_profile": fresh.get("target_profile"),
                 "nodes": fresh.get("nodes", []),
                 "node_count": fresh.get("node_count", 0),
                 "returned_node_count": fresh.get("returned_node_count", fresh.get("node_count", 0)),
@@ -983,6 +1010,8 @@ def create_mcp_server() -> FastMCP:
                 "uia_quality": fresh.get("uia_quality"),
                 "msaa_quality": fresh.get("msaa_quality"),
                 "vision_quality": fresh.get("vision_quality"),
+                "semantic_degraded_reason": fresh.get("semantic_degraded_reason"),
+                "provider_errors": fresh.get("provider_errors", {}),
                 "accessibility_hint": fresh.get("accessibility_hint"),
                 "observation_recommendation": fresh.get("observation_recommendation"),
                 "node_sources": fresh.get("node_sources", []),
@@ -1017,12 +1046,34 @@ def create_mcp_server() -> FastMCP:
         used_foreground: bool,
         uses_system_input: bool,
         requires_visible_target: bool,
+        pid: Optional[int] = None,
+        window_id: Optional[int] = None,
+        window: Optional[Dict[str, Any]] = None,
+        action_kind: Optional[str] = None,
         coordinate_source: Optional[str] = None,
         input_screenshot_id: Optional[str] = None,
         capture_backend: Optional[str] = None,
         capture_coordinate_space: Optional[str] = None,
     ) -> None:
         """Attach transparent action-path metadata to a tool result."""
+        from computer_server.services.target_profile_service import (
+            assess_delivery_risk,
+            classify_target_profile,
+        )
+
+        target_profile = classify_target_profile(
+            window=window,
+            pid=pid,
+            window_id=window_id,
+        )
+        delivery_risk, delivery_note = assess_delivery_risk(
+            target_profile,
+            action_kind=action_kind or method,
+            method=method,
+            used_foreground=used_foreground,
+            uses_system_input=uses_system_input,
+            requires_visible_target=requires_visible_target,
+        )
         result.setdefault("method", method)
         result["used_foreground"] = used_foreground
         result["uses_system_input"] = uses_system_input
@@ -1032,6 +1083,9 @@ def create_mcp_server() -> FastMCP:
             "used_foreground": used_foreground,
             "uses_system_input": uses_system_input,
             "requires_visible_target": requires_visible_target,
+            "target_profile": target_profile.to_dict(),
+            "delivery_risk": delivery_risk,
+            "delivery_note": delivery_note,
         }
         if coordinate_source:
             result["action_path"]["coordinate_source"] = coordinate_source
@@ -1292,6 +1346,9 @@ def create_mcp_server() -> FastMCP:
                 used_foreground=False,
                 uses_system_input=False,
                 requires_visible_target=False,
+                pid=pid,
+                window_id=window_id,
+                action_kind="click",
                 coordinate_source="element",
             )
 
@@ -1594,10 +1651,12 @@ def create_mcp_server() -> FastMCP:
         if modifier:
             return {
                 "success": False,
+                "code": "force_frontmost_modifier_unsupported",
                 "error": (
                     "force_frontmost does not support modifier keys — use two separate calls: "
                     "computer_press_key to hold the modifier, then force_frontmost click without modifier"
                 ),
+                "target_profile": _build_target_profile_dict(pid, window_id),
                 "suggestion": "Split into separate key_down + click + key_up calls",
             }
         try:
@@ -1634,6 +1693,9 @@ def create_mcp_server() -> FastMCP:
                 used_foreground=True,
                 uses_system_input=True,
                 requires_visible_target=True,
+                pid=pid,
+                window_id=window_id,
+                action_kind="click",
                 coordinate_source=coordinate_source,
                 input_screenshot_id=input_screenshot_id,
                 capture_backend=capture_backend,
@@ -1671,7 +1733,9 @@ def create_mcp_server() -> FastMCP:
         except Exception as exc:
             return {
                 "success": False,
+                "code": "force_frontmost_click_failed",
                 "error": f"force_frontmost click failed: {exc}",
+                "target_profile": _build_target_profile_dict(pid, window_id),
                 "suggestion": "Try without force_frontmost=True, or use computer_press_key with a hotkey to bring the window to front first",
             }
 
@@ -1960,6 +2024,10 @@ def create_mcp_server() -> FastMCP:
             used_foreground=True,
             uses_system_input=True,
             requires_visible_target=True,
+            pid=pid,
+            window_id=window_id,
+            window=window,
+            action_kind="click",
             coordinate_source="element" if element_index is not None else coordinate_space,
             input_screenshot_id=screenshot_ctx.screenshot_id if screenshot_ctx is not None else None,
             capture_backend=(
@@ -2118,10 +2186,12 @@ def create_mcp_server() -> FastMCP:
         if activation.get("success") is False:
             return {
                 "success": False,
+                "code": "target_activation_failed",
                 "error": (
                     f"Failed to activate target window {window_id}: "
                     f"{activation.get('error', 'activation failed')}"
                 ),
+                "target_profile": _build_target_profile_dict(pid, window_id, window),
                 "activation": activation,
             }
 
@@ -2151,6 +2221,10 @@ def create_mcp_server() -> FastMCP:
             used_foreground=True,
             uses_system_input=True,
             requires_visible_target=True,
+            pid=pid,
+            window_id=window_id,
+            window=window,
+            action_kind="click",
             coordinate_source="element",
         )
         await _attach_post_action_observation(
@@ -2499,6 +2573,10 @@ def create_mcp_server() -> FastMCP:
             used_foreground=True,
             uses_system_input=True,
             requires_visible_target=True,
+            pid=pid,
+            window_id=window_id,
+            window=window,
+            action_kind="drag",
             coordinate_source="element" if element_index is not None else coordinate_space,
             input_screenshot_id=screenshot_ctx.screenshot_id if screenshot_ctx is not None else None,
             capture_backend=(
@@ -2766,6 +2844,10 @@ def create_mcp_server() -> FastMCP:
             used_foreground=x is not None and y is not None,
             uses_system_input=True,
             requires_visible_target=True,
+            pid=pid,
+            window_id=window_id,
+            window=window,
+            action_kind="scroll",
             coordinate_source="element" if element_index is not None else coordinate_space,
             input_screenshot_id=screenshot_ctx.screenshot_id if screenshot_ctx is not None else None,
             capture_backend=(
@@ -2882,6 +2964,17 @@ def create_mcp_server() -> FastMCP:
             include_post_action_delta,
         )
         result = await automation_handler.type_text(text)
+        _annotate_action_path(
+            result,
+            method="clipboard_type",
+            used_foreground=window_id is not None,
+            uses_system_input=True,
+            requires_visible_target=False,
+            pid=pid,
+            window_id=window_id,
+            window=window,
+            action_kind="type",
+        )
         _attach_input_window(result, pid, window_id)
         recorded_text = "<redacted>" if sensitive else text
         record_args: Dict[str, Any] = {
@@ -3001,6 +3094,23 @@ def create_mcp_server() -> FastMCP:
                 if was_held:
                     _end_learning_input_suppression(True)
 
+        if normalized_keys is not None:
+            key_method = "hotkey"
+            key_action_kind = "hotkey"
+        else:
+            key_method = f"key_{normalized_action}"
+            key_action_kind = "press_key"
+        _annotate_action_path(
+            result,
+            method=key_method,
+            used_foreground=window_id is not None and normalized_action != "up",
+            uses_system_input=True,
+            requires_visible_target=False,
+            pid=pid,
+            window_id=window_id,
+            window=window,
+            action_kind=key_action_kind,
+        )
         _attach_input_window(
             result,
             pid,
@@ -4440,6 +4550,9 @@ def create_mcp_server() -> FastMCP:
                         "dropped_observations": 0,
                         "timeout_count": 0,
                         "sensitive_skip_count": 0,
+                        "degraded_observations": 0,
+                        "capture_warning_count": 0,
+                        "target_profile_counts": {},
                         "last_event_at": None,
                         "last_observation_at": None,
                         "duration_seconds": 0,
