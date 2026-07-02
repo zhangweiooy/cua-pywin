@@ -395,6 +395,117 @@ def _best_tree_quality(*qualities: str) -> str:
     return best
 
 
+def _merge_provider_errors(*sources: Dict[str, Any]) -> Dict[str, str]:
+    merged: Dict[str, str] = {}
+    for source in sources:
+        errors = source.get("provider_errors") or {}
+        if isinstance(errors, dict):
+            for key, value in errors.items():
+                if value:
+                    merged[str(key)] = str(value)
+    return merged
+
+
+def _semantic_degraded_reason(
+    *,
+    tree_quality: str,
+    uia_data: Dict[str, Any],
+    msaa_quality: str,
+    vision_quality: str,
+    returned_node_count: int,
+) -> Optional[str]:
+    for source in (uia_data,):
+        reason = source.get("degraded_reason")
+        if reason:
+            return str(reason)
+    if tree_quality == "empty" and returned_node_count == 0:
+        if uia_data.get("uia_quality") == "empty" and msaa_quality == "empty" and vision_quality == "empty":
+            return "semantic_tree_empty"
+    if tree_quality in {"empty", "poor"}:
+        return f"semantic_tree_{tree_quality}"
+    return None
+
+
+def _sample_window_occlusion(
+    window_id: int,
+    bounds: Optional[Dict[str, Any]],
+) -> Dict[str, Any]:
+    """Best-effort screen-crop occlusion sampling for diagnostic metadata."""
+    if not bounds or bounds.get("width", 0) <= 0 or bounds.get("height", 0) <= 0:
+        return {"status": "unavailable", "reason": "bounds_unavailable"}
+    try:
+        import win32gui
+
+        left = int(bounds["x"])
+        top = int(bounds["y"])
+        width = int(bounds["width"])
+        height = int(bounds["height"])
+        right = left + width - 1
+        bottom = top + height - 1
+        samples = [
+            (left + width // 2, top + height // 2),
+            (left + 1, top + 1),
+            (max(left + 1, right - 1), top + 1),
+            (left + 1, max(top + 1, bottom - 1)),
+            (max(left + 1, right - 1), max(top + 1, bottom - 1)),
+        ]
+        matched = 0
+        mismatched = 0
+        for point in samples:
+            hwnd = win32gui.WindowFromPoint(point)
+            try:
+                root = win32gui.GetAncestor(hwnd, 2) if hwnd else hwnd
+            except Exception:
+                root = hwnd
+            if int(root or 0) == int(window_id):
+                matched += 1
+            else:
+                mismatched += 1
+        if mismatched == 0 and matched > 0:
+            return {"status": "clear", "sampled_points": len(samples)}
+        return {
+            "status": "possibly_occluded",
+            "sampled_points": len(samples),
+            "matched_points": matched,
+            "mismatched_points": mismatched,
+        }
+    except Exception as exc:
+        return {"status": "unavailable", "reason": str(exc)}
+
+
+def _finalize_capture_metadata(metadata: Dict[str, Any]) -> Dict[str, Any]:
+    warnings = list(dict.fromkeys(str(w) for w in metadata.get("warnings", []) if w))
+    fallback = metadata.get("fallback") if isinstance(metadata.get("fallback"), dict) else None
+    provider_errors: Dict[str, str] = {}
+    if fallback and fallback.get("reason"):
+        provider_errors[str(fallback.get("from_backend") or "capture")] = str(fallback["reason"])
+    metadata["warnings"] = warnings
+    metadata["provider_errors"] = provider_errors
+
+    degraded_reason: Optional[str] = None
+    for warning, reason in (
+        ("target_window_minimized", "target_window_minimized"),
+        ("target_window_bounds_unavailable", "target_window_bounds_unavailable"),
+        ("target_window_possibly_occluded", "screen_crop_occlusion_risk"),
+        ("preferred_capture_backend_failed", "preferred_capture_backend_failed"),
+    ):
+        if warning in warnings:
+            degraded_reason = reason
+            break
+    if degraded_reason is None and metadata.get("occlusion_risk"):
+        degraded_reason = "screen_crop_occlusion_risk"
+    metadata["degraded_reason"] = degraded_reason
+
+    if metadata.get("capture_backend") == "wgc" and not degraded_reason:
+        reliability = "high"
+    elif degraded_reason in {None, "preferred_capture_backend_failed"}:
+        reliability = "medium"
+    else:
+        reliability = "low"
+    metadata["capture_reliability"] = reliability
+    return metadata
+
+
 def should_collect_msaa(
     uia_data: Dict[str, Any],
     window_state: Optional[Dict[str, Any]] = None,
@@ -439,6 +550,8 @@ async def collect_uia_nodes(
             "tree_markdown": "",
             "uia_quality": "empty",
             "tree_quality": "empty",
+            "provider_errors": {"uia": skip_reason},
+            "degraded_reason": "uia_gate_skipped",
         }
 
     try:
@@ -489,6 +602,8 @@ async def collect_uia_nodes(
             "tree_markdown": uia_result.tree_markdown,
             "uia_quality": uia_result.tree_quality,
             "tree_quality": uia_result.tree_quality,
+            "provider_errors": {},
+            "degraded_reason": None,
         }
     except asyncio.TimeoutError:
         gate.mark_unhealthy(gate_key)
@@ -507,6 +622,8 @@ async def collect_uia_nodes(
             "tree_markdown": "",
             "uia_quality": "empty",
             "tree_quality": "empty",
+            "provider_errors": {"uia": "timeout"},
+            "degraded_reason": "uia_timeout",
         }
     except Exception as e:
         logger.warning("Windows UIA tree walk failed: %s", e)
@@ -517,6 +634,8 @@ async def collect_uia_nodes(
             "tree_markdown": "",
             "uia_quality": "empty",
             "tree_quality": "empty",
+            "provider_errors": {"uia": str(e)},
+            "degraded_reason": "uia_error",
         }
     finally:
         if claimed_gate:
@@ -618,6 +737,8 @@ async def collect_msaa_nodes(
                 "msaa_node_count": 0,
                 "tree_markdown": "",
                 "msaa_quality": "empty",
+                "provider_errors": {"msaa": gate_error} if gate_error else {},
+                "degraded_reason": "msaa_gate_skipped" if gate_error else None,
             }
 
         nodes: List[Dict[str, Any]] = []
@@ -664,6 +785,8 @@ async def collect_msaa_nodes(
             "msaa_node_count": len(msaa_result.indexed_nodes),
             "tree_markdown": msaa_result.tree_markdown,
             "msaa_quality": msaa_result.tree_quality,
+            "provider_errors": {},
+            "degraded_reason": None,
         }
     except Exception as e:
         logger.warning("Windows MSAA tree walk failed: %s", e)
@@ -675,6 +798,8 @@ async def collect_msaa_nodes(
             "msaa_node_count": 0,
             "tree_markdown": "",
             "msaa_quality": "empty",
+            "provider_errors": {"msaa": str(e)},
+            "degraded_reason": "msaa_error",
         }
 
 
@@ -1547,6 +1672,16 @@ def build_window_capture_metadata(
             "resized": geometry.compression_ratio != 1.0,
         },
     }
+    if target_cropped:
+        occlusion_sample = _sample_window_occlusion(window_id, bounds)
+        capture_metadata["occlusion_sample"] = occlusion_sample
+        if occlusion_sample.get("status") == "clear":
+            capture_metadata["occlusion_risk"] = False
+            capture_metadata["occlusion_detection"] = "sampled_top_window_points"
+        elif occlusion_sample.get("status") == "possibly_occluded":
+            capture_metadata["occlusion_risk"] = True
+            capture_metadata["occlusion_detection"] = "sampled_top_window_points"
+            warnings.append("target_window_possibly_occluded")
     if fallback_reason:
         capture_metadata["fallback"] = {
             "from_backend": fallback_backend or "unknown",
@@ -1554,7 +1689,7 @@ def build_window_capture_metadata(
         }
     if "virtual_screen" in screenshot_result:
         capture_metadata["virtual_screen"] = screenshot_result["virtual_screen"]
-    return capture_metadata
+    return _finalize_capture_metadata(capture_metadata)
 
 
 def build_wgc_window_capture_metadata(
@@ -1577,7 +1712,7 @@ def build_wgc_window_capture_metadata(
     combined_stage_timings = dict(wgc_metadata.get("stage_timings") or {})
     combined_stage_timings.update(stage_timings or {})
 
-    return {
+    return _finalize_capture_metadata({
         **wgc_metadata,
         "capture_backend": "wgc",
         "capture_mode": "wgc_window",
@@ -1614,7 +1749,7 @@ def build_wgc_window_capture_metadata(
             "compression_ratio": geometry.compression_ratio,
             "resized": geometry.compression_ratio != 1.0,
         },
-    }
+    })
 
 
 def save_window_state_screenshot(
@@ -1813,6 +1948,7 @@ async def get_window_state_snapshot(
         msaa_tree_node_count: int = 0
         msaa_node_count: int = 0
         vision_node_count: int = 0
+        msaa_data: Dict[str, Any] = {}
 
         if should_collect_msaa(uia_data, window_capture_state):
             msaa_data = await collect_msaa_nodes(
@@ -1889,6 +2025,24 @@ async def get_window_state_snapshot(
             query=query,
             force_som=force_som,
         )
+        provider_errors = _merge_provider_errors(uia_data, msaa_data)
+        semantic_degraded_reason = _semantic_degraded_reason(
+            tree_quality=tree_quality,
+            uia_data=uia_data,
+            msaa_quality=msaa_quality,
+            vision_quality=vision_quality,
+            returned_node_count=len(returned_nodes),
+        )
+        if semantic_degraded_reason is None and msaa_data.get("degraded_reason"):
+            semantic_degraded_reason = str(msaa_data["degraded_reason"])
+
+        from computer_server.services.target_profile_service import classify_target_profile
+
+        target_profile = classify_target_profile(
+            pid=pid,
+            window_id=window_id,
+            class_name=window_capture_state.get("class_name"),
+        )
 
         screenshot_field = save_window_state_screenshot(
             img,
@@ -1910,7 +2064,11 @@ async def get_window_state_snapshot(
             "vision_metadata": vision_metadata,
             "accessibility_hint": accessibility_hint,
             "observation_recommendation": accessibility_hint["recommended_next_step"],
+            "semantic_degraded_reason": semantic_degraded_reason,
+            "provider_errors": provider_errors,
             "capture_metadata": capture_metadata,
+            "capture_reliability": capture_metadata.get("capture_reliability"),
+            "target_profile": target_profile.to_dict(),
             "node_sources": sorted({node.get("source", "unknown") for node in nodes}),
             "merged_node_count": len(nodes),
             "unfiltered_node_count": len(nodes),

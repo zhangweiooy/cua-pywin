@@ -574,6 +574,13 @@ async def test_get_window_state_snapshot_prefers_wgc_capture(monkeypatch):
     assert result["capture_metadata"]["capture_mode"] == "wgc_window"
     assert result["capture_metadata"]["occlusion_safe"] is True
     assert result["capture_metadata"]["occlusion_risk"] is False
+    assert result["capture_metadata"]["capture_reliability"] == "high"
+    assert result["capture_metadata"]["provider_errors"] == {}
+    assert result["capture_metadata"]["degraded_reason"] is None
+    assert result["capture_reliability"] == "high"
+    assert result["semantic_degraded_reason"] == "semantic_tree_empty"
+    assert result["provider_errors"] == {}
+    assert result["target_profile"]["family"]
     timings = result["capture_metadata"]["stage_timings"]
     assert timings["wgc_frame_wait_latency"] == 0.01
     assert timings["wgc_total_latency"] == 0.02
@@ -641,6 +648,9 @@ async def test_get_window_state_snapshot_reports_minimized_wgc_fallback_timings(
     }
     assert "target_window_minimized" in metadata["warnings"]
     assert "preferred_capture_backend_failed" in metadata["warnings"]
+    assert metadata["capture_reliability"] == "low"
+    assert metadata["degraded_reason"] == "target_window_minimized"
+    assert metadata["provider_errors"] == {"wgc": "target_window_minimized"}
     timings = metadata["stage_timings"]
     assert timings["wgc_latency"] >= 0
     assert timings["screen_capture_latency"] >= 0
