@@ -123,6 +123,15 @@ $OutputEncoding = [System.Text.UTF8Encoding]::new($false)
 
 Using `@args.json` files is usually safer for nested JSON or Chinese text.
 
+For a compact read-only diagnostics pass across common apps, run:
+
+```powershell
+uv run python scripts/windows_robustness_smoke.py
+```
+
+The script prints JSON summaries for target profile, capture reliability, tree
+quality, and provider-error keys. It does not print screenshots or node text.
+
 ## Development Checks
 
 Before committing code changes:

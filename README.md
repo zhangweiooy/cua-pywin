@@ -214,6 +214,9 @@ canonical `window`。微信等应用可能复用已有进程，或由不同于 l
 ```
 
 `cua-win doctor` 执行只读本机诊断：平台、Python 版本、依赖可发现性、打包模型文件、状态目录、interactive desktop、窗口枚举、全屏截图可用性和现有 daemon 可达性。它不会启动 daemon 或执行输入动作；可用 `--no-desktop` 跳过桌面探测。
+真实应用诊断可运行 `uv run python scripts/windows_robustness_smoke.py`；脚本会对
+Notepad、Edge/Chrome、Windows Terminal、微信和钉钉输出只读 JSON 摘要，不打印
+截图或节点文本。
 
 如果只需要 `/status + /mcp`，可用 `cua-win serve --no-cli-rpc` 关闭 CLI JSON RPC 路由。
 
@@ -622,6 +625,9 @@ version, dependency availability, bundled model files, state directory,
 interactive desktop, window enumeration, full-screen screenshot availability,
 and existing daemon reachability. It does not start the daemon or send input;
 pass `--no-desktop` to skip desktop probes.
+For real-app diagnostics, run `uv run python scripts/windows_robustness_smoke.py`.
+It prints read-only JSON summaries for Notepad, Edge/Chrome, Windows Terminal,
+WeChat, and DingTalk without screenshots or node text.
 
 Use `cua-win serve --no-cli-rpc` when you only want `/status + /mcp`.
 
