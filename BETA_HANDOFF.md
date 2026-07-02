@@ -1,4 +1,4 @@
-# cua-win 0.1.2 Beta Handoff
+# cua-win 0.1.3 Beta Handoff
 
 This document is the short handoff for a fresh session, beta tester, or future
 feature-iteration pass. It intentionally avoids project history and focuses on
@@ -8,12 +8,12 @@ the current working state.
 
 - Repository: `D:\Documents\Code\cua-pywin`
 - Branch: `master`
-- Version: `0.1.2`
-- Latest prepared commit: `f1b8748 Prepare 0.1.2 beta build`
+- Version: `0.1.3`
+- Latest prepared commit: pending 0.1.3 beta build
 - Public MCP surface: 25 tools
 - Repository visibility: private
 
-Built artifacts:
+Latest available 0.1.2 beta artifacts:
 
 - Installer: `dist-installer\cua-win-0.1.2-win64-setup.exe`
 - Installer SHA256:
@@ -23,13 +23,17 @@ Built artifacts:
   `0a7577ace9d708c1f3d75910d60df2066ac2f47aa97719cf9a6b3436113651c4`
 - Standalone directory: `dist-nuitka\cua-win.dist`
 
+The 0.1.3 artifacts have not been built yet. After the 0.1.3 build, replace
+the artifact paths and hashes above before using this handoff for external
+installer testing.
+
 ## Start A Fresh Session
 
 Use this prompt when continuing in a new Codex session:
 
 ```text
 Project: D:\Documents\Code\cua-pywin
-Current version: 0.1.2 beta
+Current version: 0.1.3 beta
 Current branch: master
 Goal: continue beta testing and feature iteration from the current codebase.
 Do not re-open old architectural debates unless new evidence appears.
@@ -49,7 +53,8 @@ git log -3 --oneline
 
 Use a clean Windows machine when possible. The development machine has already
 run local release smoke, but it is not a substitute for clean-machine install
-validation.
+validation. Until 0.1.3 artifacts are built, this section still references the
+latest available 0.1.2 beta installer.
 
 1. Run `dist-installer\cua-win-0.1.2-win64-setup.exe`.
 2. Enable `Add cua-win to the current user's PATH`.
@@ -143,7 +148,7 @@ python -m compileall -q computer_server som
 uv run python scripts/mcp_test_one.py --list
 '{"action":"status"}' | uv run python scripts/mcp_test_one.py computer_learn - --timeout 120
 uv run --no-sync python "C:\Users\vinfl\.codex\skills\.system\skill-creator\scripts\quick_validate.py" skills/cua-win
-uv run python scripts/validate_release.py --version 0.1.2
+uv run python scripts/validate_release.py --version 0.1.3
 ```
 
 Expected current baseline:
@@ -159,14 +164,14 @@ Expected current baseline:
 Fast local standalone rebuild after dependencies are already synced:
 
 ```powershell
-./scripts/build_nuitka.ps1 -Version 0.1.2 -SkipSync -SkipChecks
-./scripts/build_installer.ps1 -Version 0.1.2
+./scripts/build_nuitka.ps1 -Version 0.1.3 -SkipSync -SkipChecks
+./scripts/build_installer.ps1 -Version 0.1.3
 ```
 
 Full wheel/release candidate validation:
 
 ```powershell
-./scripts/build_release.ps1 -Version 0.1.2
+./scripts/build_release.ps1 -Version 0.1.3
 ```
 
 Standalone smoke:
