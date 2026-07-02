@@ -1009,10 +1009,14 @@ async def test_learn_status_uses_merged_tool():
         {"action": "status"},
     )
 
-    assert result.structured_content == {
-        "success": True,
-        "data": {"recording": False, "action_count": 0, "duration_seconds": 0},
-    }
+    assert result.structured_content["success"] is True
+    data = result.structured_content["data"]
+    assert data["recording"] is False
+    assert data["mode"] == "off"
+    assert data["action_count"] == 0
+    assert data["duration_seconds"] == 0
+    assert data["observation_count"] == 0
+    assert data["pending_observations"] == 0
 
 
 @pytest.mark.asyncio

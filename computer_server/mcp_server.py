@@ -4431,19 +4431,22 @@ def create_mcp_server() -> FastMCP:
             if recorder is None:
                 return {
                     "success": True,
-                    "data": {"recording": False, "action_count": 0, "duration_seconds": 0},
+                    "data": {
+                        "recording": False,
+                        "mode": "off",
+                        "action_count": 0,
+                        "observation_count": 0,
+                        "pending_observations": 0,
+                        "dropped_observations": 0,
+                        "timeout_count": 0,
+                        "sensitive_skip_count": 0,
+                        "last_event_at": None,
+                        "last_observation_at": None,
+                        "duration_seconds": 0,
+                    },
                 }
 
-            is_rec, count, duration, app, healthy = recorder.status()
-            data: Dict[str, Any] = {
-                "recording": is_rec,
-                "action_count": count,
-                "duration_seconds": int(duration),
-            }
-            if app:
-                data["current_app"] = app
-            if healthy is not None:
-                data["listener_healthy"] = healthy
+            data = recorder.status_dict()
             return {"success": True, "data": data}
 
         if normalized_action == "start":
@@ -4510,18 +4513,10 @@ def create_mcp_server() -> FastMCP:
         import time
         session, actions = result
         duration = time.time() - session.start_time
-        serialized = [a.to_dict() for a in actions]
 
         return {
             "success": True,
-            "data": {
-                "task_description": session.task_description or "",
-                "duration_seconds": int(duration),
-                "action_count": len(actions),
-                "apps": list(session.apps),
-                "urls": list(session.urls),
-                "actions": serialized,
-            },
+            "data": session.to_dict(duration_seconds=int(duration), actions=actions),
         }
 
     # Pre-warm SOM OmniParser in background so first get_window_state is fast.

@@ -11,7 +11,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import Optional
+from typing import Any, Optional
 
 
 class LearningError(Enum):
@@ -97,6 +97,10 @@ class ObservedAction:
     window_title: str | None = None
     url: str | None = None
     element_context: ElementContext | None = None
+    action_id: str | None = None
+    correlation_id: str | None = None
+    before_observation_id: str | None = None
+    after_observation_id: str | None = None
 
     # Payload fields (set depending on action_type)
     x: float | None = None  # click, scroll
@@ -131,6 +135,14 @@ class ObservedAction:
         d["window"] = self.window_title
         d["url"] = self.url
         d["element"] = self.element_context.to_dict() if self.element_context else None
+        if self.action_id is not None:
+            d["action_id"] = self.action_id
+        if self.correlation_id is not None:
+            d["correlation_id"] = self.correlation_id
+        if self.before_observation_id is not None:
+            d["before_observation_id"] = self.before_observation_id
+        if self.after_observation_id is not None:
+            d["after_observation_id"] = self.after_observation_id
 
         if self.action_type == ObservedActionType.CLICK:
             if self.x is not None:
@@ -186,11 +198,125 @@ class ObservedAction:
 
 
 @dataclass
+class LearningObservation:
+    """A lightweight semantic snapshot attached to a learned action."""
+
+    observation_id: str
+    trigger: str
+    timestamp: int
+    correlation_id: str | None = None
+    app_name: str | None = None
+    app_bundle_id: str | None = None
+    window_title: str | None = None
+    url: str | None = None
+    element_context: ElementContext | None = None
+    state_text: str | None = None
+    semantic_nodes: list[dict[str, Any]] = field(default_factory=list)
+    tree_quality: str | None = None
+    capture_backend: str | None = None
+    timing: dict[str, Any] = field(default_factory=dict)
+    skip_reason: str | None = None
+    error: str | None = None
+
+    def to_dict(self) -> dict:
+        d: dict[str, Any] = {
+            "observation_id": self.observation_id,
+            "trigger": self.trigger,
+            "timestamp": self.timestamp,
+        }
+        optional_values = {
+            "correlation_id": self.correlation_id,
+            "app": self.app_name,
+            "bundle_id": self.app_bundle_id,
+            "window": self.window_title,
+            "url": self.url,
+            "state_text": self.state_text,
+            "tree_quality": self.tree_quality,
+            "capture_backend": self.capture_backend,
+            "skip_reason": self.skip_reason,
+            "error": self.error,
+        }
+        for key, value in optional_values.items():
+            if value is not None:
+                d[key] = value
+        if self.element_context is not None:
+            d["element"] = self.element_context.to_dict()
+        if self.semantic_nodes:
+            d["semantic_nodes"] = self.semantic_nodes
+        if self.timing:
+            d["timing"] = self.timing
+        return d
+
+
+@dataclass
+class LearningLink:
+    """Relationship between an observed action and its semantic snapshot."""
+
+    action_id: str | None
+    observation_id: str
+    correlation_id: str | None
+    trigger: str
+    relation: str = "after"
+
+    def to_dict(self) -> dict:
+        d: dict[str, Any] = {
+            "observation_id": self.observation_id,
+            "trigger": self.trigger,
+            "relation": self.relation,
+        }
+        if self.action_id is not None:
+            d["action_id"] = self.action_id
+        if self.correlation_id is not None:
+            d["correlation_id"] = self.correlation_id
+        return d
+
+
+def default_learning_metrics() -> dict[str, Any]:
+    return {
+        "action_count": 0,
+        "observation_count": 0,
+        "pending_observations": 0,
+        "dropped_observations": 0,
+        "timeout_count": 0,
+        "sensitive_skip_count": 0,
+        "error_count": 0,
+        "last_event_at": None,
+        "last_observation_at": None,
+    }
+
+
+@dataclass
 class LearningSession:
     """State of an active learning session. Held by LearningRecorder."""
 
     task_description: str | None
     start_time: float
     actions: list[ObservedAction] = field(default_factory=list)
+    observations: list[LearningObservation] = field(default_factory=list)
+    links: list[LearningLink] = field(default_factory=list)
+    metrics: dict[str, Any] = field(default_factory=default_learning_metrics)
     apps: set[str] = field(default_factory=set)
     urls: set[str] = field(default_factory=set)
+
+    def to_dict(
+        self,
+        *,
+        duration_seconds: int,
+        actions: list[ObservedAction] | None = None,
+    ) -> dict:
+        action_list = actions if actions is not None else self.actions
+        metrics = dict(default_learning_metrics())
+        metrics.update(self.metrics)
+        metrics["action_count"] = len(action_list)
+        metrics["observation_count"] = len(self.observations)
+        return {
+            "task_description": self.task_description or "",
+            "duration_seconds": int(duration_seconds),
+            "action_count": len(action_list),
+            "apps": list(self.apps),
+            "urls": list(self.urls),
+            "actions": [action.to_dict() for action in action_list],
+            "observations": [observation.to_dict() for observation in self.observations],
+            "links": [link.to_dict() for link in self.links],
+            "metrics": metrics,
+        }
