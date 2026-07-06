@@ -9,23 +9,21 @@ the current working state.
 - Repository: `D:\Documents\Code\cua-pywin`
 - Branch: `master`
 - Version: `0.1.3`
-- Latest prepared commit: pending 0.1.3 beta build
+- Latest packaged source commit: `bfeb43a Prepare 0.1.3 beta notes`
 - Public MCP surface: 25 tools
 - Repository visibility: private
 
-Latest available 0.1.2 beta artifacts:
+Built artifacts:
 
-- Installer: `dist-installer\cua-win-0.1.2-win64-setup.exe`
+- Installer: `dist-installer\cua-win-0.1.3-win64-setup.exe`
 - Installer SHA256:
-  `f8ffda0e3e891db99c6db1f1cfb10ad4a03b09c7d0f26a966d914a5fcc66371c`
-- Wheel: `dist\cua_pywin-0.1.2-py3-none-any.whl`
+  `555ef7caa1cd56576777eb3867774b8b338a2959880badfada97d13deb557bb9`
+- Wheel: `dist\cua_pywin-0.1.3-py3-none-any.whl`
 - Wheel SHA256:
-  `0a7577ace9d708c1f3d75910d60df2066ac2f47aa97719cf9a6b3436113651c4`
+  `68869edd6de157ec779d293e0b196e997dd1ceaa841d8381209e4213672c0398`
 - Standalone directory: `dist-nuitka\cua-win.dist`
-
-The 0.1.3 artifacts have not been built yet. After the 0.1.3 build, replace
-the artifact paths and hashes above before using this handoff for external
-installer testing.
+- Standalone exe SHA256:
+  `1518fce17e6af524f7b8f6e39b32d2bf0482e0cac9ffa1cc00d4e93917cbca71`
 
 ## Start A Fresh Session
 
@@ -53,10 +51,9 @@ git log -3 --oneline
 
 Use a clean Windows machine when possible. The development machine has already
 run local release smoke, but it is not a substitute for clean-machine install
-validation. Until 0.1.3 artifacts are built, this section still references the
-latest available 0.1.2 beta installer.
+validation.
 
-1. Run `dist-installer\cua-win-0.1.2-win64-setup.exe`.
+1. Run `dist-installer\cua-win-0.1.3-win64-setup.exe`.
 2. Enable `Add cua-win to the current user's PATH`.
 3. Open a new PowerShell window.
 4. Run:
