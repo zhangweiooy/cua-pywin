@@ -2,6 +2,21 @@
 
 All notable changes to this project will be documented in this file.
 
+## Unreleased
+
+### Fixed
+
+- Hardened `cua-win` daemon lifecycle handling so stale state files are validated
+  against the recorded PID, daemon command line, and `/status` health before
+  being treated as running. Stale metadata is now cleaned during `status` and
+  `start`, while read-only doctor checks report it without mutation. Verified
+  live-but-unhealthy daemons retain state ownership until an explicit safe
+  restart, and process-inspection failures preserve state as unverifiable
+  instead of risking a second instance. `stop` only reports success after
+  confirmed exit, sends HTTP shutdown only to a health-verified PID, and only
+  terminates a process after daemon identity verification on the same process
+  instance. Daemon command lines in doctor JSON redact the RPC token.
+
 ## 0.1.3 - 2026-07-06
 
 ### Added

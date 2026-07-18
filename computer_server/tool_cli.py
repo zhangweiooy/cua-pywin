@@ -191,6 +191,37 @@ class DaemonInfo:
 
 
 @dataclass(frozen=True)
+class DaemonInspection:
+    info: DaemonInfo
+    process_ok: bool
+    health: dict[str, Any] | None
+    stale_reason: str | None = None
+    details: dict[str, Any] | None = None
+    process_verifiable: bool = True
+
+    @property
+    def running(self) -> bool:
+        return (
+            self.process_verifiable
+            and self.process_ok
+            and self.health is not None
+            and self.stale_reason is None
+        )
+
+    @property
+    def stale(self) -> bool:
+        return self.process_verifiable and not self.process_ok
+
+    @property
+    def unhealthy(self) -> bool:
+        return self.process_verifiable and self.process_ok and not self.running
+
+    @property
+    def unverifiable(self) -> bool:
+        return not self.process_verifiable
+
+
+@dataclass(frozen=True)
 class DoctorCheck:
     name: str
     status: str
@@ -434,12 +465,252 @@ def _probe(info: DaemonInfo, timeout: float = 2.0) -> dict[str, Any] | None:
         return None
 
 
+def _normalized_path_text(path: str | Path | None) -> str:
+    if path is None:
+        return ""
+    try:
+        return os.path.normcase(os.path.abspath(os.fspath(path)))
+    except (OSError, TypeError, ValueError):
+        return os.path.normcase(str(path))
+
+
+def _arg_after(cmdline: Sequence[str], flag: str) -> str | None:
+    try:
+        index = list(cmdline).index(flag)
+    except ValueError:
+        return None
+    next_index = index + 1
+    if next_index >= len(cmdline):
+        return None
+    return str(cmdline[next_index])
+
+
+def _redact_daemon_process_details(
+    details: dict[str, Any] | None,
+) -> dict[str, Any] | None:
+    if details is None:
+        return None
+    redacted = dict(details)
+    cmdline = details.get("command_line")
+    if not isinstance(cmdline, list):
+        return redacted
+
+    sanitized: list[str] = []
+    redact_next = False
+    for part in cmdline:
+        text = str(part)
+        if redact_next:
+            sanitized.append("<redacted>")
+            redact_next = False
+        elif text == "--token":
+            sanitized.append(text)
+            redact_next = True
+        elif text.startswith("--token="):
+            sanitized.append("--token=<redacted>")
+        else:
+            sanitized.append(text)
+    redacted["command_line"] = sanitized
+    return redacted
+
+
+def _daemon_process(proc: Any) -> tuple[bool, str | None, dict[str, Any]]:
+    try:
+        exe = proc.exe()
+    except Exception as exc:
+        return False, "process_exe_unreadable", {"error": str(exc)}
+    try:
+        cmdline = [str(part) for part in proc.cmdline()]
+    except Exception as exc:
+        return False, "process_cmdline_unreadable", {
+            "executable": exe,
+            "error": str(exc),
+        }
+
+    executable_name = Path(exe).name.lower()
+    executable_ok = executable_name in {"cua-win.exe", "python.exe", "pythonw.exe"}
+    serve_ok = "serve" in cmdline
+    module_ok = (
+        executable_name == "cua-win.exe"
+        or "computer_server.tool_cli" in cmdline
+        or any(Path(part).name.lower() == "cua-win.exe" for part in cmdline)
+    )
+    details = {"executable": exe, "command_line": cmdline}
+    if not executable_ok:
+        return False, "process_executable_mismatch", details
+    if not serve_ok or not module_ok:
+        return False, "process_command_mismatch", details
+    return True, None, details
+
+
+def _daemon_process_instance_matches(
+    info: DaemonInfo,
+    proc: Any,
+) -> tuple[bool, str | None, dict[str, Any]]:
+    if info.pid is None:
+        return False, "missing_pid", {}
+    if getattr(proc, "pid", None) != info.pid:
+        return False, "process_pid_mismatch", {
+            "pid": info.pid,
+            "process_pid": getattr(proc, "pid", None),
+        }
+
+    try:
+        if not proc.is_running():
+            return False, "pid_not_running", {"pid": info.pid}
+    except Exception as exc:
+        return False, "process_lookup_failed", {"pid": info.pid, "error": str(exc)}
+
+    ok, reason, details = _daemon_process(proc)
+    details = {"pid": info.pid, **details}
+    if not ok:
+        return False, reason, details
+
+    cmdline = details.get("command_line") or []
+    host = _arg_after(cmdline, "--host")
+    port = _arg_after(cmdline, "--port")
+    token = _arg_after(cmdline, "--token")
+    metadata_file = _arg_after(cmdline, "--metadata-file")
+
+    if host != info.host:
+        return False, "process_host_mismatch", details
+    if port != str(info.port):
+        return False, "process_port_mismatch", details
+    if token != info.token:
+        return False, "process_token_mismatch", details
+    if info.metadata_file and (
+        _normalized_path_text(metadata_file)
+        != _normalized_path_text(info.metadata_file)
+    ):
+        return False, "process_metadata_file_mismatch", details
+    return True, None, details
+
+
+def _daemon_process_matches(info: DaemonInfo) -> tuple[bool, str | None, dict[str, Any]]:
+    if info.pid is None:
+        return False, "missing_pid", {}
+    try:
+        import psutil
+    except Exception as exc:
+        return False, "psutil_unavailable", {"error": str(exc)}
+
+    try:
+        proc = psutil.Process(info.pid)
+    except psutil.NoSuchProcess:
+        return False, "pid_not_found", {"pid": info.pid}
+    except psutil.Error as exc:
+        return False, "process_lookup_failed", {"pid": info.pid, "error": str(exc)}
+    return _daemon_process_instance_matches(info, proc)
+
+
+def _inspect_daemon(info: DaemonInfo, timeout: float = 2.0) -> DaemonInspection:
+    process_ok, reason, details = _daemon_process_matches(info)
+    if not process_ok:
+        definitive_stale_reasons = {
+            "missing_pid",
+            "pid_not_found",
+            "pid_not_running",
+            "process_pid_mismatch",
+            "process_executable_mismatch",
+            "process_command_mismatch",
+            "process_host_mismatch",
+            "process_port_mismatch",
+            "process_token_mismatch",
+            "process_metadata_file_mismatch",
+        }
+        return DaemonInspection(
+            info=info,
+            process_ok=False,
+            health=None,
+            stale_reason=reason or "process_mismatch",
+            details=details,
+            process_verifiable=reason in definitive_stale_reasons,
+        )
+
+    health = _probe(info, timeout=timeout)
+    if not health:
+        return DaemonInspection(
+            info=info,
+            process_ok=True,
+            health=None,
+            stale_reason="health_unreachable",
+            details=details,
+        )
+    health_pid = health.get("pid")
+    try:
+        health_pid_value = int(health_pid) if health_pid is not None else None
+    except (TypeError, ValueError):
+        health_pid_value = None
+    if health_pid is not None and health_pid_value != info.pid:
+        return DaemonInspection(
+            info=info,
+            process_ok=True,
+            health=health,
+            stale_reason="health_pid_mismatch",
+            details={**details, "health_pid": health_pid},
+        )
+    return DaemonInspection(info=info, process_ok=True, health=health, details=details)
+
+
+def _load_and_inspect_daemon(timeout: float = 2.0) -> DaemonInspection | None:
+    info = _load_daemon_info()
+    if not info:
+        return None
+    return _inspect_daemon(info, timeout=timeout)
+
+
+def _cleanup_stale_daemon(inspection: DaemonInspection) -> None:
+    if inspection.stale:
+        _remove_metadata(inspection.info.metadata_file)
+
+
+def _terminate_daemon_process(info: DaemonInfo, timeout: float) -> bool:
+    if info.pid is None:
+        return False
+    try:
+        import psutil
+
+        proc = psutil.Process(info.pid)
+        proc.create_time()
+        process_ok, _, _ = _daemon_process_instance_matches(info, proc)
+        if not process_ok:
+            return False
+        proc.terminate()
+        try:
+            proc.wait(timeout=timeout)
+        except psutil.TimeoutExpired:
+            process_ok, reason, _ = _daemon_process_instance_matches(info, proc)
+            if not process_ok:
+                return reason == "pid_not_running"
+            proc.kill()
+            proc.wait(timeout=5)
+        return True
+    except Exception:
+        return False
+
+
 def _start_daemon(timeout: float = DEFAULT_START_TIMEOUT) -> DaemonInfo:
-    existing = _load_daemon_info()
-    if existing and _probe(existing):
-        return existing
+    existing = _load_and_inspect_daemon()
+    if existing and existing.running:
+        return existing.info
     if existing:
-        _remove_metadata(existing.metadata_file)
+        if existing.unverifiable:
+            raise RuntimeError(
+                "existing cua-win daemon state could not be verified; metadata "
+                f"was preserved: pid={existing.info.pid} "
+                f"reason={existing.stale_reason}"
+            )
+        if existing.unhealthy:
+            if not _terminate_daemon_process(existing.info, timeout=5):
+                refreshed = _inspect_daemon(existing.info)
+                if not refreshed.stale:
+                    raise RuntimeError(
+                        "existing cua-win daemon is alive but unhealthy and could "
+                        f"not be stopped safely: pid={existing.info.pid} "
+                        f"reason={refreshed.stale_reason}"
+                    )
+            _remove_metadata(existing.info.metadata_file)
+        else:
+            _cleanup_stale_daemon(existing)
 
     state_dir = _state_dir()
     state_dir.mkdir(parents=True, exist_ok=True)
@@ -489,7 +760,12 @@ def _start_daemon(timeout: float = DEFAULT_START_TIMEOUT) -> DaemonInfo:
             )
         status = _probe(info, timeout=1.0)
         if status:
-            return info
+            ready = _load_and_inspect_daemon(timeout=1.0)
+            if ready and ready.running:
+                return ready.info
+            candidate = _inspect_daemon(info, timeout=1.0)
+            if candidate.running:
+                return info
         time.sleep(0.2)
 
     if proc.poll() is not None:
@@ -509,11 +785,23 @@ def _start_daemon(timeout: float = DEFAULT_START_TIMEOUT) -> DaemonInfo:
 
 
 def _ensure_daemon(timeout: float = DEFAULT_START_TIMEOUT) -> DaemonInfo:
-    info = _load_daemon_info()
-    if info and _probe(info):
-        return info
-    if info:
-        _remove_metadata(info.metadata_file)
+    inspection = _load_and_inspect_daemon()
+    if inspection and inspection.running:
+        return inspection.info
+    if inspection:
+        if inspection.unverifiable:
+            raise RuntimeError(
+                "cua-win daemon state could not be verified; metadata was "
+                f"preserved: pid={inspection.info.pid} "
+                f"reason={inspection.stale_reason}"
+            )
+        if inspection.unhealthy:
+            raise RuntimeError(
+                "cua-win daemon is alive but unhealthy; run `cua-win start` to "
+                f"restart it safely: pid={inspection.info.pid} "
+                f"reason={inspection.stale_reason}"
+            )
+        _cleanup_stale_daemon(inspection)
     return _start_daemon(timeout=timeout)
 
 
@@ -1445,24 +1733,41 @@ def _check_rapidocr_bundle() -> DoctorCheck:
 
 
 def _check_daemon(timeout: float) -> DoctorCheck:
-    info = _load_daemon_info()
-    if not info:
+    inspection = _load_and_inspect_daemon(timeout=timeout)
+    if not inspection:
         return DoctorCheck(
             name="daemon",
             status="warn",
             message="daemon metadata not found; run `cua-win start` to start it",
         )
-    status = _probe(info, timeout=timeout)
-    if not status:
+    info = inspection.info
+    if not inspection.running:
+        if inspection.unverifiable:
+            message = (
+                "daemon process identity could not be verified; metadata was "
+                f"preserved: {inspection.stale_reason}"
+            )
+        elif inspection.stale:
+            message = (
+                "daemon metadata is stale: "
+                f"{inspection.stale_reason}"
+            )
+        else:
+            message = (
+                "daemon process is alive but unhealthy; metadata was preserved: "
+                f"{inspection.stale_reason}"
+            )
         return DoctorCheck(
             name="daemon",
             status="warn",
-            message=f"daemon metadata exists but service is not reachable: {info.base_url}",
+            message=message,
             details={
                 "host": info.host,
                 "port": info.port,
                 "pid": info.pid,
                 "metadata_file": str(info.metadata_file) if info.metadata_file else None,
+                "stale_reason": inspection.stale_reason,
+                "process": _redact_daemon_process_details(inspection.details),
             },
         )
     return DoctorCheck(
@@ -1473,7 +1778,7 @@ def _check_daemon(timeout: float) -> DoctorCheck:
             "host": info.host,
             "port": info.port,
             "pid": info.pid,
-            "tool_count": status.get("tool_count"),
+            "tool_count": inspection.health.get("tool_count") if inspection.health else None,
         },
     )
 
@@ -1759,8 +2064,9 @@ def _cmd_serve(args: argparse.Namespace) -> int:
 
 
 def _cmd_start(args: argparse.Namespace) -> int:
-    info = _ensure_daemon(timeout=args.timeout)
-    payload = _probe(info) or {"status": "unknown"}
+    info = _start_daemon(timeout=args.timeout)
+    inspection = _inspect_daemon(info)
+    payload = inspection.health or {"status": "unknown"}
     payload.update({"host": info.host, "port": info.port, "pid": info.pid})
     if args.json:
         _json_print(payload)
@@ -1770,15 +2076,64 @@ def _cmd_start(args: argparse.Namespace) -> int:
 
 
 def _cmd_status(args: argparse.Namespace) -> int:
-    info = _load_daemon_info()
-    if not info:
+    inspection = _load_and_inspect_daemon()
+    if not inspection:
         print("stopped")
         return 0
-    status = _probe(info)
-    if not status:
-        _remove_metadata(info.metadata_file)
-        print("stopped")
+    info = inspection.info
+    if not inspection.running:
+        if inspection.unverifiable:
+            if args.json:
+                _json_print(
+                    {
+                        "status": "unverifiable",
+                        "stale": False,
+                        "reason": inspection.stale_reason,
+                        "host": info.host,
+                        "port": info.port,
+                        "pid": info.pid,
+                    }
+                )
+            else:
+                print(
+                    f"unverifiable: {info.base_url} pid={info.pid} "
+                    f"reason={inspection.stale_reason}"
+                )
+            return 0
+        if inspection.unhealthy:
+            if args.json:
+                _json_print(
+                    {
+                        "status": "unhealthy",
+                        "stale": False,
+                        "reason": inspection.stale_reason,
+                        "host": info.host,
+                        "port": info.port,
+                        "pid": info.pid,
+                    }
+                )
+            else:
+                print(
+                    f"unhealthy: {info.base_url} pid={info.pid} "
+                    f"reason={inspection.stale_reason}"
+                )
+            return 0
+        _cleanup_stale_daemon(inspection)
+        if args.json:
+            _json_print(
+                {
+                    "status": "stopped",
+                    "stale": True,
+                    "stale_reason": inspection.stale_reason,
+                    "host": info.host,
+                    "port": info.port,
+                    "pid": info.pid,
+                }
+            )
+        else:
+            print("stopped")
         return 0
+    status = inspection.health or {}
     status.update({"host": info.host, "port": info.port, "pid": info.pid})
     if args.json:
         _json_print(status)
@@ -1788,20 +2143,48 @@ def _cmd_status(args: argparse.Namespace) -> int:
 
 
 def _cmd_stop(args: argparse.Namespace) -> int:
-    info = _load_daemon_info()
-    if not info or not _probe(info):
-        if info:
-            _remove_metadata(info.metadata_file)
+    inspection = _load_and_inspect_daemon()
+    if not inspection:
         print("stopped")
         return 0
-    _http_json(info, "POST", "/shutdown", payload={}, timeout=5)
+    info = inspection.info
+    if inspection.unverifiable:
+        raise SystemExit(
+            "daemon process identity could not be verified; state was preserved "
+            f"and no process was terminated: pid={info.pid} "
+            f"reason={inspection.stale_reason}"
+        )
+    if not inspection.process_ok:
+        _cleanup_stale_daemon(inspection)
+        print("stopped")
+        return 0
+    if inspection.running:
+        try:
+            _http_json(info, "POST", "/shutdown", payload={}, timeout=5)
+        except RuntimeError:
+            pass
     deadline = time.monotonic() + args.timeout
     while time.monotonic() < deadline:
-        if not _probe(info, timeout=0.5):
+        current = _inspect_daemon(info, timeout=0.5)
+        if current.stale:
             _remove_metadata(info.metadata_file)
             print("stopped")
             return 0
         time.sleep(0.2)
+    if _terminate_daemon_process(info, timeout=5):
+        _remove_metadata(info.metadata_file)
+        print("stopped")
+        return 0
+    current = _inspect_daemon(info, timeout=0.5)
+    if current.stale:
+        _remove_metadata(info.metadata_file)
+        print("stopped")
+        return 0
+    if current.unverifiable:
+        raise SystemExit(
+            "daemon exit could not be verified; state was preserved: "
+            f"pid={info.pid} reason={current.stale_reason}"
+        )
     raise SystemExit("daemon did not stop before timeout")
 
 

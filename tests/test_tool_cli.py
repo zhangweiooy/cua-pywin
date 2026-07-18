@@ -485,6 +485,769 @@ def test_batch_http_client_marks_requests(monkeypatch) -> None:
     assert captured["request"][3][BATCH_HEADER] == "1"
 
 
+def test_daemon_start_then_status_uses_verified_process_and_health(
+    monkeypatch,
+    capsys,
+    tmp_path,
+) -> None:
+    import computer_server.tool_cli as tool_cli
+
+    info = DaemonInfo(
+        host="127.0.0.1",
+        port=4567,
+        token="secret",
+        pid=1234,
+        metadata_file=tmp_path / "cli-daemon.json",
+    )
+    health = {"status": "ok", "pid": 1234, "tool_count": 25}
+    monkeypatch.setattr(tool_cli, "_start_daemon", lambda timeout: info)
+    monkeypatch.setattr(tool_cli, "_load_daemon_info", lambda: info)
+    monkeypatch.setattr(
+        tool_cli,
+        "_daemon_process_matches",
+        lambda daemon_info: (True, None, {"pid": daemon_info.pid}),
+    )
+    monkeypatch.setattr(tool_cli, "_probe", lambda daemon_info, timeout=2.0: health)
+
+    args = argparse.Namespace(timeout=1, json=False)
+
+    assert tool_cli._cmd_start(args) == 0
+    assert "running: http://127.0.0.1:4567 pid=1234 tools=25" in capsys.readouterr().out
+
+    assert tool_cli._cmd_status(argparse.Namespace(json=False)) == 0
+    assert "running: http://127.0.0.1:4567 pid=1234 tools=25" in capsys.readouterr().out
+
+
+def test_daemon_status_cleans_stale_state_after_killed_process(
+    monkeypatch,
+    capsys,
+    tmp_path,
+) -> None:
+    import computer_server.tool_cli as tool_cli
+
+    metadata_file = tmp_path / "cli-daemon.json"
+    info = DaemonInfo(
+        host="127.0.0.1",
+        port=4567,
+        token="secret",
+        pid=1234,
+        metadata_file=metadata_file,
+    )
+    removed = []
+    monkeypatch.setattr(tool_cli, "_load_daemon_info", lambda: info)
+    monkeypatch.setattr(
+        tool_cli,
+        "_daemon_process_matches",
+        lambda daemon_info: (False, "pid_not_found", {"pid": daemon_info.pid}),
+    )
+    monkeypatch.setattr(tool_cli, "_remove_metadata", removed.append)
+
+    assert tool_cli._cmd_status(argparse.Namespace(json=False)) == 0
+
+    assert capsys.readouterr().out.strip() == "stopped"
+    assert removed == [metadata_file]
+
+
+def test_daemon_status_json_reports_stale_reason(monkeypatch, capsys, tmp_path) -> None:
+    import computer_server.tool_cli as tool_cli
+
+    info = DaemonInfo(
+        host="127.0.0.1",
+        port=4567,
+        token="secret",
+        pid=1234,
+        metadata_file=tmp_path / "cli-daemon.json",
+    )
+    monkeypatch.setattr(tool_cli, "_load_daemon_info", lambda: info)
+    monkeypatch.setattr(
+        tool_cli,
+        "_daemon_process_matches",
+        lambda daemon_info: (False, "pid_not_found", {"pid": daemon_info.pid}),
+    )
+    monkeypatch.setattr(tool_cli, "_remove_metadata", lambda path=None: None)
+
+    assert tool_cli._cmd_status(argparse.Namespace(json=True)) == 0
+
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["status"] == "stopped"
+    assert payload["stale"] is True
+    assert payload["stale_reason"] == "pid_not_found"
+
+
+def test_daemon_status_preserves_state_for_verified_unhealthy_process(
+    monkeypatch,
+    capsys,
+    tmp_path,
+) -> None:
+    import computer_server.tool_cli as tool_cli
+
+    metadata_file = tmp_path / "cli-daemon.json"
+    info = DaemonInfo(
+        host="127.0.0.1",
+        port=4567,
+        token="secret",
+        pid=1234,
+        metadata_file=metadata_file,
+    )
+    removed = []
+    monkeypatch.setattr(tool_cli, "_load_daemon_info", lambda: info)
+    monkeypatch.setattr(
+        tool_cli,
+        "_daemon_process_matches",
+        lambda daemon_info: (True, None, {"pid": daemon_info.pid}),
+    )
+    monkeypatch.setattr(tool_cli, "_probe", lambda daemon_info, timeout=2.0: None)
+    monkeypatch.setattr(tool_cli, "_remove_metadata", removed.append)
+
+    assert tool_cli._cmd_status(argparse.Namespace(json=True)) == 0
+
+    payload = json.loads(capsys.readouterr().out)
+    assert payload == {
+        "host": "127.0.0.1",
+        "pid": 1234,
+        "port": 4567,
+        "reason": "health_unreachable",
+        "stale": False,
+        "status": "unhealthy",
+    }
+    assert removed == []
+
+
+def test_daemon_status_preserves_state_when_process_is_unverifiable(
+    monkeypatch,
+    capsys,
+    tmp_path,
+) -> None:
+    import computer_server.tool_cli as tool_cli
+
+    metadata_file = tmp_path / "cli-daemon.json"
+    info = DaemonInfo(
+        host="127.0.0.1",
+        port=4567,
+        token="secret",
+        pid=1234,
+        metadata_file=metadata_file,
+    )
+    removed = []
+    monkeypatch.setattr(tool_cli, "_load_daemon_info", lambda: info)
+    monkeypatch.setattr(
+        tool_cli,
+        "_daemon_process_matches",
+        lambda daemon_info: (
+            False,
+            "process_cmdline_unreadable",
+            {"pid": daemon_info.pid, "error": "access denied"},
+        ),
+    )
+    monkeypatch.setattr(tool_cli, "_remove_metadata", removed.append)
+
+    assert tool_cli._cmd_status(argparse.Namespace(json=True)) == 0
+
+    payload = json.loads(capsys.readouterr().out)
+    assert payload == {
+        "host": "127.0.0.1",
+        "pid": 1234,
+        "port": 4567,
+        "reason": "process_cmdline_unreadable",
+        "stale": False,
+        "status": "unverifiable",
+    }
+    assert removed == []
+
+
+def test_daemon_start_recovers_from_stale_state(monkeypatch, tmp_path) -> None:
+    import computer_server.tool_cli as tool_cli
+
+    old_metadata = tmp_path / "old-daemon.json"
+    old = DaemonInfo(
+        host="127.0.0.1",
+        port=4567,
+        token="old",
+        pid=1111,
+        metadata_file=old_metadata,
+    )
+    new = DaemonInfo(
+        host="127.0.0.1",
+        port=5678,
+        token="new",
+        pid=2222,
+        metadata_file=tmp_path / "new-daemon.json",
+    )
+    removed = []
+    monkeypatch.setattr(tool_cli, "_load_daemon_info", lambda: old)
+    monkeypatch.setattr(
+        tool_cli,
+        "_daemon_process_matches",
+        lambda daemon_info: (False, "pid_not_found", {"pid": daemon_info.pid}),
+    )
+    monkeypatch.setattr(tool_cli, "_remove_metadata", removed.append)
+    monkeypatch.setattr(tool_cli, "_start_daemon", lambda timeout: new)
+
+    assert tool_cli._ensure_daemon(timeout=1) == new
+    assert removed == [old_metadata]
+
+
+def test_daemon_ensure_does_not_spawn_over_verified_unhealthy_process(
+    monkeypatch,
+    tmp_path,
+) -> None:
+    import computer_server.tool_cli as tool_cli
+
+    info = DaemonInfo(
+        host="127.0.0.1",
+        port=4567,
+        token="secret",
+        pid=1234,
+        metadata_file=tmp_path / "cli-daemon.json",
+    )
+    inspection = tool_cli.DaemonInspection(
+        info=info,
+        process_ok=True,
+        health=None,
+        stale_reason="health_unreachable",
+    )
+    started = []
+    monkeypatch.setattr(tool_cli, "_load_and_inspect_daemon", lambda timeout=2.0: inspection)
+    monkeypatch.setattr(
+        tool_cli,
+        "_start_daemon",
+        lambda timeout: started.append(timeout),
+    )
+
+    with pytest.raises(RuntimeError, match="alive but unhealthy"):
+        tool_cli._ensure_daemon(timeout=1)
+
+    assert started == []
+
+
+def test_daemon_ensure_does_not_spawn_when_process_is_unverifiable(
+    monkeypatch,
+    tmp_path,
+) -> None:
+    import computer_server.tool_cli as tool_cli
+
+    info = DaemonInfo(
+        host="127.0.0.1",
+        port=4567,
+        token="secret",
+        pid=1234,
+        metadata_file=tmp_path / "cli-daemon.json",
+    )
+    inspection = tool_cli.DaemonInspection(
+        info=info,
+        process_ok=False,
+        health=None,
+        stale_reason="process_cmdline_unreadable",
+        process_verifiable=False,
+    )
+    started = []
+    removed = []
+    monkeypatch.setattr(tool_cli, "_load_and_inspect_daemon", lambda timeout=2.0: inspection)
+    monkeypatch.setattr(
+        tool_cli,
+        "_start_daemon",
+        lambda timeout: started.append(timeout),
+    )
+    monkeypatch.setattr(tool_cli, "_remove_metadata", removed.append)
+
+    with pytest.raises(RuntimeError, match="could not be verified"):
+        tool_cli._ensure_daemon(timeout=1)
+
+    assert started == []
+    assert removed == []
+
+
+def test_daemon_explicit_start_replaces_verified_unhealthy_process(
+    monkeypatch,
+    tmp_path,
+) -> None:
+    import computer_server.tool_cli as tool_cli
+
+    metadata_file = tmp_path / "cli-daemon.json"
+    old = DaemonInfo(
+        host="127.0.0.1",
+        port=4567,
+        token="old",
+        pid=1111,
+        metadata_file=metadata_file,
+    )
+    actual = DaemonInfo(
+        host="127.0.0.1",
+        port=5678,
+        token="actual",
+        pid=2222,
+        metadata_file=metadata_file,
+    )
+    inspections = iter(
+        [
+            tool_cli.DaemonInspection(
+                info=old,
+                process_ok=True,
+                health=None,
+                stale_reason="health_unreachable",
+            ),
+            tool_cli.DaemonInspection(
+                info=actual,
+                process_ok=True,
+                health={"status": "ok", "pid": 2222},
+            ),
+        ]
+    )
+    terminated = []
+    removed = []
+
+    class Proc:
+        pid = 2222
+        returncode = None
+
+        def poll(self):
+            return None
+
+    monkeypatch.setattr(tool_cli, "_load_and_inspect_daemon", lambda timeout=2.0: next(inspections))
+    monkeypatch.setattr(
+        tool_cli,
+        "_terminate_daemon_process",
+        lambda daemon_info, timeout: terminated.append((daemon_info, timeout)) or True,
+    )
+    monkeypatch.setattr(tool_cli, "_remove_metadata", removed.append)
+    monkeypatch.setattr(tool_cli, "_state_dir", lambda: tmp_path)
+    monkeypatch.setattr(tool_cli, "_metadata_path", lambda: metadata_file)
+    monkeypatch.setattr(tool_cli, "_find_free_port", lambda host: 5678)
+    monkeypatch.setattr(tool_cli.secrets, "token_urlsafe", lambda size: "actual")
+    monkeypatch.setattr(
+        tool_cli,
+        "_daemon_start_args",
+        lambda *args: ["python", "-m", "computer_server.tool_cli", "serve"],
+    )
+    monkeypatch.setattr(tool_cli.subprocess, "Popen", lambda *args, **kwargs: Proc())
+    monkeypatch.setattr(
+        tool_cli,
+        "_probe",
+        lambda info, timeout=2.0: {"status": "ok", "pid": 2222},
+    )
+
+    assert tool_cli._start_daemon(timeout=1) == actual
+    assert terminated == [(old, 5)]
+    assert removed == [metadata_file]
+
+
+def test_daemon_start_returns_metadata_pid_when_launcher_pid_differs(
+    monkeypatch,
+    tmp_path,
+) -> None:
+    import computer_server.tool_cli as tool_cli
+
+    metadata_file = tmp_path / "cli-daemon.json"
+    actual = DaemonInfo(
+        host="127.0.0.1",
+        port=4567,
+        token="actual",
+        pid=2222,
+        metadata_file=metadata_file,
+    )
+    inspections = iter(
+        [
+            None,
+            tool_cli.DaemonInspection(
+                info=actual,
+                process_ok=True,
+                health={"status": "ok", "pid": 2222},
+            ),
+        ]
+    )
+
+    class Proc:
+        pid = 1111
+        returncode = None
+
+        def poll(self):
+            return None
+
+    monkeypatch.setattr(tool_cli, "_load_and_inspect_daemon", lambda timeout=2.0: next(inspections))
+    monkeypatch.setattr(tool_cli, "_state_dir", lambda: tmp_path)
+    monkeypatch.setattr(tool_cli, "_metadata_path", lambda: metadata_file)
+    monkeypatch.setattr(tool_cli, "_find_free_port", lambda host: 4567)
+    monkeypatch.setattr(tool_cli.secrets, "token_urlsafe", lambda size: "candidate")
+    monkeypatch.setattr(tool_cli, "_daemon_start_args", lambda *args: ["python", "-m", "computer_server.tool_cli", "serve"])
+    monkeypatch.setattr(tool_cli.subprocess, "Popen", lambda *args, **kwargs: Proc())
+    monkeypatch.setattr(tool_cli, "_probe", lambda info, timeout=2.0: {"status": "ok", "pid": 2222})
+
+    assert tool_cli._start_daemon(timeout=1) == actual
+
+
+def test_daemon_stop_does_not_terminate_wrong_pid(monkeypatch, capsys, tmp_path) -> None:
+    import computer_server.tool_cli as tool_cli
+
+    metadata_file = tmp_path / "cli-daemon.json"
+    info = DaemonInfo(
+        host="127.0.0.1",
+        port=4567,
+        token="secret",
+        pid=1234,
+        metadata_file=metadata_file,
+    )
+    removed = []
+    terminated = []
+    monkeypatch.setattr(tool_cli, "_load_daemon_info", lambda: info)
+    monkeypatch.setattr(
+        tool_cli,
+        "_daemon_process_matches",
+        lambda daemon_info: (
+            False,
+            "process_command_mismatch",
+            {"pid": daemon_info.pid},
+        ),
+    )
+    monkeypatch.setattr(tool_cli, "_remove_metadata", removed.append)
+    monkeypatch.setattr(tool_cli, "_terminate_daemon_process", lambda *args: terminated.append(args))
+
+    assert tool_cli._cmd_stop(argparse.Namespace(timeout=1)) == 0
+
+    assert capsys.readouterr().out.strip() == "stopped"
+    assert removed == [metadata_file]
+    assert terminated == []
+
+
+def test_daemon_stop_terminates_verified_unhealthy_process(
+    monkeypatch,
+    capsys,
+    tmp_path,
+) -> None:
+    import computer_server.tool_cli as tool_cli
+
+    metadata_file = tmp_path / "cli-daemon.json"
+    info = DaemonInfo(
+        host="127.0.0.1",
+        port=4567,
+        token="secret",
+        pid=1234,
+        metadata_file=metadata_file,
+    )
+    removed = []
+    terminated = []
+    monkeypatch.setattr(tool_cli, "_load_daemon_info", lambda: info)
+    monkeypatch.setattr(
+        tool_cli,
+        "_daemon_process_matches",
+        lambda daemon_info: (True, None, {"pid": daemon_info.pid}),
+    )
+    monkeypatch.setattr(tool_cli, "_probe", lambda daemon_info, timeout=2.0: None)
+    monkeypatch.setattr(tool_cli, "_remove_metadata", removed.append)
+    monkeypatch.setattr(
+        tool_cli,
+        "_terminate_daemon_process",
+        lambda daemon_info, timeout: terminated.append((daemon_info, timeout)) or True,
+    )
+
+    assert tool_cli._cmd_stop(argparse.Namespace(timeout=0)) == 0
+
+    assert capsys.readouterr().out.strip() == "stopped"
+    assert removed == [metadata_file]
+    assert terminated == [(info, 5)]
+
+
+def test_daemon_stop_preserves_state_when_process_is_unverifiable(
+    monkeypatch,
+    capsys,
+    tmp_path,
+) -> None:
+    import computer_server.tool_cli as tool_cli
+
+    metadata_file = tmp_path / "cli-daemon.json"
+    info = DaemonInfo(
+        host="127.0.0.1",
+        port=4567,
+        token="secret",
+        pid=1234,
+        metadata_file=metadata_file,
+    )
+    removed = []
+    terminated = []
+    monkeypatch.setattr(tool_cli, "_load_daemon_info", lambda: info)
+    monkeypatch.setattr(
+        tool_cli,
+        "_daemon_process_matches",
+        lambda daemon_info: (
+            False,
+            "process_cmdline_unreadable",
+            {"pid": daemon_info.pid, "error": "access denied"},
+        ),
+    )
+    monkeypatch.setattr(tool_cli, "_remove_metadata", removed.append)
+    monkeypatch.setattr(
+        tool_cli,
+        "_terminate_daemon_process",
+        lambda *args: terminated.append(args),
+    )
+
+    with pytest.raises(SystemExit, match="could not be verified"):
+        tool_cli._cmd_stop(argparse.Namespace(timeout=1))
+
+    assert capsys.readouterr().out == ""
+    assert removed == []
+    assert terminated == []
+
+
+def test_daemon_stop_does_not_send_shutdown_when_health_pid_mismatches(
+    monkeypatch,
+    capsys,
+    tmp_path,
+) -> None:
+    import computer_server.tool_cli as tool_cli
+
+    metadata_file = tmp_path / "cli-daemon.json"
+    info = DaemonInfo(
+        host="127.0.0.1",
+        port=4567,
+        token="secret",
+        pid=1234,
+        metadata_file=metadata_file,
+    )
+    inspection = tool_cli.DaemonInspection(
+        info=info,
+        process_ok=True,
+        health={"status": "ok", "pid": 9999},
+        stale_reason="health_pid_mismatch",
+    )
+    http_calls = []
+    terminated = []
+    removed = []
+    monkeypatch.setattr(tool_cli, "_load_and_inspect_daemon", lambda timeout=2.0: inspection)
+    monkeypatch.setattr(
+        tool_cli,
+        "_http_json",
+        lambda *args, **kwargs: http_calls.append((args, kwargs)),
+    )
+    monkeypatch.setattr(
+        tool_cli,
+        "_terminate_daemon_process",
+        lambda daemon_info, timeout: terminated.append((daemon_info, timeout)) or True,
+    )
+    monkeypatch.setattr(tool_cli, "_remove_metadata", removed.append)
+
+    assert tool_cli._cmd_stop(argparse.Namespace(timeout=0)) == 0
+
+    assert capsys.readouterr().out.strip() == "stopped"
+    assert http_calls == []
+    assert terminated == [(info, 5)]
+    assert removed == [metadata_file]
+
+
+def test_terminate_daemon_uses_single_verified_process_instance(
+    monkeypatch,
+    tmp_path,
+) -> None:
+    import psutil
+
+    import computer_server.tool_cli as tool_cli
+
+    metadata_file = tmp_path / "cli-daemon.json"
+    info = DaemonInfo(
+        host="127.0.0.1",
+        port=4567,
+        token="secret",
+        pid=1234,
+        metadata_file=metadata_file,
+    )
+    calls = []
+
+    class Proc:
+        pid = 1234
+
+        def create_time(self):
+            calls.append("create_time")
+            return 123.0
+
+        def is_running(self):
+            calls.append("is_running")
+            return True
+
+        def exe(self):
+            calls.append("exe")
+            return r"C:\Python\python.exe"
+
+        def cmdline(self):
+            calls.append("cmdline")
+            return [
+                r"C:\Python\python.exe",
+                "-m",
+                "computer_server.tool_cli",
+                "serve",
+                "--host",
+                "127.0.0.1",
+                "--port",
+                "4567",
+                "--token",
+                "secret",
+                "--metadata-file",
+                str(metadata_file),
+            ]
+
+        def terminate(self):
+            calls.append("terminate")
+
+        def wait(self, timeout):
+            calls.append(("wait", timeout))
+
+    proc = Proc()
+    process_lookups = []
+    monkeypatch.setattr(
+        psutil,
+        "Process",
+        lambda pid: process_lookups.append(pid) or proc,
+    )
+
+    assert tool_cli._terminate_daemon_process(info, timeout=3) is True
+    assert process_lookups == [1234]
+    assert calls == [
+        "create_time",
+        "is_running",
+        "exe",
+        "cmdline",
+        "terminate",
+        ("wait", 3),
+    ]
+
+
+def test_terminate_daemon_timeout_does_not_succeed_when_recheck_is_unverifiable(
+    monkeypatch,
+    tmp_path,
+) -> None:
+    import psutil
+
+    import computer_server.tool_cli as tool_cli
+
+    metadata_file = tmp_path / "cli-daemon.json"
+    info = DaemonInfo(
+        host="127.0.0.1",
+        port=4567,
+        token="secret",
+        pid=1234,
+        metadata_file=metadata_file,
+    )
+    calls = []
+    cmdline_calls = 0
+
+    class Proc:
+        pid = 1234
+
+        def create_time(self):
+            return 123.0
+
+        def is_running(self):
+            return True
+
+        def exe(self):
+            return r"C:\Python\python.exe"
+
+        def cmdline(self):
+            nonlocal cmdline_calls
+            cmdline_calls += 1
+            if cmdline_calls > 1:
+                raise psutil.AccessDenied(pid=self.pid)
+            return [
+                r"C:\Python\python.exe",
+                "-m",
+                "computer_server.tool_cli",
+                "serve",
+                "--host",
+                "127.0.0.1",
+                "--port",
+                "4567",
+                "--token",
+                "secret",
+                "--metadata-file",
+                str(metadata_file),
+            ]
+
+        def terminate(self):
+            calls.append("terminate")
+
+        def wait(self, timeout):
+            calls.append(("wait", timeout))
+            raise psutil.TimeoutExpired(timeout, pid=self.pid)
+
+        def kill(self):
+            calls.append("kill")
+
+    monkeypatch.setattr(psutil, "Process", lambda pid: Proc())
+
+    assert tool_cli._terminate_daemon_process(info, timeout=3) is False
+    assert calls == ["terminate", ("wait", 3)]
+
+
+def test_daemon_doctor_reports_stale_state_without_removing_it(
+    monkeypatch,
+    tmp_path,
+) -> None:
+    import computer_server.tool_cli as tool_cli
+
+    metadata_file = tmp_path / "cli-daemon.json"
+    info = DaemonInfo(
+        host="127.0.0.1",
+        port=4567,
+        token="secret",
+        pid=1234,
+        metadata_file=metadata_file,
+    )
+    inspection = tool_cli.DaemonInspection(
+        info=info,
+        process_ok=False,
+        health=None,
+        stale_reason="pid_not_found",
+    )
+    removed = []
+    monkeypatch.setattr(tool_cli, "_load_and_inspect_daemon", lambda timeout=2.0: inspection)
+    monkeypatch.setattr(tool_cli, "_remove_metadata", removed.append)
+
+    check = tool_cli._check_daemon(timeout=1)
+
+    assert check.status == "warn"
+    assert check.message == "daemon metadata is stale: pid_not_found"
+    assert removed == []
+
+
+def test_daemon_doctor_redacts_token_from_process_details(
+    monkeypatch,
+    tmp_path,
+) -> None:
+    import computer_server.tool_cli as tool_cli
+
+    metadata_file = tmp_path / "cli-daemon.json"
+    info = DaemonInfo(
+        host="127.0.0.1",
+        port=4567,
+        token="super-secret-token",
+        pid=1234,
+        metadata_file=metadata_file,
+    )
+    inspection = tool_cli.DaemonInspection(
+        info=info,
+        process_ok=True,
+        health=None,
+        stale_reason="health_unreachable",
+        details={
+            "pid": 1234,
+            "executable": r"C:\Python\python.exe",
+            "command_line": [
+                r"C:\Python\python.exe",
+                "-m",
+                "computer_server.tool_cli",
+                "serve",
+                "--token",
+                "super-secret-token",
+            ],
+        },
+    )
+    monkeypatch.setattr(tool_cli, "_load_and_inspect_daemon", lambda timeout=2.0: inspection)
+
+    payload = tool_cli._check_daemon(timeout=1).to_json()
+    serialized = json.dumps(payload)
+
+    assert "super-secret-token" not in serialized
+    assert "<redacted>" in serialized
+
+
 def test_lightweight_inprocess_calls_are_explicit() -> None:
     assert _is_lightweight_inprocess_call("computer_get_screen_size", {})
     assert _is_lightweight_inprocess_call("computer_recording", {"action": "status"})
