@@ -1,4 +1,4 @@
-# cua-win 0.1.3 Beta Handoff
+# cua-win 0.1.4 Beta Handoff
 
 This document is the short handoff for a fresh session, beta tester, or future
 feature-iteration pass. It intentionally avoids project history and focuses on
@@ -8,22 +8,22 @@ the current working state.
 
 - Repository: `D:\Documents\Code\cua-pywin`
 - Branch: `master`
-- Version: `0.1.3`
-- Latest packaged source commit: `bfeb43a Prepare 0.1.3 beta notes`
+- Version: `0.1.4`
+- Latest packaged source commit: `8245857 Fix stale daemon lifecycle state`
 - Public MCP surface: 25 tools
 - Repository visibility: private
 
 Built artifacts:
 
-- Installer: `dist-installer\cua-win-0.1.3-win64-setup.exe`
+- Installer: `dist-installer\cua-win-0.1.4-win64-setup.exe`
 - Installer SHA256:
-  `555ef7caa1cd56576777eb3867774b8b338a2959880badfada97d13deb557bb9`
-- Wheel: `dist\cua_pywin-0.1.3-py3-none-any.whl`
+  `96133b0636ac899445cc0b704860151e39bc47e49fa7060f6a4d7afc7e96375d`
+- Wheel: `dist\cua_pywin-0.1.4-py3-none-any.whl`
 - Wheel SHA256:
-  `68869edd6de157ec779d293e0b196e997dd1ceaa841d8381209e4213672c0398`
+  `f1deafa9215f9b9551538a824401cfa8e32be787c6d281b3448bf992e296e011`
 - Standalone directory: `dist-nuitka\cua-win.dist`
 - Standalone exe SHA256:
-  `1518fce17e6af524f7b8f6e39b32d2bf0482e0cac9ffa1cc00d4e93917cbca71`
+  `6477e8483850302ca261138ef1dbcb81bdc4cb1f3b657869ab83f080322d17fa`
 
 ## Start A Fresh Session
 
@@ -31,7 +31,7 @@ Use this prompt when continuing in a new Codex session:
 
 ```text
 Project: D:\Documents\Code\cua-pywin
-Current version: 0.1.3 beta
+Current version: 0.1.4 beta
 Current branch: master
 Goal: continue beta testing and feature iteration from the current codebase.
 Do not re-open old architectural debates unless new evidence appears.
@@ -53,7 +53,7 @@ Use a clean Windows machine when possible. The development machine has already
 run local release smoke, but it is not a substitute for clean-machine install
 validation.
 
-1. Run `dist-installer\cua-win-0.1.3-win64-setup.exe`.
+1. Run `dist-installer\cua-win-0.1.4-win64-setup.exe`.
 2. Enable `Add cua-win to the current user's PATH`.
 3. Open a new PowerShell window.
 4. Run:
@@ -145,12 +145,12 @@ python -m compileall -q computer_server som
 uv run python scripts/mcp_test_one.py --list
 '{"action":"status"}' | uv run python scripts/mcp_test_one.py computer_learn - --timeout 120
 uv run --no-sync python "C:\Users\vinfl\.codex\skills\.system\skill-creator\scripts\quick_validate.py" skills/cua-win
-uv run python scripts/validate_release.py --version 0.1.3
+uv run python scripts/validate_release.py --version 0.1.4
 ```
 
 Expected current baseline:
 
-- `pytest`: 266 passed
+- `pytest`: 285 passed
 - `ruff`: all checks passed
 - tool list: 25 tools
 - MCP `computer_learn` stdin smoke: pass
@@ -161,14 +161,14 @@ Expected current baseline:
 Fast local standalone rebuild after dependencies are already synced:
 
 ```powershell
-./scripts/build_nuitka.ps1 -Version 0.1.3 -SkipSync -SkipChecks
-./scripts/build_installer.ps1 -Version 0.1.3
+./scripts/build_nuitka.ps1 -Version 0.1.4 -SkipSync -SkipChecks
+./scripts/build_installer.ps1 -Version 0.1.4
 ```
 
 Full wheel/release candidate validation:
 
 ```powershell
-./scripts/build_release.ps1 -Version 0.1.3
+./scripts/build_release.ps1 -Version 0.1.4
 ```
 
 Standalone smoke:

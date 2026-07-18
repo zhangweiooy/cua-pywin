@@ -314,6 +314,57 @@ def _log_path() -> Path:
     return _state_dir() / "cli-daemon.log"
 
 
+def _daemon_start_lock_path() -> Path:
+    return _state_dir() / "cli-daemon.lock"
+
+
+@contextmanager
+def _daemon_start_lock(timeout: float):
+    path = _daemon_start_lock_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    handle = path.open("a+b")
+    handle.seek(0, os.SEEK_END)
+    if handle.tell() == 0:
+        handle.write(b"\0")
+        handle.flush()
+
+    deadline = time.monotonic() + max(0.0, timeout)
+    locked = False
+    try:
+        while True:
+            handle.seek(0)
+            try:
+                if os.name == "nt":
+                    import msvcrt
+
+                    msvcrt.locking(handle.fileno(), msvcrt.LK_NBLCK, 1)
+                else:
+                    import fcntl
+
+                    fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+                locked = True
+                break
+            except OSError as exc:
+                if time.monotonic() >= deadline:
+                    raise TimeoutError(
+                        f"timed out waiting for daemon start lock: {path}"
+                    ) from exc
+                time.sleep(0.1)
+        yield
+    finally:
+        if locked:
+            handle.seek(0)
+            if os.name == "nt":
+                import msvcrt
+
+                msvcrt.locking(handle.fileno(), msvcrt.LK_UNLCK, 1)
+            else:
+                import fcntl
+
+                fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+        handle.close()
+
+
 def _read_json(path: Path) -> dict[str, Any] | None:
     try:
         return json.loads(path.read_text(encoding="utf-8"))
@@ -688,7 +739,7 @@ def _terminate_daemon_process(info: DaemonInfo, timeout: float) -> bool:
         return False
 
 
-def _start_daemon(timeout: float = DEFAULT_START_TIMEOUT) -> DaemonInfo:
+def _start_daemon_locked(timeout: float) -> DaemonInfo:
     existing = _load_and_inspect_daemon()
     if existing and existing.running:
         return existing.info
@@ -782,6 +833,11 @@ def _start_daemon(timeout: float = DEFAULT_START_TIMEOUT) -> DaemonInfo:
         pass
     _remove_metadata(metadata_file)
     raise TimeoutError(f"daemon did not become ready within {timeout:.0f}s; see {_log_path()}")
+
+
+def _start_daemon(timeout: float = DEFAULT_START_TIMEOUT) -> DaemonInfo:
+    with _daemon_start_lock(timeout=timeout):
+        return _start_daemon_locked(timeout=timeout)
 
 
 def _ensure_daemon(timeout: float = DEFAULT_START_TIMEOUT) -> DaemonInfo:

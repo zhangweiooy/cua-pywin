@@ -4,7 +4,9 @@ import argparse
 import io
 import json
 import os
+import subprocess
 import sys
+import time
 
 import pytest
 
@@ -516,6 +518,39 @@ def test_daemon_start_then_status_uses_verified_process_and_health(
 
     assert tool_cli._cmd_status(argparse.Namespace(json=False)) == 0
     assert "running: http://127.0.0.1:4567 pid=1234 tools=25" in capsys.readouterr().out
+
+
+def test_daemon_start_lock_serializes_processes(monkeypatch, tmp_path) -> None:
+    import computer_server.tool_cli as tool_cli
+
+    monkeypatch.setenv("CUA_WIN_STATE_DIR", str(tmp_path))
+    code = (
+        "from computer_server.tool_cli import _daemon_start_lock;"
+        "import os;"
+        "assert os.environ['CUA_WIN_STATE_DIR'];"
+        "ctx=_daemon_start_lock(timeout=5);"
+        "ctx.__enter__();"
+        "print('acquired', flush=True);"
+        "ctx.__exit__(None, None, None)"
+    )
+    child = None
+    with tool_cli._daemon_start_lock(timeout=1):
+        child = subprocess.Popen(
+            [sys.executable, "-c", code],
+            cwd=os.getcwd(),
+            env={**os.environ, "CUA_WIN_STATE_DIR": str(tmp_path)},
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            encoding="utf-8",
+        )
+        time.sleep(0.3)
+        assert child.poll() is None
+
+    assert child is not None
+    stdout, stderr = child.communicate(timeout=10)
+    assert child.returncode == 0, stderr
+    assert stdout.strip() == "acquired"
 
 
 def test_daemon_status_cleans_stale_state_after_killed_process(

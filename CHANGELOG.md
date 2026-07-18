@@ -2,7 +2,7 @@
 
 All notable changes to this project will be documented in this file.
 
-## Unreleased
+## 0.1.4 - 2026-07-18
 
 ### Fixed
 
@@ -16,6 +16,12 @@ All notable changes to this project will be documented in this file.
   confirmed exit, sends HTTP shutdown only to a health-verified PID, and only
   terminates a process after daemon identity verification on the same process
   instance. Daemon command lines in doctor JSON redact the RPC token.
+
+### Changed
+
+- Version metadata is advanced to `0.1.4`.
+- Daemon startup now uses a cross-process lock so concurrent `cua-win start`
+  calls converge on one verified daemon instance.
 
 ## 0.1.3 - 2026-07-06
 
