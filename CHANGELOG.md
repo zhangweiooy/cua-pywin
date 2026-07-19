@@ -2,6 +2,15 @@
 
 All notable changes to this project will be documented in this file.
 
+## Unreleased
+
+### Fixed
+
+- `computer_learn` now owns UI Automation through a dedicated STA worker with
+  paired COM initialization and release. Learning startup no longer depends on
+  the MCP caller thread's existing COM apartment mode, and signed
+  `RPC_E_CHANGED_MODE` HRESULT values are handled correctly.
+
 ## 0.1.4 - 2026-07-18
 
 ### Fixed

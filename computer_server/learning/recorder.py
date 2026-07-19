@@ -159,7 +159,12 @@ class LearningRecorder:
             )
 
             self._uia = self._uia_cls()
-            if not self._uia.health_check():
+            try:
+                uia_healthy = self._uia.health_check()
+            except Exception:
+                logger.warning("Learning UIA health check failed", exc_info=True)
+                uia_healthy = False
+            if not uia_healthy:
                 self._session = None
                 self._cleanup()
                 return LearningError.UIA_UNAVAILABLE
@@ -331,6 +336,12 @@ class LearningRecorder:
 
     def _cleanup(self):
         self._stop_observation_worker()
+        uia = self._uia
+        if uia is not None:
+            try:
+                uia.close()
+            except Exception:
+                logger.debug("Failed to stop learning UIA worker", exc_info=True)
         self._input = None
         self._uia = None
         self._app_detector = None
@@ -1125,78 +1136,14 @@ class LearningRecorder:
     def _read_browser_url(self) -> Optional[str]:
         """Read the URL from a browser's address bar via UIA.
 
-        Walks the UIA tree looking for an Edit control whose name/description
-        contains 'address' or 'url'. Mirrors Swift EventHandlers.currentURL().
+        The UIAEnricher performs the tree walk on its dedicated STA thread.
         """
         if not self._uia:
             return None
         try:
-            from .platform import _ensure_com_initialized
-            _ensure_com_initialized()
-            import uiautomation as auto
-
-            focused = auto.GetFocusedControl()
-            if focused is None:
-                return None
-
-            # Find the top-level window (max 64 levels to guard against cycles)
-            window = focused
-            for _ in range(64):
-                try:
-                    p = window.GetParentControl()
-                    if p is None:
-                        break
-                    window = p
-                except Exception:
-                    break
-
-            return self._find_url_in_tree(window, depth=0)
+            return self._uia.read_browser_url()
         except Exception:
             return None
-
-    def _find_url_in_tree(self, el, depth: int,
-                          visited: set | None = None) -> Optional[str]:
-        """Recursive search for address bar element, max depth 8."""
-        if depth >= 8:
-            return None
-
-        if visited is None:
-            visited = set()
-
-        # Guard against UIA tree cycles from buggy providers.
-        el_id = id(el)
-        if el_id in visited:
-            return None
-        visited.add(el_id)
-
-        try:
-            ct = str(el.ControlType) if el.ControlType else ""
-            if "Edit" in ct or "ComboBox" in ct:
-                name = (el.Name or "").lower()
-                desc = (el.AutomationId or "").lower()
-                if any(kw in name or kw in desc
-                       for kw in ("address", "url", "search or enter", "omnibox")):
-                    try:
-                        val = el.GetValuePattern().Value
-                        if val:
-                            return val
-                    except Exception:
-                        pass
-                    try:
-                        val = el.Name
-                        if val and ("http" in val or "://" in val):
-                            return val
-                    except Exception:
-                        pass
-
-            children = el.GetChildren()
-            for child in children:
-                result = self._find_url_in_tree(child, depth + 1, visited)
-                if result:
-                    return result
-        except Exception:
-            pass
-        return None
 
     def _finish_stop(self) -> tuple:
         """Execute the stop sequence after _stopping=True has been set.

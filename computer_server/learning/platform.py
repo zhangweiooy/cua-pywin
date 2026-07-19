@@ -13,11 +13,14 @@ module has zero platform dependencies.
 from __future__ import annotations
 
 import ctypes
+import importlib
 import logging
+import queue
 import sys
 import threading
 import time
-from typing import Callable, Optional
+from dataclasses import dataclass, field
+from typing import Any, Callable, Optional
 
 from computer_server.handlers.control_types import semantic_role
 
@@ -89,29 +92,233 @@ VK_RWIN = 0x5C
 
 # COM apartment-threaded constant
 _COINIT_APARTMENTTHREADED = 0x2
+_S_OK = 0x00000000
+_S_FALSE = 0x00000001
+_RPC_E_CHANGED_MODE = 0x80010106
+_CO_E_NOTINITIALIZED = 0x800401F0
+_APTTYPE_STA = 0
+_APTTYPE_MTA = 1
+_APTTYPE_MAINSTA = 3
+_UIA_WORKER_START_TIMEOUT_SECONDS = 2.0
+_UIA_WORKER_CALL_TIMEOUT_SECONDS = 2.0
+_UIA_WORKER_STOP_TIMEOUT_SECONDS = 2.0
+_uiautomation_module: Any | None = None
+_uiautomation_import_lock = threading.Lock()
 
 
 # ---------------------------------------------------------------------------
-# COM init helper
+# COM STA worker
 # ---------------------------------------------------------------------------
 
-def _ensure_com_initialized() -> None:
-    """Initialize COM for the calling thread if not already initialized.
+def _normalize_hresult(value: int) -> int:
+    """Return an HRESULT as an unsigned 32-bit value."""
+    return ctypes.c_uint32(int(value)).value
 
-    UIA (UI Automation) requires COINIT_APARTMENTTHREADED on every thread
-    that calls UIA APIs.  pynput listener threads do not init COM automatically.
-    """
-    if not IS_WINDOWS:
-        return
+
+def _co_initialize_ex_sta() -> int:
+    return int(
+        ctypes.windll.ole32.CoInitializeEx(
+            None,
+            _COINIT_APARTMENTTHREADED,
+        )
+    )
+
+
+def _co_uninitialize() -> None:
+    ctypes.windll.ole32.CoUninitialize()
+
+
+def _current_com_apartment_type() -> int | None:
+    """Return the current COM apartment type, or None when uninitialized."""
+    apartment_type = ctypes.c_int()
+    qualifier = ctypes.c_int()
     try:
-        hr = ctypes.windll.ole32.CoInitializeEx(None, _COINIT_APARTMENTTHREADED)
-        # S_OK (0) or S_FALSE (1 = already initialized) are both fine.
-        if hr < 0 and hr != 0x80010106:  # RPC_E_CHANGED_MODE
-            logger.debug("CoInitializeEx returned 0x%08X", hr)
-    except OSError:
-        logger.warning("COM initialization failed — UIA enrichment unavailable")
+        hr = _normalize_hresult(
+            ctypes.windll.ole32.CoGetApartmentType(
+                ctypes.byref(apartment_type),
+                ctypes.byref(qualifier),
+            )
+        )
+    except (AttributeError, OSError):
+        return None
+    if hr == _S_OK:
+        return int(apartment_type.value)
+    if hr == _CO_E_NOTINITIALIZED:
+        return None
+    logger.debug("CoGetApartmentType returned HRESULT 0x%08X", hr)
+    return None
+
+
+def _uia_import_coinit_flags() -> int:
+    apartment_type = _current_com_apartment_type()
+    if apartment_type == _APTTYPE_MTA:
+        return 0
+    if apartment_type in {_APTTYPE_STA, _APTTYPE_MAINSTA}:
+        return _COINIT_APARTMENTTHREADED
+    return _COINIT_APARTMENTTHREADED
+
+
+def preload_uiautomation() -> Any | None:
+    """Import uiautomation before the STA worker starts.
+
+    comtypes initializes COM on the thread that first imports it. Matching
+    sys.coinit_flags to that thread's existing apartment avoids
+    RPC_E_CHANGED_MODE, while keeping the worker's COM count independent.
+    """
+    global _uiautomation_module
+
+    if not IS_WINDOWS:
+        return None
+    if _uiautomation_module is not None:
+        return _uiautomation_module
+
+    with _uiautomation_import_lock:
+        if _uiautomation_module is not None:
+            return _uiautomation_module
+
+        had_coinit_flags = hasattr(sys, "coinit_flags")
+        previous_coinit_flags = getattr(sys, "coinit_flags", None)
+        sys.coinit_flags = _uia_import_coinit_flags()
+        try:
+            _uiautomation_module = importlib.import_module("uiautomation")
+        except Exception:
+            logger.warning("Failed to preload uiautomation", exc_info=True)
+            return None
+        finally:
+            if had_coinit_flags:
+                sys.coinit_flags = previous_coinit_flags
+            else:
+                del sys.coinit_flags
+        return _uiautomation_module
+
+
+def _initialize_com_sta() -> bool:
+    """Initialize COM as STA and report failures without hiding the HRESULT."""
+    try:
+        hr = _normalize_hresult(_co_initialize_ex_sta())
+    except OSError as exc:
+        logger.warning("COM STA initialization failed: %s", exc)
+        return False
     except Exception:
-        logger.warning("COM initialization failed unexpectedly")
+        logger.warning("COM STA initialization failed unexpectedly", exc_info=True)
+        return False
+
+    if hr in {_S_OK, _S_FALSE}:
+        return True
+    if hr == _RPC_E_CHANGED_MODE:
+        logger.warning(
+            "COM STA initialization failed with RPC_E_CHANGED_MODE (0x%08X)",
+            hr,
+        )
+    else:
+        logger.warning("COM STA initialization failed with HRESULT 0x%08X", hr)
+    return False
+
+
+@dataclass
+class _UIARequest:
+    callback: Callable[[], Any]
+    completed: threading.Event = field(default_factory=threading.Event)
+    result: Any = None
+    error: BaseException | None = None
+
+
+class _UIAStaWorker:
+    """Own one STA thread and marshal every learning UIA call onto it."""
+
+    def __init__(self) -> None:
+        self._queue: queue.Queue[_UIARequest | None] = queue.Queue()
+        self._ready = threading.Event()
+        self._state_lock = threading.Lock()
+        self._thread: threading.Thread | None = None
+        self._initialized = False
+        self._closed = False
+
+    def start(self, timeout: float = _UIA_WORKER_START_TIMEOUT_SECONDS) -> bool:
+        with self._state_lock:
+            if self._closed:
+                return False
+            thread = self._thread
+            if thread is None:
+                self._thread = threading.Thread(
+                    target=self._run,
+                    name="cua-learn-uia-sta",
+                    daemon=True,
+                )
+                thread = self._thread
+                thread.start()
+
+        if not self._ready.wait(timeout=max(0.0, timeout)):
+            logger.warning("Timed out starting the learning UIA STA worker")
+            return False
+        return self._initialized and thread.is_alive()
+
+    def call(
+        self,
+        callback: Callable[[], Any],
+        timeout: float = _UIA_WORKER_CALL_TIMEOUT_SECONDS,
+    ) -> Any:
+        if threading.current_thread() is self._thread:
+            return callback()
+        if not self.start():
+            raise RuntimeError("learning UIA STA worker is unavailable")
+
+        request = _UIARequest(callback=callback)
+        with self._state_lock:
+            if self._closed:
+                raise RuntimeError("learning UIA STA worker is closed")
+            self._queue.put(request)
+
+        if not request.completed.wait(timeout=max(0.0, timeout)):
+            raise TimeoutError("learning UIA STA call timed out")
+        if request.error is not None:
+            raise request.error
+        return request.result
+
+    def close(self, timeout: float = _UIA_WORKER_STOP_TIMEOUT_SECONDS) -> None:
+        with self._state_lock:
+            if self._closed:
+                return
+            self._closed = True
+            thread = self._thread
+            if thread is not None:
+                self._queue.put(None)
+
+        if (
+            thread is not None
+            and thread.is_alive()
+            and thread is not threading.current_thread()
+        ):
+            thread.join(timeout=max(0.0, timeout))
+            if thread.is_alive():
+                logger.warning("Timed out stopping the learning UIA STA worker")
+
+    def _run(self) -> None:
+        initialized = _initialize_com_sta()
+        self._initialized = initialized
+        self._ready.set()
+        if not initialized:
+            return
+
+        try:
+            while True:
+                request = self._queue.get()
+                try:
+                    if request is None:
+                        return
+                    try:
+                        request.result = request.callback()
+                    except BaseException as exc:
+                        request.error = exc
+                    finally:
+                        request.completed.set()
+                finally:
+                    self._queue.task_done()
+        finally:
+            try:
+                _co_uninitialize()
+            except Exception:
+                logger.debug("COM STA uninitialization failed", exc_info=True)
 
 
 # ============================================================
@@ -395,27 +602,38 @@ class UIAEnricher:
 
     Mirrors the AX enrichment in Ghost OS Swift EventHandlers.enrichClick().
 
-    Each public method initializes COM on the calling thread before
-    accessing UIA APIs.  This is necessary because pynput callbacks
-    fire on threads that do not have COM pre-initialized.
+    All UIA access is marshalled onto one dedicated STA thread. This keeps
+    COM apartment ownership independent from MCP, pynput, and observation
+    worker threads.
     """
 
-    def health_check(self) -> bool:
-        """Verify UIA is functional by probing COM and UIA core APIs.
+    def __init__(self, uia_module: Any | None = None) -> None:
+        self._auto = uia_module if uia_module is not None else preload_uiautomation()
+        self._worker = _UIAStaWorker()
 
-        Call once from the main thread before starting recording to
-        fail early with a clear error instead of silently degrading.
-        """
+    def close(self) -> None:
+        """Stop the STA worker and release its COM apartment."""
+        self._worker.close()
+
+    def health_check(self) -> bool:
+        """Verify COM STA initialization and the UIA root-control API."""
         if not IS_WINDOWS:
             return False
-        _ensure_com_initialized()
-        try:
-            import uiautomation as auto
-            _ = auto.GetRootControl()
-            return True
-        except Exception:
-            logger.warning("UIA health check failed — element enrichment unavailable")
+        if self._auto is None:
             return False
+        try:
+            if not self._worker.start():
+                return False
+            return bool(self._worker.call(self._health_check_on_sta))
+        except Exception:
+            logger.warning(
+                "UIA health check failed - element enrichment unavailable",
+                exc_info=True,
+            )
+            return False
+
+    def _health_check_on_sta(self) -> bool:
+        return self._auto.GetRootControl() is not None
 
     def enrich_click(self, x: float, y: float) -> dict | None:
         """Query the UIA element at screen position (x, y).
@@ -424,44 +642,50 @@ class UIAEnricher:
         """
         if not IS_WINDOWS:
             return None
-        _ensure_com_initialized()
         try:
-            import uiautomation as auto
-
-            el = auto.ControlFromPoint(int(x), int(y))
-            if el is None:
-                return None
-
-            ctx: dict = {}
-
-            role = self._map_control_type(el.ControlType)
-            if role:
-                ctx["role"] = role
-
-            if el.Name:
-                ctx["title"] = el.Name[:200]
-                ctx["computed_name"] = el.Name[:200]
-
-            if el.AutomationId:
-                ctx["identifier"] = el.AutomationId[:200]
-
-            try:
-                parent = el.GetParentControl()
-                if parent:
-                    pr = self._map_control_type(parent.ControlType)
-                    if pr:
-                        ctx["parent_role"] = pr
-            except Exception:
-                pass
-
-            return ctx if ctx else None
-
+            return self._worker.call(
+                lambda: self._enrich_click_on_sta(x, y),
+            )
         except ImportError:
-            logger.warning("uiautomation not installed — element enrichment disabled")
+            logger.warning("uiautomation not installed - element enrichment disabled")
             return None
         except Exception:
-            logger.debug("UIA enrichment at (%d,%d) failed", int(x), int(y), exc_info=True)
+            logger.debug(
+                "UIA enrichment at (%d,%d) failed",
+                int(x),
+                int(y),
+                exc_info=True,
+            )
             return None
+
+    def _enrich_click_on_sta(self, x: float, y: float) -> dict | None:
+        el = self._auto.ControlFromPoint(int(x), int(y))
+        if el is None:
+            return None
+
+        ctx: dict = {}
+
+        role = self._map_control_type(el.ControlType)
+        if role:
+            ctx["role"] = role
+
+        if el.Name:
+            ctx["title"] = el.Name[:200]
+            ctx["computed_name"] = el.Name[:200]
+
+        if el.AutomationId:
+            ctx["identifier"] = el.AutomationId[:200]
+
+        try:
+            parent = el.GetParentControl()
+            if parent:
+                pr = self._map_control_type(parent.ControlType)
+                if pr:
+                    ctx["parent_role"] = pr
+        except Exception:
+            pass
+
+        return ctx if ctx else None
 
     def is_password_field_focused(self) -> bool:
         """Check if the focused control is a password field.
@@ -473,61 +697,60 @@ class UIAEnricher:
         """
         if not IS_WINDOWS:
             return False
-        _ensure_com_initialized()
         try:
-            import uiautomation as auto
-
-            focused = auto.GetFocusedControl()
-            if focused is None:
-                return False
-
-            if getattr(focused, 'IsPassword', False):
-                return True
-
-            lct = getattr(focused, 'LocalizedControlType', '') or ''
-            if 'password' in lct.lower():
-                return True
-
-            name = (focused.Name or '').lower()
-            aid = (focused.AutomationId or '').lower()
-            for pattern in SENSITIVE_FIELD_PATTERNS:
-                if pattern in name or pattern in aid:
-                    return True
-
-            return False
+            return bool(self._worker.call(self._is_password_field_focused_on_sta))
         except ImportError:
             return False
         except Exception:
             logger.debug("Password field check failed", exc_info=True)
             return False
 
+    def _is_password_field_focused_on_sta(self) -> bool:
+        focused = self._auto.GetFocusedControl()
+        if focused is None:
+            return False
+
+        if getattr(focused, "IsPassword", False):
+            return True
+
+        lct = getattr(focused, "LocalizedControlType", "") or ""
+        if "password" in lct.lower():
+            return True
+
+        name = (focused.Name or "").lower()
+        aid = (focused.AutomationId or "").lower()
+        return any(
+            pattern in name or pattern in aid
+            for pattern in SENSITIVE_FIELD_PATTERNS
+        )
+
     def focused_element_context(self) -> dict | None:
         """Get UIA context for the currently focused element."""
         if not IS_WINDOWS:
             return None
-        _ensure_com_initialized()
         try:
-            import uiautomation as auto
-
-            focused = auto.GetFocusedControl()
-            if focused is None:
-                return None
-
-            ctx: dict = {}
-            role = self._map_control_type(focused.ControlType)
-            if role:
-                ctx["role"] = role
-            if focused.Name:
-                ctx["title"] = focused.Name[:200]
-                ctx["computed_name"] = focused.Name[:200]
-            if focused.AutomationId:
-                ctx["identifier"] = focused.AutomationId[:200]
-            return ctx if ctx else None
+            return self._worker.call(self._focused_element_context_on_sta)
         except ImportError:
             return None
         except Exception:
             logger.debug("Focused element context failed", exc_info=True)
             return None
+
+    def _focused_element_context_on_sta(self) -> dict | None:
+        focused = self._auto.GetFocusedControl()
+        if focused is None:
+            return None
+
+        ctx: dict = {}
+        role = self._map_control_type(focused.ControlType)
+        if role:
+            ctx["role"] = role
+        if focused.Name:
+            ctx["title"] = focused.Name[:200]
+            ctx["computed_name"] = focused.Name[:200]
+        if focused.AutomationId:
+            ctx["identifier"] = focused.AutomationId[:200]
+        return ctx if ctx else None
 
     def read_focused_value(self) -> str | None:
         """Read the ValuePattern value of the currently focused element.
@@ -537,20 +760,91 @@ class UIAEnricher:
         """
         if not IS_WINDOWS:
             return None
-        _ensure_com_initialized()
         try:
-            import uiautomation as auto
-
-            focused = auto.GetFocusedControl()
-            if focused is None:
-                return None
-            if not focused.IsValuePatternAvailable():
-                return None
-            value = focused.GetValuePattern().Value or ""
-            return value if value else None
+            return self._worker.call(self._read_focused_value_on_sta)
         except Exception:
             logger.debug("read_focused_value failed", exc_info=True)
             return None
+
+    def _read_focused_value_on_sta(self) -> str | None:
+        focused = self._auto.GetFocusedControl()
+        if focused is None or not focused.IsValuePatternAvailable():
+            return None
+        value = focused.GetValuePattern().Value or ""
+        return value if value else None
+
+    def read_browser_url(self) -> str | None:
+        """Read the active browser address bar without leaking UIA objects."""
+        if not IS_WINDOWS:
+            return None
+        try:
+            return self._worker.call(self._read_browser_url_on_sta)
+        except Exception:
+            logger.debug("Browser URL UIA read failed", exc_info=True)
+            return None
+
+    def _read_browser_url_on_sta(self) -> str | None:
+        focused = self._auto.GetFocusedControl()
+        if focused is None:
+            return None
+
+        window = focused
+        for _ in range(64):
+            try:
+                parent = window.GetParentControl()
+                if parent is None:
+                    break
+                window = parent
+            except Exception:
+                break
+
+        return self._find_url_in_tree(window, depth=0)
+
+    def _find_url_in_tree(
+        self,
+        element,
+        depth: int,
+        visited: set[int] | None = None,
+    ) -> str | None:
+        if depth >= 8:
+            return None
+        if visited is None:
+            visited = set()
+
+        element_id = id(element)
+        if element_id in visited:
+            return None
+        visited.add(element_id)
+
+        try:
+            control_type = str(element.ControlType) if element.ControlType else ""
+            if "Edit" in control_type or "ComboBox" in control_type:
+                name = (element.Name or "").lower()
+                automation_id = (element.AutomationId or "").lower()
+                if any(
+                    keyword in name or keyword in automation_id
+                    for keyword in ("address", "url", "search or enter", "omnibox")
+                ):
+                    try:
+                        value = element.GetValuePattern().Value
+                        if value:
+                            return value
+                    except Exception:
+                        pass
+                    try:
+                        value = element.Name
+                        if value and ("http" in value or "://" in value):
+                            return value
+                    except Exception:
+                        pass
+
+            for child in element.GetChildren():
+                result = self._find_url_in_tree(child, depth + 1, visited)
+                if result:
+                    return result
+        except Exception:
+            pass
+        return None
 
     def _map_control_type(self, ct) -> str | None:
         """Map UIA ControlType to AX role naming scheme."""

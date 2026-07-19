@@ -41,8 +41,9 @@ class LearningError(Enum):
                 "Make sure you performed actions (clicks, typing) while "
                 "recording was active.",
             LearningError.UIA_UNAVAILABLE:
-                "UI Automation requires COM initialized with "
-                "COINIT_APARTMENTTHREADED. Try restarting the application.",
+                "The learning UI Automation STA worker could not initialize "
+                "or query the Windows UI Automation root. Check daemon logs "
+                "and Windows UI Automation availability.",
         }
         return suggestions[self]
 

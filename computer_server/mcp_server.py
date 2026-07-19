@@ -56,6 +56,16 @@ if not _LIGHTWEIGHT_MCP_IMPORT:
         _pre_wgc_avail()
     except Exception:
         pass
+    if sys.platform == "win32":
+        try:
+            # uiautomation imports comtypes, which initializes COM on the first
+            # importing thread. Do this before FastMCP starts worker threads so
+            # learning's dedicated STA owns only its explicit COM initialization.
+            from computer_server.learning.platform import preload_uiautomation
+
+            preload_uiautomation()
+        except Exception:
+            pass
 from typing import Any, Dict, List, Optional, Tuple
 
 if sys.platform != "win32":
