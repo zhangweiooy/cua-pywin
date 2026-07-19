@@ -72,6 +72,7 @@ if sys.platform != "win32":
     raise RuntimeError("cua-pywin 仅支持 Windows 平台")
 
 from fastmcp import FastMCP
+from fastmcp.tools import ToolResult
 
 # Agent cursor overlay — optional, degrades silently if init fails
 try:
@@ -1257,7 +1258,19 @@ def create_mcp_server() -> FastMCP:
 
         image_data = encode_for_mcp_image(img, fmt, quality)
 
-        return Image(data=image_data, format=fmt)
+        return ToolResult(
+            content=[Image(data=image_data, format=fmt)],
+            structured_content={
+                "success": True,
+                "format": fmt,
+                "mime_type": f"image/{fmt}",
+                "mimeType": f"image/{fmt}",
+                "width": img.width,
+                "height": img.height,
+                "byte_count": len(image_data),
+                "imageBytes": len(image_data),
+            },
+        )
 
     @mcp.tool(annotations={"readOnlyHint": True, "destructiveHint": False, "idempotentHint": True, "openWorldHint": True})
     async def computer_get_screen_size() -> Any:
@@ -4635,7 +4648,7 @@ def create_mcp_server() -> FastMCP:
 
         import time
         session, actions = result
-        duration = time.time() - session.start_time
+        duration = (session.end_time or time.time()) - session.start_time
 
         return {
             "success": True,

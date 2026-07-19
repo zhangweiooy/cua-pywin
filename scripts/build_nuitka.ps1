@@ -217,6 +217,11 @@ import os
 import sys
 from pathlib import Path
 
+# The hybrid standalone includes source-only packages. Keep the installed
+# runtime immutable when those modules are imported for the first time.
+os.environ["PYTHONDONTWRITEBYTECODE"] = "1"
+sys.dont_write_bytecode = True
+
 _BASE = Path(__file__).resolve().parent
 _DLL_DIRECTORY_HANDLES = []
 for _relative in ("win32", "win32/lib", "Pythonwin"):

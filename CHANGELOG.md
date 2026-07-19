@@ -10,6 +10,16 @@ All notable changes to this project will be documented in this file.
   paired COM initialization and release. Learning startup no longer depends on
   the MCP caller thread's existing COM apartment mode, and signed
   `RPC_E_CHANGED_MODE` HRESULT values are handled correctly.
+- Repeated or concurrent `computer_learn(action="stop")` calls now return the
+  same completed session without repeating enrichment, evidence writes, or
+  duration updates.
+- Frozen and daemon runtimes now disable runtime bytecode writes so source-only
+  packages in the hybrid standalone cannot add `__pycache__/*.pyc` files after
+  staging.
+- `cua-win doctor` now treats a clean stopped daemon with no metadata as
+  healthy while continuing to warn on stale, unverifiable, or unhealthy state.
+- `computer_screenshot` now keeps its MCP image content while also returning
+  structured success, format, dimensions, MIME type, and byte-count metadata.
 
 ## 0.1.4 - 2026-07-18
 

@@ -40,6 +40,8 @@ from .tool_rpc import (
 def _bootstrap_frozen_runtime_paths() -> None:
     if not (getattr(sys, "frozen", False) or "__compiled__" in globals()):
         return
+    os.environ["PYTHONDONTWRITEBYTECODE"] = "1"
+    sys.dont_write_bytecode = True
     script_path = Path(sys.argv[0])
     if script_path.suffix.lower() == ".exe":
         base_dir = script_path.resolve().parent
@@ -774,6 +776,7 @@ def _start_daemon_locked(timeout: float) -> DaemonInfo:
     env = {
         **os.environ,
         "PYTHONIOENCODING": "utf-8",
+        "PYTHONDONTWRITEBYTECODE": "1",
     }
     args = _daemon_start_args(host, port, token, metadata_file)
 
@@ -1791,10 +1794,24 @@ def _check_rapidocr_bundle() -> DoctorCheck:
 def _check_daemon(timeout: float) -> DoctorCheck:
     inspection = _load_and_inspect_daemon(timeout=timeout)
     if not inspection:
+        metadata_file = _metadata_path()
+        if metadata_file.exists():
+            return DoctorCheck(
+                name="daemon",
+                status="warn",
+                message=(
+                    "daemon metadata exists but could not be parsed; metadata "
+                    "was preserved"
+                ),
+                details={
+                    "metadata_file": str(metadata_file),
+                    "stale_reason": "metadata_invalid",
+                },
+            )
         return DoctorCheck(
             name="daemon",
-            status="warn",
-            message="daemon metadata not found; run `cua-win start` to start it",
+            status="ok",
+            message="daemon not running; metadata not found",
         )
     info = inspection.info
     if not inspection.running:

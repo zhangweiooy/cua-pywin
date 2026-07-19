@@ -67,6 +67,22 @@ def test_frozen_cli_daemon_reuses_current_executable(monkeypatch, tmp_path) -> N
     assert "computer_server.tool_cli" not in args
 
 
+def test_frozen_runtime_disables_bytecode_writes(monkeypatch, tmp_path) -> None:
+    import computer_server.tool_cli as tool_cli
+
+    previous = sys.dont_write_bytecode
+    monkeypatch.setattr(sys, "frozen", True, raising=False)
+    monkeypatch.setattr(sys, "argv", [str(tmp_path / "cua-win.exe")])
+    monkeypatch.delenv("PYTHONDONTWRITEBYTECODE", raising=False)
+    try:
+        sys.dont_write_bytecode = False
+        tool_cli._bootstrap_frozen_runtime_paths()
+        assert os.environ["PYTHONDONTWRITEBYTECODE"] == "1"
+        assert sys.dont_write_bytecode is True
+    finally:
+        sys.dont_write_bytecode = previous
+
+
 def test_parse_tool_arguments_requires_object() -> None:
     assert _parse_tool_arguments(None) == {}
     assert _parse_tool_arguments('{"x": 1}') == {"x": 1}
@@ -1240,6 +1256,48 @@ def test_daemon_doctor_reports_stale_state_without_removing_it(
     assert check.status == "warn"
     assert check.message == "daemon metadata is stale: pid_not_found"
     assert removed == []
+
+
+def test_daemon_doctor_accepts_clean_stopped_state(monkeypatch, tmp_path) -> None:
+    import computer_server.tool_cli as tool_cli
+
+    monkeypatch.setenv("CUA_WIN_STATE_DIR", str(tmp_path))
+
+    check = tool_cli._check_daemon(timeout=1)
+
+    assert check.status == "ok"
+    assert check.message == "daemon not running; metadata not found"
+
+
+@pytest.mark.parametrize(
+    "metadata",
+    [
+        "{broken",
+        '{"host": "127.0.0.1"}',
+    ],
+)
+def test_daemon_doctor_warns_on_invalid_metadata(
+    monkeypatch,
+    tmp_path,
+    metadata,
+) -> None:
+    import computer_server.tool_cli as tool_cli
+
+    monkeypatch.setenv("CUA_WIN_STATE_DIR", str(tmp_path))
+    metadata_file = tmp_path / "cli-daemon.json"
+    metadata_file.write_text(metadata, encoding="utf-8")
+
+    check = tool_cli._check_daemon(timeout=1)
+
+    assert check.status == "warn"
+    assert check.message == (
+        "daemon metadata exists but could not be parsed; metadata was preserved"
+    )
+    assert check.details == {
+        "metadata_file": str(metadata_file),
+        "stale_reason": "metadata_invalid",
+    }
+    assert metadata_file.read_text(encoding="utf-8") == metadata
 
 
 def test_daemon_doctor_redacts_token_from_process_details(

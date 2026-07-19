@@ -74,6 +74,15 @@ def test_validate_hash_entries_requires_all_runtime_files(tmp_path: Path) -> Non
         )
 
 
+def test_nuitka_sitecustomize_disables_bytecode_writes() -> None:
+    script = (
+        Path(__file__).resolve().parents[1] / "scripts" / "build_nuitka.ps1"
+    ).read_text(encoding="utf-8")
+
+    assert 'os.environ["PYTHONDONTWRITEBYTECODE"] = "1"' in script
+    assert "sys.dont_write_bytecode = True" in script
+
+
 def test_validate_source_models_rejects_lfs_pointer(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,

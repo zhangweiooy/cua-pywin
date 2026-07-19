@@ -74,6 +74,7 @@ class LearningRecorder:
 
     def __init__(self):
         self._lock = threading.RLock()
+        self._stop_condition = threading.Condition(self._lock)
         self._session: Optional[LearningSession] = None
         self._input: Optional[object] = None  # InputCapture
         self._uia: Optional[object] = None  # UIAEnricher
@@ -93,6 +94,7 @@ class LearningRecorder:
 
         # Prevent concurrent stop() from timer + user call
         self._stopping = False
+        self._last_stop_result: tuple | None = None
         self._agent_input_suppression_count = 0
         self._agent_input_suppressed_until = 0.0
         self._observation_queue: queue.Queue[_ObservationJob | None] | None = None
@@ -129,10 +131,11 @@ class LearningRecorder:
         Returns None on success, or a LearningError.
         """
         with self._lock:
-            if self._session is not None:
+            if self._session is not None or self._stopping:
                 return LearningError.ALREADY_RECORDING
 
             self._stopping = False
+            self._last_stop_result = None
             self._output_dir = output_dir
             self._init_platform()
 
@@ -207,12 +210,32 @@ class LearningRecorder:
             On success: (True, (LearningSession, list[ObservedAction]))
             On failure: (False, LearningError)
         """
-        with self._lock:
-            if self._stopping:
+        with self._stop_condition:
+            while self._stopping:
+                self._stop_condition.wait()
+            if self._session is None:
+                if self._last_stop_result is not None:
+                    return self._last_stop_result
                 return (False, LearningError.NOT_RECORDING)
             self._stopping = True
 
-        return self._finish_stop()
+        return self._complete_stop()
+
+    def _complete_stop(self) -> tuple:
+        """Run the stop owner and publish one result to concurrent callers."""
+        try:
+            result = self._finish_stop()
+        except BaseException:
+            with self._stop_condition:
+                self._stopping = False
+                self._stop_condition.notify_all()
+            raise
+
+        with self._stop_condition:
+            self._last_stop_result = result
+            self._stopping = False
+            self._stop_condition.notify_all()
+        return result
 
     def status(self) -> tuple:
         """Return (is_recording, action_count, duration_seconds, current_app, listener_healthy)."""
@@ -1178,6 +1201,7 @@ class LearningRecorder:
             session = self._session
             self._session = None
 
+        session.end_time = time.time()
         actions = session.actions
 
         if not actions:
@@ -1218,7 +1242,7 @@ class LearningRecorder:
         os.makedirs(self._output_dir, exist_ok=True)
 
         data = session.to_dict(
-            duration_seconds=int(time.time() - session.start_time),
+            duration_seconds=int((session.end_time or time.time()) - session.start_time),
             actions=actions,
         )
         screenshots_dir = os.path.join(self._output_dir, "screenshots")
@@ -1271,8 +1295,7 @@ class LearningRecorder:
     def _on_max_duration(self) -> None:
         """Safety timer: auto-stop after MAX_RECORDING_DURATION seconds.
 
-        Holds _lock through the check so a concurrent user stop() sees
-        _stopping=True and bails instead of racing for the result.
+        A concurrent user stop waits for and receives the same completed result.
         """
         with self._lock:
             if self._stopping or self._session is None:
@@ -1283,4 +1306,4 @@ class LearningRecorder:
             "Learning: max recording duration reached (%ds), auto-stopping",
             MAX_RECORDING_DURATION,
         )
-        self._finish_stop()
+        self._complete_stop()

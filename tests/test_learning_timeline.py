@@ -1,11 +1,13 @@
 from __future__ import annotations
 
 import queue
+import threading
 import time
 
 from computer_server.learning.recorder import LearningRecorder, _ObservationJob
 from computer_server.learning.session import (
     LearningObservation,
+    LearningError,
     LearningSession,
     ObservedAction,
     ObservedActionType,
@@ -37,6 +39,18 @@ def _recorder_with_session() -> LearningRecorder:
     recorder = LearningRecorder()
     recorder._session = LearningSession(task_description=None, start_time=time.time())
     return recorder
+
+
+def _track_stop_waits(recorder: LearningRecorder) -> threading.Event:
+    waiter_started = threading.Event()
+
+    class _TrackingCondition(threading.Condition):
+        def wait(self, timeout=None):
+            waiter_started.set()
+            return super().wait(timeout)
+
+    recorder._stop_condition = _TrackingCondition(recorder._lock)
+    return waiter_started
 
 
 def test_append_assigns_ids_and_queues_observation_job():
@@ -205,3 +219,99 @@ def test_observation_skip_and_error_counters_are_non_fatal():
     assert recorder._session.metrics["error_count"] == 1
     assert recorder._session.metrics["degraded_observations"] == 2
     assert recorder._session.metrics["target_profile_counts"] == {"unknown": 2}
+
+
+def test_repeated_stop_returns_same_completed_session(monkeypatch):
+    recorder = _recorder_with_session()
+    assert recorder._session is not None
+    recorder._session.actions.append(
+        ObservedAction(
+            timestamp=10,
+            action_type=ObservedActionType.CLICK,
+            app_name="Notepad",
+        )
+    )
+    monkeypatch.setattr(recorder, "_enrich_vision", lambda actions: None)
+
+    first = recorder.stop()
+    second = recorder.stop()
+
+    assert first[0] is True
+    assert second == first
+    assert recorder.is_recording is False
+    assert first[1][0].end_time is not None
+
+
+def test_concurrent_stop_waits_for_same_completed_session(monkeypatch):
+    recorder = _recorder_with_session()
+    waiter_started = _track_stop_waits(recorder)
+    assert recorder._session is not None
+    session = recorder._session
+    expected = (True, (session, session.actions))
+    session_detached = threading.Event()
+    release_stop = threading.Event()
+
+    def blocked_finish_stop():
+        with recorder._lock:
+            recorder._session = None
+        session_detached.set()
+        assert release_stop.wait(timeout=2)
+        return expected
+
+    monkeypatch.setattr(recorder, "_finish_stop", blocked_finish_stop)
+    first_results = []
+    second_results = []
+    first = threading.Thread(target=lambda: first_results.append(recorder.stop()))
+    second = threading.Thread(target=lambda: second_results.append(recorder.stop()))
+
+    first.start()
+    assert session_detached.wait(timeout=2)
+    second.start()
+
+    assert waiter_started.wait(timeout=2)
+    assert recorder.start() is LearningError.ALREADY_RECORDING
+
+    release_stop.set()
+    first.join(timeout=2)
+    second.join(timeout=2)
+
+    assert not first.is_alive()
+    assert not second.is_alive()
+    assert first_results == [expected]
+    assert second_results == [expected]
+
+
+def test_manual_stop_waits_for_max_duration_result(monkeypatch):
+    recorder = _recorder_with_session()
+    waiter_started = _track_stop_waits(recorder)
+    assert recorder._session is not None
+    session = recorder._session
+    expected = (True, (session, session.actions))
+    stop_started = threading.Event()
+    release_stop = threading.Event()
+
+    def blocked_finish_stop():
+        stop_started.set()
+        assert release_stop.wait(timeout=2)
+        with recorder._lock:
+            recorder._session = None
+        return expected
+
+    monkeypatch.setattr(recorder, "_finish_stop", blocked_finish_stop)
+    timer = threading.Thread(target=recorder._on_max_duration)
+    manual_results = []
+    manual = threading.Thread(target=lambda: manual_results.append(recorder.stop()))
+
+    timer.start()
+    assert stop_started.wait(timeout=2)
+    manual.start()
+
+    assert waiter_started.wait(timeout=2)
+
+    release_stop.set()
+    timer.join(timeout=2)
+    manual.join(timeout=2)
+
+    assert not timer.is_alive()
+    assert not manual.is_alive()
+    assert manual_results == [expected]

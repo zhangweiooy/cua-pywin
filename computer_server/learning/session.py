@@ -304,6 +304,7 @@ class LearningSession:
 
     task_description: str | None
     start_time: float
+    end_time: float | None = None
     actions: list[ObservedAction] = field(default_factory=list)
     observations: list[LearningObservation] = field(default_factory=list)
     links: list[LearningLink] = field(default_factory=list)

@@ -67,6 +67,54 @@ class _FakeAutomation:
         return {"success": True, "text": text}
 
 
+@pytest.mark.asyncio
+async def test_screenshot_returns_image_and_structured_metadata(monkeypatch):
+    import base64
+    from io import BytesIO
+
+    from PIL import Image as PILImage
+
+    import computer_server.mcp_server as mcp_module
+
+    image = PILImage.new("RGB", (32, 24), "white")
+    buffer = BytesIO()
+    image.save(buffer, format="PNG")
+
+    class Automation(_FakeAutomation):
+        async def screenshot(self, format: str, quality: int):
+            assert format == "png"
+            assert quality == 85
+            return {
+                "success": True,
+                "image_data": base64.b64encode(buffer.getvalue()).decode("ascii"),
+            }
+
+    monkeypatch.setattr(
+        mcp_module,
+        "_handlers",
+        SimpleNamespace(automation=Automation()),
+    )
+
+    result = await create_mcp_server().call_tool(
+        "computer_screenshot",
+        {"format": "png"},
+    )
+
+    assert len(result.content) == 1
+    assert result.content[0].type == "image"
+    assert result.content[0].mimeType == "image/png"
+    assert result.structured_content == {
+        "success": True,
+        "format": "png",
+        "mime_type": "image/png",
+        "mimeType": "image/png",
+        "width": 32,
+        "height": 24,
+        "byte_count": len(base64.b64decode(result.content[0].data)),
+        "imageBytes": len(base64.b64decode(result.content[0].data)),
+    }
+
+
 class _FakeWindow:
     def __init__(self):
         self.activations = []
