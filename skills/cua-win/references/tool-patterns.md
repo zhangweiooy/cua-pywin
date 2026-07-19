@@ -81,12 +81,12 @@ Capture a window:
 Each node may include `action_hints`, a compact agent-facing translation of
 low-level `actions`. Prefer these hints when choosing between click, type,
 set_value, select, toggle, expand, and scroll paths.
-`accessibility_hint` and `observation_recommendation` summarize whether the
-semantic tree is usable, whether vision/OCR filled gaps, and whether to narrow
-with `query` or increase `max_nodes`.
-Read `agent_state.text` / `state_text` before scanning the full node list. It
-is capped by `agent_text_limit=500` by default; pass `show_full_text=true` or
-raise `agent_text_limit` for diagnostic runs.
+`data.accessibility_hint` and `data.observation_recommendation` summarize
+whether the semantic tree is usable, whether vision/OCR filled gaps, and whether
+to narrow with `query` or increase `max_nodes`.
+Read `data.agent_state.text` / `data.state_text` before scanning the full node
+list. It is capped by `agent_text_limit=500` by default; pass
+`show_full_text=true` or raise `agent_text_limit` for diagnostic runs.
 
 Click a screenshot coordinate:
 
@@ -107,6 +107,17 @@ Click an indexed element from the same observation:
   "window": {"id": 123456, "pid": 8888},
   "observation_id": "obs-...",
   "element_index": 7
+}
+```
+
+Double-click the same indexed element:
+
+```json
+{
+  "window": {"id": 123456, "pid": 8888},
+  "observation_id": "obs-...",
+  "element_index": 7,
+  "count": 2
 }
 ```
 
@@ -143,8 +154,8 @@ Open and inspect a native context menu:
 {"window": {"id": 123456, "pid": 8888}, "key": "Shift_L+F10"}
 ```
 
-Then call `computer_get_window_state` again and inspect transient screenshots
-or menu nodes before selecting an item.
+Then call `computer_get_window_state` again and inspect transient image
+artifacts/MCP image content or menu nodes before selecting an item.
 
 ## Observe-Plan-Act Pattern
 
@@ -296,15 +307,15 @@ Rules:
 ## Post-Action Observation
 
 Use `capture_after=true` on supported action tools when the next step depends
-on visible UI changes. The result includes `capture_after`. Add
+on visible UI changes. The result includes `data.capture_after`. Add
 `include_post_action_delta=true` only when a lightweight before/after comparison
 is worth the extra pre-action observation; then the result also includes
-`post_action_delta`.
+`data.post_action_delta`.
 
-`post_action_delta` is a lightweight hint, not a full semantic diff. It reports
+`data.post_action_delta` is a lightweight hint, not a full semantic diff. It reports
 node-count deltas, added/removed node samples, changed text samples,
-tree-quality changes, and before/after snapshot and screenshot ids. For
-high-stakes branching, still inspect `capture_after.nodes` or take a fresh
+tree-quality changes, and before/after observation and screenshot ids. For
+high-stakes branching, still inspect `data.capture_after.nodes` or take a fresh
 `computer_get_window_state`.
 
 ## Recording And Learning

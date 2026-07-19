@@ -20,8 +20,8 @@ computer_server/
                               daemon lifecycle, metadata, and HTTP client
   tool_rpc.py               — Shared tool schema/result JSON serialization
   server_context.py         — Per-instance mutable state: recording session,
-                              learning recorder, UIA/MSAA/action gates,
-                              popover dedup, held input state
+                              learning recorder, observation registry,
+                              UIA/MSAA/action gates, popover dedup, held input state
   handlers/                 — Platform primitives and OS-facing wrappers
     base.py                 — Abstract handler interfaces
     factory.py              — HandlerFactory + Handlers dataclass
@@ -44,6 +44,11 @@ computer_server/
     screen_geometry.py      — Virtual screen geometry and DPI-aware metrics
     screenshot_service.py   — Image resize / encode helpers
   services/                 — Application services consumed by MCP tools
+    protocol_service.py     — Protocol 0.2 envelope, errors, artifacts, and
+                              transient action outcomes
+    observation_context.py  — Per-window observation/screenshot/zoom freshness
+    action_delta_service.py — Optional before/after action summaries
+    agent_state_service.py  — Compact observation text for agent reasoning
     coordinate_service.py   — Coordinate conversion and zoom resolution
     window_state_service.py — WindowSnapshotGeometry, UIA collection,
                               SOM merge, window state snapshots, zoom images
@@ -54,6 +59,8 @@ computer_server/
     capture_service.py      — Virtual desktop capture shared by recording and
                               learning
     ocr_service.py          — Lazy OCRProcessor singleton
+    icon_caption_service.py — Batched Florence-2 icon captioning
+    target_profile_service.py — Window family classification and delivery risk
     permission_service.py   — Runtime permission policy for open,
                               commands, CDP JavaScript
     uia_service.py          — UIACallGate for sync UIA calls in hook threads
@@ -140,14 +147,14 @@ uv run python scripts/run_agent_smoke.py --dry-run --scenario fixture-basic
 uv run --no-sync python "C:\Users\vinfl\.codex\skills\.system\skill-creator\scripts\quick_validate.py" skills/cua-win
 
 # Build and validate a release candidate
-./scripts/build_release.ps1 -Version 0.2.0
+./scripts/build_release.ps1 -Version 0.2.1
 
 # Build a local Nuitka standalone executable directory
 ./scripts/build_nuitka.ps1
-./scripts/build_nuitka.ps1 -Version 0.2.0
+./scripts/build_nuitka.ps1 -Version 0.2.1
 
 # Build a Windows setup.exe from the standalone output
-./scripts/build_installer.ps1 -Version 0.2.0
+./scripts/build_installer.ps1 -Version 0.2.1
 
 # Fast local Nuitka iteration after dependencies are already synced
 ./scripts/build_nuitka.ps1 -SkipSync -SkipChecks
@@ -185,10 +192,10 @@ This return limit does not affect the internal `ElementCache`, which continues
 to store complete window-full-res coordinates. Nodes include low-level
 `actions` plus agent-facing `action_hints` such as `click`, `press`, `focus`,
 `type`, `set_value`, `select`, `toggle`, `expand`, and `scroll`.
-`accessibility_hint` and top-level `observation_recommendation` summarize
+`data.accessibility_hint` and `data.observation_recommendation` summarize
 whether UIA/MSAA semantics are sufficient, whether vision/OCR was needed, and
 whether callers should narrow with `query` or raise `max_nodes`.
-`agent_state` and the top-level alias `state_text` provide the default
+`data.agent_state` and `data.state_text` provide the default
 agent-facing observation summary. The text is capped by `agent_text_limit=500`
 by default; use `show_full_text=true` or raise `agent_text_limit` only when the
 compact state is insufficient.
@@ -353,11 +360,12 @@ is internal replay metadata.
   input flags, visibility requirements, coordinate source) so callers can tell
   whether the action used UIA Invoke, force-frontmost mouse events, or normal
   pixel click.
-- `computer_get_window_state` returns `data.screenshots` descriptors. The
-  target has `role="target"` and `zIndex=0`; visible related same-process
-  menus, popovers, or dialogs can appear as `role="transient"` entries with
-  independent `window`, `screenshot_id`, screen origin, capture metadata, and
-  positive `zIndex`. Actual images are MCP content bound through artifacts.
+- Double-click uses `computer_click(count=2)`; there is no separate public
+  double-click tool.
+- `computer_get_window_state` returns target and related transient images as
+  MCP content bound through envelope `artifacts[]`. Each artifact identifies
+  its `role`, canonical `window`, `observation_id`, `screenshot_id`, dimensions,
+  byte count, and `content_index`; structured `data` has no screenshots array.
 - `computer_perform_secondary_action` is the narrow entry point for
   non-primary node actions. It currently supports only the observable MSAA
   dropdown/splitbutton `expand` path and activates the target before input.
@@ -365,11 +373,12 @@ is internal replay metadata.
   post-action window-state check and marks the result failed when the query is
   not observed. A canonical `window` is required for verification.
 - `capture_after=True` is supported by click, scroll, type, and secondary-action
-  tools. It returns a fresh observation with `observation_id`, `screenshot_id`,
-  and `capture`. Pass `include_post_action_delta=True` only when a lightweight
-  before/after comparison is worth an extra pre-action observation; then the
-  result also includes `post_action_delta` summarizing node count, added/removed
-  nodes, text changes, tree-quality changes, and before/after screenshot ids.
+  tools. `data.capture_after` is a fresh observation with `observation_id`,
+  `screenshot_id`, capture metadata, and nodes. Pass
+  `include_post_action_delta=True` only when a lightweight before/after
+  comparison is worth an extra pre-action observation; then the result also
+  includes `data.post_action_delta` summarizing node count, added/removed nodes,
+  text changes, tree-quality changes, and before/after screenshot ids.
 - Window snapshots include `capture_metadata` with screenshot provenance,
   crop geometry, resize metadata, capture backend, fallback reason, and
   explicit occlusion-risk warnings. `capture_metadata.stage_timings` includes
@@ -636,9 +645,9 @@ uv run cua-win stop
   adds `cua-win.exe` to the current user's PATH.
 - `uv.lock` is committed release input. Regenerate and commit it whenever
   dependency metadata changes; clean CI checkouts use `uv sync --locked`.
-- Manual `Build and release` workflow runs create a seven-day candidate
-  artifact. A pushed `v*` tag builds the wheel and installer, then creates the
-  GitHub Release after the same checks.
+- Manual `Build and release` workflow runs create a one-day checksum candidate;
+  they do not publish wheel or installer binaries. A pushed `v*` tag builds the
+  wheel and installer, then creates the GitHub Release after the same checks.
 - Keep the repository visibility decision separate from release mechanics. The
   repository is currently private and must not be made public implicitly.
 - Follow `RELEASE.md` for version updates, clean-environment smoke tests,
@@ -660,7 +669,7 @@ uv run cua-win stop
 
 ### Current State
 
-- Protocol `0.2` and package version `0.2.0` are the active development line.
+- Protocol `0.2` and package version `0.2.1` are the active development line.
   It intentionally has no 0.1 public compatibility mode. The repository is
   still private.
 - Do not move an existing release tag for documentation-only cleanup. Move a

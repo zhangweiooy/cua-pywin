@@ -29,12 +29,14 @@ cua-pywin/
 │  ├─ mcp_server.py          ← 25 MCP 工具入口（薄 wrapper，业务转交 services/）
 │  ├─ main.py                ← 本机 HTTP 服务器（/status + /mcp + cua-win JSON RPC）
 │  ├─ tool_cli.py            ← cua-win CLI / HTTP server launcher
-│  ├─ server_context.py      ← 每实例可变状态（录制会话/学习/UIA gate/popover dedup）
+│  ├─ tool_rpc.py            ← 共享 tool schema / result JSON 序列化
+│  ├─ server_context.py      ← 每实例状态（录制/学习/observation registry/UIA gate）
 │  ├─ handlers/              ← 平台原语（OS API 一对一封装）
 │  │  ├─ base.py             ← 抽象接口 (ABCs)
 │  │  ├─ factory.py          ← HandlerFactory + Handlers dataclass
 │  │  ├─ windows.py          ← Windows: ImageGrab + win32gui + pynput
 │  │  ├─ windows_uia.py      ← UIA COM 树遍历 (DFS, 缓存属性, 直接 STA 调用)
+│  │  ├─ windows_msaa.py     ← MSAA / IAccessible 经典控件回退
 │  │  ├─ windows_wgc.py      ← Windows.Graphics.Capture 目标窗口捕获
 │  │  ├─ windows_window.py   ← Windows 前台锁绕过专用 handler
 │  │  ├─ generic.py          ← 跨平台 desktop / window 辅助 handler
@@ -46,6 +48,10 @@ cua-pywin/
 │  │  ├─ screen_geometry.py  ← VirtualScreenGeometry + DPI 感知
 │  │  └─ screenshot_service.py ← 截图 resize / encode 通用工具
 │  ├─ services/              ← 应用服务层（mcp_server 的业务从这里跑）
+│  │  ├─ protocol_service.py       ← 0.2 envelope / error / artifact / action
+│  │  ├─ observation_context.py    ← observation/screenshot/zoom freshness
+│  │  ├─ action_delta_service.py   ← 可选动作前后差异摘要
+│  │  ├─ agent_state_service.py    ← agent 紧凑观察文本
 │  │  ├─ coordinate_service.py     ← 坐标/zoom/元素中心解析（纯函数）
 │  │  ├─ window_state_service.py   ← WindowSnapshotGeometry + UIAWalkGate +
 │  │  │                              get_window_state_snapshot + create_zoom_image
@@ -54,6 +60,9 @@ cua-pywin/
 │  │  ├─ capture_service.py        ← virtual desktop 截图（录制 + 学习共享）
 │  │  ├─ ocr_service.py            ← lazy OCRProcessor 单例
 │  │  ├─ icon_caption_service.py   ← OmniParser V2 Florence-2 图标描述（batch 推理）
+│  │  ├─ target_profile_service.py ← 窗口类型分类 + 投递风险
+│  │  ├─ permission_service.py     ← open/command/CDP 权限策略
+│  │  ├─ validation_service.py     ← 参数与路径校验
 │  │  └─ uia_service.py            ← UIACallGate（semaphore + daemon + timeout）
 │  ├─ recording/             ← 录制/回放（agent 视角）
 │  │  ├─ session.py          ← 有界 writer queue + 专用 writer 线程
@@ -87,7 +96,7 @@ cua-pywin/
 下载。普通 Windows 用户优先使用安装器：
 
 ```powershell
-.\cua-win-0.2.0-win64-setup.exe
+.\cua-win-0.2.1-win64-setup.exe
 cua-win doctor
 ```
 
@@ -99,7 +108,7 @@ wheel 也内置 OmniParser V2 YOLO、Florence-2 和 RapidOCR 模型，适合 Pyt
 环境或开发验证：
 
 ```powershell
-pip install .\cua_pywin-0.2.0-py3-none-any.whl
+pip install .\cua_pywin-0.2.1-py3-none-any.whl
 cua-win doctor
 ```
 
@@ -183,9 +192,9 @@ cua-win serve --host 0.0.0.0 --port 8000 \
 使用 `cua-win batch --dry-run` 可以只校验并汇总展开后的动作，不启动 daemon，
 也不会发送输入。
 
-支持 `capture_after` 的动作会返回后置窗口快照。需要轻量前后对比时，再额外传
+支持 `capture_after` 的动作会在 `data.capture_after` 返回后置窗口观察。需要轻量前后对比时，再额外传
 `include_post_action_delta=true`；这会增加一次动作前窗口观察，并返回
-`post_action_delta`，汇总节点数量变化、新增/移除节点、文本变化、tree quality
+`data.post_action_delta`，汇总节点数量变化、新增/移除节点、文本变化、tree quality
 变化以及前后 `screenshot_id`。
 
 `computer_launch_app` 默认只报告进程启动结果。需要立即执行窗口操作时可传
@@ -327,7 +336,7 @@ handle、绑定丢失或上下文重置后重新获取当前窗口对象；使�
 不会重新激活目标窗口。
 `computer_click`、`computer_drag` 和 `computer_scroll` 在显式传入 `window`
 时也会先激活并验证目标窗口；激活失败时不会发送鼠标输入。
-动作结果的 `action_path` 会增量报告 `target_profile`、`delivery_risk` 和
+动作结果的 `data.action_path` 会报告 `target_profile`、`delivery_risk` 和
 `delivery_note`，用于解释当前目标是否类似 Chromium、终端、WPF/WinUI、
 VCL/SAL 或通用窗口；这些字段只描述风险，不改变工具默认行为。
 
@@ -340,6 +349,7 @@ VCL/SAL 或通用窗口；这些字段只描述风险，不改变工具默认行
 统一走 `computer_recording({"action":"start|stop|status"})`；学习 start/stop/status
 统一走 `computer_learn({"action":"start|stop|status"})`；辅助树读取统一走
 `computer_get_window_state` 的 `tree_markdown` 和 `nodes`。
+双击使用 `computer_click({"count":2,...})`，没有单独的 double-click 工具。
 录制 start 的 `output_dir` 必须是新目录或空目录；cua-win 不会覆盖已有
 recording，也不会把旧 turn 混入新的 0.2 trajectory。
 节点的主动作使用 `computer_click`；节点明确暴露的非主动作使用
@@ -362,23 +372,23 @@ type/key，以及明确 canonical window 的 type/key/manage 不要求 observati
 `ElementCache`，后者仍保留完整窗口全分辨率坐标。
 节点同时包含底层 `actions` 和面向 agent 的 `action_hints`（如 `click`、`type`、
 `set_value`、`expand`），便于区分可点击、可输入和可展开候选。
-`accessibility_hint` / `observation_recommendation` 会说明语义树是否稀疏、
+`data.accessibility_hint` / `data.observation_recommendation` 会说明语义树是否稀疏、
 是否已启用视觉/OCR，以及是否应继续用 `query` 或提高 `max_nodes` 收窄观察。
-`agent_state` 和顶层别名 `state_text` 是默认给 agent 读取的紧凑状态摘要，
+`data.agent_state` 和 `data.state_text` 是默认给 agent 读取的紧凑状态摘要，
 默认由 `agent_text_limit=500` 限制长度；只有摘要不足时才使用
 `show_full_text=true` 或提高 `agent_text_limit`，再进一步检查 `nodes` /
 `tree_markdown`。
-`data.screenshots` 保留目标与 transient capture 的结构化描述；实际图片位于
-MCP image content，对应 artifact 会给出 role、MIME、尺寸、字节数、
+目标与 transient capture 的结构化描述只存在于 envelope 的 `artifacts[]`；
+实际图片位于 MCP image content，对应 artifact 会给出 role、MIME、尺寸、字节数、
 `content_index`、`window`、`observation_id` 和 `screenshot_id`。
 
 ### 关键设计
 
-**Per-window 截图** — Windows `PrintWindow` 对硬件加速窗口失效。`get_window_state` 优先使用 Windows.Graphics.Capture 捕获目标窗口自身的 DWM 合成帧，避免被前景遮挡窗口污染；失败时回退到 `ImageGrab.grab()` + `GetWindowRect` + PIL `crop()`。`computer_zoom` 会沿用上一次 snapshot backend：WGC snapshot 使用 WGC 做原生 zoom crop，失败才退回 screen crop。多显示器负坐标 + 部分屏外通过 `WindowSnapshotGeometry` 显式区分「真实窗口原点」与「可见裁剪原点」。`capture_metadata.stage_timings` 报告窗口边界、WGC 尝试、回退激活、全屏捕获、解码、裁剪缩放和 capture 总耗时；WGC 成功时还包含 item、D3D、session setup、frame wait 和 texture readback 分段。`capture_metadata.capture_reliability`、`degraded_reason` 和 `provider_errors` 会说明 WGC 回退、最小化窗口、screen-crop 遮挡风险或 provider 失败。
+**Per-window 截图** — Windows `PrintWindow` 对硬件加速窗口失效。`get_window_state` 优先使用 Windows.Graphics.Capture 捕获目标窗口自身的 DWM 合成帧，避免被前景遮挡窗口污染；失败时回退到 `ImageGrab.grab()` + `GetWindowRect` + PIL `crop()`。`computer_zoom` 会沿用上一次 observation 的 capture backend：WGC capture 使用 WGC 做原生 zoom crop，失败才退回 screen crop。多显示器负坐标 + 部分屏外通过 `WindowSnapshotGeometry` 显式区分「真实窗口原点」与「可见裁剪原点」。`capture_metadata.stage_timings` 报告窗口边界、WGC 尝试、回退激活、全屏捕获、解码、裁剪缩放和 capture 总耗时；WGC 成功时还包含 item、D3D、session setup、frame wait 和 texture readback 分段。`capture_metadata.capture_reliability`、`degraded_reason` 和 `provider_errors` 会说明 WGC 回退、最小化窗口、screen-crop 遮挡风险或 provider 失败。
 
 **UIA/MSAA 集成 + Gate** — 直接在 STA 线程内调用 COM（不再 per-property 提交到全局线程池——那会在 UIA provider 挂死时永久泄漏线程）。`UIAWalkGate` / `MSAAWalkGate` / `UIAActionGate`（挂在 `ServerContext`）提供窗口级超时边界：`wait_for + shield + done_callback`，超时时 gate 保持占用并标记不健康冷却，后续请求走 SOM、跳过 MSAA 或回退 pixel/HID，不再叠加 doomed calls。
 
-**树质量 + SOM 回退** — `tree_quality: rich(>50) / ok(15-50)` 跳过 SOM，`poor(<15) / empty(0)` 启用 SOM 视觉检测。`uia_quality` 与 `vision_quality` 单独报告，不互相覆盖。
+**树质量 + SOM 回退** — `tree_quality: rich(>50) / ok(16-50)` 跳过 SOM，`poor(1-15) / empty(0)` 启用 SOM 视觉检测。`uia_quality` 与 `vision_quality` 单独报告，不互相覆盖。
 
 **PaddleOCR ONNX 后端** — OCR 默认使用 RapidOCR + ONNXRuntime，也就是 PaddleOCR PP-OCRv4 mobile ONNX 模型。det/cls/rec 模型和中文字符字典固定内置在 `computer_server/models/rapidocr_ppocrv4/`，运行时显式传入本地路径，不支持模型下载或自动更新。模型升级只随开发者发布的新版本交付。`cua-win doctor` 校验文件 SHA-256，并拒绝未拉取的 Git LFS 指针。`CUA_RAPIDOCR_MODEL_DIR` 仅用于开发者本地验证；`CUA_OCR_BACKEND=easyocr` 是可选开发对比路径（需安装 `ocr-easy` extra），同样禁用运行时下载。`CUA_OCR_TIMEOUT_SECONDS` 覆盖单次 OCR timeout；`CUA_RAPIDOCR_DEVICE=cpu` 是 v1 支持的运行方式。OCR 文本结果会透传 `confidence` / `ocr_confidence` 到 vision nodes。默认去噪只做空文本过滤和确定性误读修正；删除孤立符号、微小 ASCII 和已知图标形状误读需显式设置 `CUA_OCR_DENOISE=strict`，`CUA_OCR_DENOISE=0` 可关闭修正。
 
@@ -394,8 +404,8 @@ MCP image content，对应 artifact 会给出 role、MIME、尺寸、字节数�
 
 ### 已知限制
 
-- **SOM 检测同步运行于事件循环线程**：anyio 任务组持有 GIL。warm_up() 启动时预加载（~30s），后续调用 < 3s
-- **录制截图必须同步**：`ImageGrab.grab()` 不能卸到线程——anyio 事件循环阻止 `run_in_executor` 任务执行。50 步录制总计 ~5-10s 阻塞
+- **SOM 检测仍在工具路径同步运行**：warm-up 会预加载模型，但每帧检测仍会增加 `computer_get_window_state` 的尾延迟
+- **录制截图仍有动作内成本**：turn 写盘已进入有界 writer 线程，但每个被采样动作的截图捕获通常仍增加约 50-200 ms
 - **SOM OCR 遮挡噪音**：WGC window capture 可避免大多数重叠窗口污染；screen crop 回退会在 `capture_metadata.occlusion_risk=true` 中显式标记
 - **SOM YOLO/OCR 并行收益有限**：2026-06-01 EasyOCR CPU 基准（1280x830 WGC screenshot）串行 3.31s、`ThreadPoolExecutor` 并行 3.07s，仅约 8% 提升；RapidOCR 后端需重新基准后再决定是否并行
 - **学习 IME 对终端无效**：PowerShell/CMD 无 UIA ValuePattern，回退拼音 + OCR
@@ -445,13 +455,15 @@ cua-pywin/
 │  ├─ mcp_server.py          ← 25 MCP tools (thin wrappers; logic in services/)
 │  ├─ main.py                ← Local HTTP server (/status + /mcp + cua-win JSON RPC)
 │  ├─ tool_cli.py            ← cua-win CLI / HTTP server launcher
-│  ├─ server_context.py      ← Per-instance state (recording / learning /
-│  │                          UIA walk gate / popover dedup)
+│  ├─ tool_rpc.py            ← Shared tool schema / result JSON serialization
+│  ├─ server_context.py      ← Per-instance recording / learning / observation
+│  │                          registry / UIA gate state
 │  ├─ handlers/              ← Platform primitives (1:1 OS API wrappers)
 │  │  ├─ base.py             ← Abstract interfaces (ABCs)
 │  │  ├─ factory.py          ← HandlerFactory + Handlers dataclass
 │  │  ├─ windows.py          ← Windows: ImageGrab + win32gui + pynput
 │  │  ├─ windows_uia.py      ← UIA COM tree walker (DFS, direct STA calls)
+│  │  ├─ windows_msaa.py     ← MSAA / IAccessible fallback for classic controls
 │  │  ├─ windows_wgc.py      ← Windows.Graphics.Capture target-window capture
 │  │  ├─ windows_window.py   ← Windows foreground-lock bypass
 │  │  ├─ generic.py          ← Cross-platform desktop / window helper handler
@@ -463,6 +475,10 @@ cua-pywin/
 │  │  ├─ screen_geometry.py  ← VirtualScreenGeometry + DPI awareness
 │  │  └─ screenshot_service.py ← Resize / encode helpers
 │  ├─ services/              ← Application service layer
+│  │  ├─ protocol_service.py       ← 0.2 envelope / errors / artifacts / actions
+│  │  ├─ observation_context.py    ← observation/screenshot/zoom freshness
+│  │  ├─ action_delta_service.py   ← optional before/after action summaries
+│  │  ├─ agent_state_service.py    ← compact agent observation text
 │  │  ├─ coordinate_service.py     ← coords / zoom / element center (pure)
 │  │  ├─ window_state_service.py   ← WindowSnapshotGeometry + UIAWalkGate
 │  │  │                              + get_window_state_snapshot + create_zoom_image
@@ -471,6 +487,9 @@ cua-pywin/
 │  │  ├─ capture_service.py        ← virtual-desktop mss capture
 │  │  ├─ ocr_service.py            ← lazy OCRProcessor singleton
 │  │  ├─ icon_caption_service.py   ← OmniParser V2 Florence-2 icon captions (batched)
+│  │  ├─ target_profile_service.py ← window-family classification + delivery risk
+│  │  ├─ permission_service.py     ← open/command/CDP permission policy
+│  │  ├─ validation_service.py     ← argument and path validation
 │  │  └─ uia_service.py            ← UIACallGate (semaphore + daemon + timeout)
 │  ├─ recording/             ← Agent-perspective recording / replay
 │  │  ├─ session.py          ← Bounded writer queue + dedicated writer thread
@@ -505,7 +524,7 @@ Download releases from
 Windows users should use the installer:
 
 ```powershell
-.\cua-win-0.2.0-win64-setup.exe
+.\cua-win-0.2.1-win64-setup.exe
 cua-win doctor
 ```
 
@@ -520,7 +539,7 @@ RapidOCR models, and is intended for Python environments or developer
 validation:
 
 ```powershell
-pip install .\cua_pywin-0.2.0-py3-none-any.whl
+pip install .\cua_pywin-0.2.1-py3-none-any.whl
 cua-win doctor
 ```
 
@@ -617,10 +636,11 @@ sequences do not wait on visual animation; the actual drag `duration` remains
 unchanged. Use `cua-win batch --dry-run` to validate and summarize the expanded
 actions without starting the daemon or sending input.
 
-Actions that support `capture_after` return a post-action window snapshot. Pass
+Actions that support `capture_after` return a post-action observation in
+`data.capture_after`. Pass
 `include_post_action_delta=true` only when a lightweight before/after comparison
 is needed; it adds one pre-action window observation and returns
-`post_action_delta` with node-count, added/removed node, text-change,
+`data.post_action_delta` with node-count, added/removed node, text-change,
 tree-quality, and before/after `screenshot_id` summaries.
 
 `computer_launch_app` reports process launch completion by default. Pass
@@ -778,10 +798,10 @@ always be released.
 `computer_click`, `computer_drag`, and `computer_scroll` also activate and
 verify the target when canonical `window` is explicitly supplied. Activation
 failure prevents mouse input.
-Action results add `action_path.target_profile`, `delivery_risk`, and
-`delivery_note` to explain Chromium, terminal, WPF/WinUI, VCL/SAL, or generic
-target risk. These fields are diagnostic only and do not change default input
-behavior.
+Action results add `data.action_path.target_profile`,
+`data.action_path.delivery_risk`, and `data.action_path.delivery_note` to
+explain Chromium, terminal, WPF/WinUI, VCL/SAL, or generic target risk. These
+fields are diagnostic only and do not change default input behavior.
 
 Merged entry points: hotkeys use `computer_press_key({"keys":[...]})` or
 `computer_press_key({"key":"Control_L+s"})`; activate/minimize/maximize/close,
@@ -793,6 +813,8 @@ start/stop/status uses `computer_recording({"action":"start|stop|status"})`;
 learning start/stop/status uses `computer_learn({"action":"start|stop|status"})`;
 accessibility-tree reads use `computer_get_window_state` `tree_markdown` and
 `nodes`.
+Double-click with `computer_click({"count":2,...})`; there is no separate
+double-click tool.
 Recording start requires a new or empty `output_dir`; cua-win never overwrites
 an existing recording or mixes old turns into a new 0.2 trajectory.
 Use `computer_click` for a node's primary action and
@@ -819,26 +841,26 @@ limit only affects the returned payload; the internal `ElementCache` still
 stores complete window-full-resolution coordinates.
 Nodes include low-level `actions` and agent-facing `action_hints` such as
 `click`, `type`, `set_value`, and `expand`, making actionable/editable/expandable
-candidates easier to distinguish. `accessibility_hint` and
-`observation_recommendation` describe whether semantic UIA/MSAA data is
+candidates easier to distinguish. `data.accessibility_hint` and
+`data.observation_recommendation` describe whether semantic UIA/MSAA data is
 sufficient, whether vision/OCR was needed, and whether callers should narrow
 with `query` or raise `max_nodes`.
-`agent_state` and the top-level `state_text` alias are the default compact
+`data.agent_state` and `data.state_text` are the default compact
 agent-facing observation summary. The text is capped by `agent_text_limit=500`
 by default; use `show_full_text=true` or raise `agent_text_limit` only when the
 compact state is insufficient, then inspect `nodes` / `tree_markdown` as needed.
-`data.screenshots` keeps structured descriptors for target and transient
-captures. Actual images are MCP image content; each artifact identifies its
+Target and transient capture descriptors live only in the envelope's
+`artifacts[]`. Actual images are MCP image content; each artifact identifies its
 role, MIME type, dimensions, byte count, `content_index`, `window`,
 `observation_id`, and `screenshot_id`.
 
 ### Key Design Decisions
 
-**Per-window screenshot capture** — `PrintWindow` fails on hardware-accelerated windows. `get_window_state` now prefers Windows.Graphics.Capture for the target window's own DWM-composited frame, avoiding overlapping foreground-window pollution. If WGC fails, it falls back to `ImageGrab.grab()` + `GetWindowRect` + PIL `crop()`. `computer_zoom` follows the last snapshot backend: WGC snapshots use WGC for native zoom crops and fall back to screen crop only when WGC fails. Multi-monitor negative coordinates and partially-offscreen windows are handled by `WindowSnapshotGeometry`, which explicitly separates the real window origin from the visible crop origin. `capture_metadata.stage_timings` reports window-bounds, WGC attempt, fallback activation, screen capture, decode, crop/resize, and total capture latency. Successful WGC captures additionally expose item, D3D, session setup, frame wait, and texture readback timings. `capture_metadata.capture_reliability`, `degraded_reason`, and `provider_errors` explain WGC fallback, minimized windows, screen-crop occlusion risk, or provider failures.
+**Per-window screenshot capture** — `PrintWindow` fails on hardware-accelerated windows. `get_window_state` now prefers Windows.Graphics.Capture for the target window's own DWM-composited frame, avoiding overlapping foreground-window pollution. If WGC fails, it falls back to `ImageGrab.grab()` + `GetWindowRect` + PIL `crop()`. `computer_zoom` follows the last observation's capture backend: WGC captures use WGC for native zoom crops and fall back to screen crop only when WGC fails. Multi-monitor negative coordinates and partially-offscreen windows are handled by `WindowSnapshotGeometry`, which explicitly separates the real window origin from the visible crop origin. `capture_metadata.stage_timings` reports window-bounds, WGC attempt, fallback activation, screen capture, decode, crop/resize, and total capture latency. Successful WGC captures additionally expose item, D3D, session setup, frame wait, and texture readback timings. `capture_metadata.capture_reliability`, `degraded_reason`, and `provider_errors` explain WGC fallback, minimized windows, screen-crop occlusion risk, or provider failures.
 
 **UIA/MSAA integration + gates** — COM is called directly inside its STA thread (the previous design submitted each property call to a shared executor and leaked threads when the UIA provider hung). `UIAWalkGate` / `MSAAWalkGate` / `UIAActionGate` (owned by `ServerContext`) provide per-window timeout boundaries with `wait_for + shield + done_callback`. On timeout the gate stays held and the key is marked unhealthy, so fresh requests fall through to SOM, skip MSAA, or use pixel/HID fallback instead of stacking more doomed calls.
 
-**Tree quality + SOM fallback** — `rich(>50) / ok(15-50)` skip SOM; `poor(<15) / empty(0)` enable SOM vision. `uia_quality` and `vision_quality` are reported separately and do not overwrite each other.
+**Tree quality + SOM fallback** — `rich(>50) / ok(16-50)` skip SOM; `poor(1-15) / empty(0)` enable SOM vision. `uia_quality` and `vision_quality` are reported separately and do not overwrite each other.
 
 **Bundled OmniParser V2 pipeline** — The YOLO detector is bundled at
 `som/weights/icon_detect/model.pt`. The fine-tuned Florence-2 icon-caption model,
@@ -898,8 +920,8 @@ known icon-shape misreads requires `CUA_OCR_DENOISE=strict`. Set
 
 ### Known Limitations
 
-- **SOM detection runs synchronously on the event loop**: anyio task group holds the GIL. warm_up() pre-loads at startup (~30s); subsequent calls <3s
-- **Recording screenshots cannot be offloaded**: `ImageGrab.grab()` must stay synchronous — anyio blocks `run_in_executor`. ~5-10s total for 50-action recordings
+- **SOM detection remains synchronous in the tool path**: warm-up preloads models, but per-frame detection still contributes to `computer_get_window_state` tail latency
+- **Recording capture still has an in-action cost**: turn writes use a bounded writer thread, but each sampled action's screenshot capture typically adds about 50-200 ms
 - **SOM OCR occlusion noise**: WGC window capture avoids most overlapping-window pollution; screen-crop fallback marks `capture_metadata.occlusion_risk=true`
 - **Limited SOM YOLO/OCR parallelism gain**: the 2026-06-01 EasyOCR CPU benchmark on a 1280x830 WGC screenshot measured 3.31s serial vs 3.07s with `ThreadPoolExecutor` parallelism, about 8% faster; re-benchmark with RapidOCR before enabling parallelism
 - **Learning IME not supported in terminals**: PowerShell/CMD lack UIA ValuePattern. Falls back to pinyin + OCR

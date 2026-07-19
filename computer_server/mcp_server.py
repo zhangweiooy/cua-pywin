@@ -1475,7 +1475,7 @@ def create_mcp_server() -> FastMCP:
         Get the screen dimensions.
 
         Returns:
-            Dictionary with 'width' and 'height' keys in pixels.
+            A protocol envelope with pixel dimensions in data.width/data.height.
         """
         if _target_width is not None and _target_height is not None:
             return {"width": int(_target_width), "height": int(_target_height)}
@@ -1496,7 +1496,7 @@ def create_mcp_server() -> FastMCP:
         Get the current cursor position.
 
         Returns:
-            Dictionary with 'x' and 'y' coordinates.
+            A protocol envelope with screen coordinates in data.x/data.y.
         """
         automation_handler = _get_handlers().automation
         result = await automation_handler.get_cursor_position()
@@ -2040,9 +2040,10 @@ def create_mcp_server() -> FastMCP:
         - coordinate_space='window_resized': x/y are coordinates in the resized
           screenshot identified by screenshot_id.
         - coordinate_space='window_full_res': x/y are full-resolution
-          window-local coordinates.
-        - coordinate_space='zoom': x/y are zoom-image coordinates.
-        - coordinate_space='element': element_index addresses a cached node.
+          window-local coordinates bound by screenshot_id.
+        - coordinate_space='zoom': x/y are zoom-image coordinates bound by zoom_id.
+        - coordinate_space='element': element_index addresses a cached node from
+          the latest observation_id for the canonical window.
 
         If coordinate_space is omitted, element_index selects element mode,
         zoom_id selects zoom mode, and all other coordinates default to screen.
@@ -2060,10 +2061,10 @@ def create_mcp_server() -> FastMCP:
             modifier: Modifier keys held during click (ctrl, alt, shift, win)
             count: Click count - 1 (single), 2 (double), 3 (triple). Default 1.
             force_frontmost: When True, calls SetForegroundWindow before click.
-            capture_after: When True, take a fresh screenshot + SOM after the action.
+            capture_after: When True, return a fresh window observation after the action.
             include_post_action_delta: When True with capture_after, also capture before the action
                 and return a lightweight before/after delta.
-            verify_query: Optional query to search in a fresh window snapshot after the action.
+            verify_query: Optional query to search in a fresh window observation after the action.
             require_verification: When True, return success=False if verify_query is not found.
         """
         from computer_server.services.validation_service import (
@@ -2578,7 +2579,8 @@ def create_mcp_server() -> FastMCP:
 
         Args:
             action: move|down|up.
-            x/y: Screen coordinates. Required for move; optional for down/up.
+            x: Screen X coordinate. Required for move; optional for down/up.
+            y: Screen Y coordinate. Required for move; optional for down/up.
             button: Mouse button for down/up.
         """
         from computer_server.services.validation_service import (
@@ -3397,15 +3399,16 @@ def create_mcp_server() -> FastMCP:
         sensitive: bool = False,
     ) -> Any:
         """
-        Type text at the current cursor position via clipboard paste (Ctrl+V).
+        Type literal text into the current focus via clipboard paste (Ctrl+V).
 
         All text — ASCII and non-ASCII — goes through the clipboard to
         avoid triggering unwanted IME (Chinese input method) behaviour
-        when the user is in Chinese mode.
+        when the user is in Chinese mode. When window is supplied, the
+        canonical target is activated and verified before input.
 
         Args:
             text: The text to type
-            capture_after: When True, take a fresh screenshot + nodes after the action.
+            capture_after: When True, return a fresh window observation after the action.
             include_post_action_delta: When True with capture_after, also capture before the action
                 and return a lightweight before/after delta.
             window: Canonical window object from list/get_window_state output.
@@ -3940,6 +3943,12 @@ def create_mcp_server() -> FastMCP:
         launcher PID differs from the process that owns the main window.
 
         Examples: "notepad", "chrome", "Calculator", "C:\\app\\myapp.exe"
+
+        Args:
+            app: Executable name, absolute path, app alias, or Start Menu name.
+            args: Optional argument list passed to the launched application.
+            wait_for_window: Wait for and return a targetable canonical window.
+            wait_timeout: Window wait timeout in seconds, from 0.1 to 60.
         """
         import asyncio
         import time
@@ -4095,8 +4104,10 @@ def create_mcp_server() -> FastMCP:
         Args:
             action: activate|minimize|maximize|close|move|resize.
             window: Canonical window object from list/get_window_state output.
-            x/y: Required for action=move.
-            width/height: Required for action=resize.
+            x: Target screen X coordinate for action=move.
+            y: Target screen Y coordinate for action=move.
+            width: Target width in pixels for action=resize.
+            height: Target height in pixels for action=resize.
             bounds: Optional object containing x/y/width/height.
         """
         from computer_server.services.validation_service import (
@@ -4216,10 +4227,11 @@ def create_mcp_server() -> FastMCP:
     @_protocol_tool(annotations={"readOnlyHint": True, "destructiveHint": False, "idempotentHint": True, "openWorldHint": True})
     async def computer_list_apps() -> Any:
         """
-        List all running and installed applications.
+        List running applications that own targetable top-level windows.
 
         Returns:
-            Dictionary with 'apps' list containing app info (name, pid, bundle_id, running, active).
+            A protocol envelope whose data.apps entries contain name, pid,
+            running, and canonical window records.
         """
         try:
             from computer_server.services.window_identity_service import (
@@ -4385,7 +4397,7 @@ def create_mcp_server() -> FastMCP:
 
         Combines accessibility tree walking with optional SOM vision detection.
         Each actionable element gets an element_index that can be used with
-        computer_click, computer_double_click, computer_scroll, etc.
+        computer_click (use count=2 for double-click), computer_scroll, etc.
 
         Args:
             window: Canonical window object from list/get_window_state output.
@@ -4613,7 +4625,7 @@ def create_mcp_server() -> FastMCP:
 
         This undoes the downscaling of get_window_state screenshots so small text
         and icons are readable. Coordinates are in the pixel space of the
-        screenshot returned by computer_get_window_state (i.e. the resized image).
+        latest screenshot identified by screenshot_id (i.e. the resized image).
 
         After calling computer_zoom, pass its zoom_id with the same canonical
         window to target coordinates within the zoomed image.
@@ -4965,8 +4977,9 @@ def create_mcp_server() -> FastMCP:
         Manage recording tool invocations to turn folders.
 
         When started, every action tool call (click, type, scroll, etc.)
-        writes a turn-NNNNN/ folder to output_dir containing action.json,
-        screenshot.png, and click.png (for click actions).
+        writes action.json in a turn-NNNNN/ folder. When capture_screenshots is
+        enabled, sampled turns also include screenshot.png and click actions
+        may include click.png.
 
         Args:
             action: start|stop|status.
@@ -4976,7 +4989,8 @@ def create_mcp_server() -> FastMCP:
             screenshot_every_n: Capture one screenshot every N turns.
 
         Returns:
-            Dictionary with recording state summary.
+            A protocol envelope with recording state in data and an output
+            directory artifact when recording stops.
         """
         from computer_server.recording.session import (
             RecordingDirectoryError,
@@ -5167,8 +5181,9 @@ def create_mcp_server() -> FastMCP:
         """Manage human workflow learning: start, stop, or status.
 
         Start records keyboard typing, mouse clicks, and scroll events enriched
-        with UI Automation (UIA) element metadata. Stop returns the action
-        sequence. Status returns current listener state.
+        with UI Automation (UIA) element metadata and event-driven semantic
+        observations. Stop returns the session actions, observations, links, and
+        metrics. Status returns listener health and timeline counters.
 
         Args:
             action: start|stop|status.

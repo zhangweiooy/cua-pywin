@@ -122,11 +122,12 @@ recording/replay metadata.
 - OmniParser V2 YOLO + Florence-2 icon captions.
 - RapidOCR/PaddleOCR ONNX text nodes.
 
-Read `agent_state.text` or the top-level `state_text` first. It is the compact
-default state summary for planning; inspect `nodes`, `screenshots`, and
-`tree_markdown` only when the summary is insufficient. The summary is capped by
-`agent_text_limit=500` by default. Use `show_full_text=true` or raise
-`agent_text_limit` for diagnostics.
+Read `result.data.agent_state.text` or `result.data.state_text` first. It is the
+compact default state summary for planning; inspect `result.data.nodes`,
+`result.artifacts`, the corresponding MCP image content, and
+`result.data.tree_markdown` only when the summary is insufficient. The summary
+is capped by `agent_text_limit=500` by default. Use `show_full_text=true` or
+raise `agent_text_limit` for diagnostics.
 
 Returned node boxes use `nodes_coordinate_space="window_resized"` and align
 with the returned screenshot. When clicking or dragging from that screenshot,
@@ -137,14 +138,15 @@ and zoom bindings for that window.
 Only the 100 highest-priority nodes are returned by default. Use `query` to
 narrow first, increase `max_nodes` when more candidates are needed, or set
 `max_nodes=0` only when the full node list is truly useful.
-Use `action_hints` before inferring how to operate a node. They translate
-low-level UIA/MSAA/SOM actions into agent-facing hints such as `click`, `type`,
-`set_value`, `select`, `toggle`, `expand`, and `scroll`. Check
-`accessibility_hint` / `observation_recommendation` before deciding whether to
-trust semantic nodes, switch to vision/OCR nodes, or narrow with `query`.
-Also inspect `target_profile`, `capture_metadata.capture_reliability`,
-`semantic_degraded_reason`, and `provider_errors` when a snapshot looks empty,
-stale, minimized, or visually inconsistent.
+Use `result.data.nodes[].action_hints` before inferring how to operate a node.
+They translate low-level UIA/MSAA/SOM actions into agent-facing hints such as
+`click`, `type`, `set_value`, `select`, `toggle`, `expand`, and `scroll`. Check
+`result.data.accessibility_hint` / `result.data.observation_recommendation`
+before deciding whether to trust semantic nodes, switch to vision/OCR nodes, or
+narrow with `query`. Also inspect `result.data.target_profile`,
+`result.data.capture_metadata.capture_reliability`,
+`result.data.semantic_degraded_reason`, and `result.data.provider_errors` when
+an observation looks empty, stale, minimized, or visually inconsistent.
 
 Use `query` to narrow `tree_markdown` when looking for text. Use
 `include_all_nodes=true` only when you need the full `nodes` array despite a
@@ -165,6 +167,8 @@ OCR text, icon caption, and coordinates, then act only if the target is clear.
 Prefer high-level action tools:
 
 - `computer_click` for normal clicks or primary indexed-node actions.
+- `computer_click` with `count=2` for double-clicks; there is no separate
+  double-click tool.
 - `computer_drag` for drawing, sliders, canvas strokes, and selection drags.
 - `computer_scroll` from a coordinate inside the intended scrollable pane.
 - `computer_type` for literal text.
@@ -178,9 +182,10 @@ Prefer high-level action tools:
 When a canonical `window` is supplied, input tools activate and verify the
 target before sending input. Calls without a window act on current focus.
 After actions, first inspect the top-level protocol `action` outcome, then read
-`data.action_path.target_profile`, `delivery_risk`, and `delivery_note` when
-diagnosing Chromium/Electron, terminal, WPF/WinUI, or classic VCL/SAL behavior.
-These fields explain risk; they do not mean the tool changed input mode.
+`data.action_path.target_profile`, `data.action_path.delivery_risk`, and
+`data.action_path.delivery_note` when diagnosing Chromium/Electron, terminal,
+WPF/WinUI, or classic VCL/SAL behavior. These fields explain risk; they do not
+mean the tool changed input mode.
 
 Batch stable action sequences after one state capture. Example flow:
 

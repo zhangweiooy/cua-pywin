@@ -4,6 +4,24 @@ All notable changes to this project will be documented in this file.
 
 ## Unreleased
 
+## 0.2.1 - 2026-07-19
+
+### Fixed
+
+- Corrected 0.2 documentation to use `computer_click(count=2)` for
+  double-clicks, locate observation summaries under `data`, and describe target
+  and transient images through `artifacts[]` rather than a removed
+  `data.screenshots` field.
+- Refreshed beta/release metadata, the repository MCP config, and the manual
+  release workflow default for the 0.2.1 line.
+- Corrected public tool descriptions so generated schemas document canonical
+  windows, observation and screenshot freshness, action bindings, and
+  protocol 0.2 result locations consistently.
+
+### Changed
+
+- Advanced package, server, SOM, workflow, and release metadata to `0.2.1`.
+
 ## 0.2.0 - 2026-07-19
 
 ### Breaking

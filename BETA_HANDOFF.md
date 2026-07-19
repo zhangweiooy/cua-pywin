@@ -1,4 +1,4 @@
-# cua-win 0.2.0 Beta Handoff
+# cua-win 0.2.1 Beta Handoff
 
 This is the short handoff for beta testing and small follow-up iterations.
 Start from the current implementation and real Windows evidence; do not reopen
@@ -8,31 +8,31 @@ settled architecture debates without new data.
 
 - Repository: `D:\Documents\Code\cua-pywin`
 - Branch: `master`
-- Package/server version: `0.2.0`
+- Package/server version: `0.2.1`
 - Public protocol: `0.2`
 - Public MCP surface: 25 tools
 - Repository visibility: private
-- 0.2 implementation base commit: `3add959 Harden learning finalization and runtime contracts`
+- 0.2 protocol reset commit: `fb2694c Implement cua-win 0.2 protocol reset`
 
-Release artifacts are rebuilt from the current working tree:
+Expected release artifact locations:
 
-- Installer: `dist-installer\cua-win-0.2.0-win64-setup.exe`
-- Installer SHA256: `9a9c1864b54071a43bc38da917a5d62d57515503c444388c8be33d6d1fbbc84f`
-- Wheel: `dist\cua_pywin-0.2.0-py3-none-any.whl`
-- Wheel SHA256: `89fc913209aaf3aecff2db0ba3c1cde7ce7559b644f67d54b86f7b7eb3539c07`
+- Installer: `dist-installer\cua-win-0.2.1-win64-setup.exe`
+- Wheel: `dist\cua_pywin-0.2.1-py3-none-any.whl`
 - Standalone: `dist-nuitka\cua-win.dist\cua-win.exe`
-- Standalone SHA256: `febe9713a9493664a6c0e5dcc00c7d00783692e1a7a4a420f89974d7002eddf2`
+
+Build artifacts are ignored and can be newer or older than this handoff. Treat
+the generated `dist\SHA256SUMS.txt`,
+`dist-nuitka\cua-win.dist\SHA256SUMS.txt`, and
+`dist-installer\SHA256SUMS.txt` as authoritative for the files beside them.
 
 Current local validation:
 
-- `348 passed`; Ruff, compileall, skill validation, and release validation pass.
+- Full pytest, Ruff, compileall, skill validation, and release validation pass.
 - Standalone `list-tools` reports 25 tools and `doctor --no-desktop --no-daemon`
   passes 27/27 checks.
 - Default standalone daemon start/call/stop succeeds with protocol `0.2`.
 - Standalone runtime remains at 15,126 files before and after execution, with
   no generated `__pycache__/*.pyc`.
-- Isolated installer install/list-tools/doctor/uninstall smoke passes without
-  PATH, registry, or installation-directory residue.
 - Read-only Notepad, Chrome, Windows Terminal, and WeChat observations complete
   with WGC capture; WeChat remains semantically degraded and is the main
   application-specific tuning target.
@@ -84,7 +84,7 @@ image and `--output-dir DIR` for all image artifacts.
 
 ```text
 Project: D:\Documents\Code\cua-pywin
-Current version: 0.2.0 beta
+Current version: 0.2.1 beta
 Current branch: master
 Goal: continue beta testing, real-app tuning, and small verified iterations.
 First read AGENTS.md, BETA_HANDOFF.md, README.md, and
@@ -109,7 +109,7 @@ python -m compileall -q computer_server som
 uv run python scripts/mcp_test_one.py --list
 '{"action":"status"}' | uv run python scripts/mcp_test_one.py computer_learn - --timeout 120
 uv run --no-sync python "C:\Users\vinfl\.codex\skills\.system\skill-creator\scripts\quick_validate.py" skills/cua-win
-uv run python scripts/validate_release.py --version 0.2.0
+uv run python scripts/validate_release.py --version 0.2.1
 ```
 
 Expected:
@@ -117,7 +117,7 @@ Expected:
 - Full pytest suite passes.
 - Ruff and compileall pass.
 - Tool list reports exactly 25 tools.
-- MCP initialize reports server version `0.2.0`.
+- MCP initialize reports server version `0.2.1`.
 - `computer_learn status` returns a valid protocol 0.2 envelope.
 - Skill and release validation pass.
 
@@ -126,8 +126,8 @@ Expected:
 On a clean Windows machine when possible:
 
 ```powershell
-Get-FileHash .\cua-win-0.2.0-win64-setup.exe -Algorithm SHA256
-.\cua-win-0.2.0-win64-setup.exe
+Get-FileHash .\cua-win-0.2.1-win64-setup.exe -Algorithm SHA256
+.\cua-win-0.2.1-win64-setup.exe
 where.exe cua-win
 cua-win doctor
 cua-win list-tools
@@ -138,7 +138,7 @@ cua-win stop
 
 Expected:
 
-- The checksum matches this handoff and `SHA256SUMS.txt`.
+- The checksum matches the adjacent generated `SHA256SUMS.txt`.
 - `doctor` has no failures.
 - `list-tools` reports 25 tools.
 - Calls return the fixed 0.2 result envelope.
@@ -208,9 +208,9 @@ Confirm:
 ## Build
 
 ```powershell
-./scripts/build_release.ps1 -Version 0.2.0
-./scripts/build_nuitka.ps1 -Version 0.2.0
-./scripts/build_installer.ps1 -Version 0.2.0
+./scripts/build_release.ps1 -Version 0.2.1
+./scripts/build_nuitka.ps1 -Version 0.2.1
+./scripts/build_installer.ps1 -Version 0.2.1
 ```
 
 Standalone smoke:

@@ -455,11 +455,33 @@ async def test_agent_native_tools_are_not_exposed():
 
     assert names == EXPECTED_PUBLIC_TOOLS
     click = next(tool for tool in tools if tool.name == "computer_click")
+    window_state = next(
+        tool for tool in tools if tool.name == "computer_get_window_state"
+    )
     secondary = next(
         tool for tool in tools if tool.name == "computer_perform_secondary_action"
     )
     assert "action" not in click.parameters["properties"]
+    assert "computer_double_click" not in window_state.description
+    assert "computer_click (use count=2 for double-click)" in window_state.description
     assert set(secondary.parameters["required"]) == {"element_index", "action"}
+
+
+@pytest.mark.asyncio
+async def test_public_tool_descriptions_match_protocol_02():
+    tools = await create_mcp_server().list_tools()
+    by_name = {tool.name: tool for tool in tools}
+
+    for tool in tools:
+        for parameter, schema in tool.parameters.get("properties", {}).items():
+            assert schema.get("description"), f"{tool.name}.{parameter} has no description"
+
+    assert "targetable top-level windows" in by_name["computer_list_apps"].description
+    assert "sampled turns" in by_name["computer_recording"].description
+    assert "observations, links, and" in by_name["computer_learn"].description
+    assert "latest screenshot identified by screenshot_id" in (
+        by_name["computer_zoom"].description
+    )
 
 
 @pytest.mark.asyncio

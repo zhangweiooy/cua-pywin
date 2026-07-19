@@ -5,6 +5,6 @@ Provides a server interface for the Computer API.
 
 from __future__ import annotations
 
-__version__: str = "0.2.0"
+__version__: str = "0.2.1"
 
 __all__ = ["__version__"]

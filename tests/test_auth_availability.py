@@ -20,7 +20,7 @@ def test_status_reports_mcp_only_http_surface():
     assert resp.status_code == 200
     data = resp.json()
     assert data["status"] == "ok"
-    assert data["version"] == "0.2.0"
+    assert data["version"] == "0.2.1"
     assert data["protocol_version"] == "0.2"
     assert data["os_type"] == "windows"
     assert data["mcp_endpoint"] == "/mcp"
