@@ -11,7 +11,7 @@ def test_build_agent_state_returns_compact_summary_by_default():
             "app": "Weixin.exe",
             "title": "微信",
         },
-        "snapshot_id": "snap-1",
+        "observation_id": "obs-1",
         "screenshot_id": "shot-1",
         "tree_quality": "poor",
         "uia_quality": "empty",
@@ -76,3 +76,21 @@ def test_build_agent_state_can_truncate_or_return_full_text():
     assert len(compact["text"]) <= 120
     assert full["truncated"] is False
     assert len(full["text"]) > len(compact["text"])
+
+
+def test_build_agent_state_uses_target_profile_identity():
+    result = build_agent_state(
+        {
+            "window": {"id": 456, "pid": 123},
+            "target_profile": {
+                "process_name": "notepad.exe",
+                "title": "Notes - Notepad",
+            },
+            "observation_id": "obs-1",
+            "screenshot_id": "shot-1",
+            "nodes": [],
+        }
+    )
+
+    assert "Window: notepad.exe pid=123 hwnd=456" in result["text"]
+    assert 'Title: "Notes - Notepad"' in result["text"]

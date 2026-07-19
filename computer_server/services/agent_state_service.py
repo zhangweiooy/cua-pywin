@@ -141,11 +141,18 @@ def build_agent_state(
     """Render a concise, agent-facing text view of a window observation."""
     window = observation.get("window")
     window_map = window if isinstance(window, Mapping) else {}
-    title = _first_text(window_map.get("title"), observation.get("title"))
+    target_profile = observation.get("target_profile")
+    profile_map = target_profile if isinstance(target_profile, Mapping) else {}
+    title = _first_text(
+        window_map.get("title"),
+        observation.get("title"),
+        profile_map.get("title"),
+    )
     app = _first_text(
         window_map.get("app"),
         window_map.get("process_name"),
         observation.get("process_name"),
+        profile_map.get("process_name"),
     )
     pid = _first_text(window_map.get("pid"), observation.get("pid"))
     window_id = _first_text(
@@ -166,8 +173,8 @@ def build_agent_state(
     if title:
         lines.append(f'Title: "{title}"')
     lines.append(
-        "Snapshot: "
-        f"snapshot_id={observation.get('snapshot_id', '')} "
+        "Observation: "
+        f"observation_id={observation.get('observation_id', '')} "
         f"screenshot_id={observation.get('screenshot_id', '')} "
         f"nodes={observation.get('returned_node_count', observation.get('node_count', len(node_list)))}"
         f"/{observation.get('filtered_node_count', len(node_list))}"

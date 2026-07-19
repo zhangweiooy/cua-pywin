@@ -150,9 +150,9 @@ def resolve_coordinate_space(
 ) -> str:
     """Return the effective coordinate space for pointer-style tools.
 
-    ``None`` preserves the default behavior:
-    element index -> element, zoom args -> zoom, pid/window_id -> window_resized,
-    otherwise screen.
+    ``None`` uses element space for an element index, zoom space for a
+    ``zoom_id``, and screen space for all other coordinates. Window-relative
+    coordinates must be selected explicitly and bound to a screenshot.
     """
     space = validate_coordinate_space(coordinate_space)
     uses_zoom = bool(from_zoom or zoom_id)
@@ -166,8 +166,6 @@ def resolve_coordinate_space(
             if not supports_zoom:
                 raise ValidationError("zoom coordinates are not supported for this tool")
             return "zoom"
-        if pid is not None and window_id is not None:
-            return "window_resized"
         return "screen"
 
     if space == "element":
@@ -183,18 +181,18 @@ def resolve_coordinate_space(
     if space == "zoom":
         if not supports_zoom:
             raise ValidationError("zoom coordinates are not supported for this tool")
-        if not zoom_id and (pid is None or window_id is None):
-            raise ValidationError("coordinate_space='zoom' requires zoom_id or pid and window_id")
+        if not zoom_id:
+            raise ValidationError("coordinate_space='zoom' requires zoom_id")
         return space
 
     if uses_zoom:
-        raise ValidationError("from_zoom and zoom_id require coordinate_space='zoom'")
+        raise ValidationError("zoom_id requires coordinate_space='zoom'")
 
     if space in {"window_resized", "window_full_res"} and (
         pid is None or window_id is None
     ):
         raise ValidationError(
-            f"coordinate_space='{space}' requires pid and window_id or snapshot_id"
+            f"coordinate_space='{space}' requires window and the latest screenshot_id"
         )
 
     return space

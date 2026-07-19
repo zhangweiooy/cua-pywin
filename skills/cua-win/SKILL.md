@@ -54,6 +54,33 @@ If the daemon is already running, reuse it. Heavy vision models are warmed once
 per daemon process. Use `--no-daemon` only for lightweight schema/status checks
 or debugging a single call.
 
+## Protocol 0.2
+
+Every tool returns the same envelope:
+
+```json
+{
+  "protocol_version": "0.2",
+  "success": true,
+  "data": {},
+  "artifacts": [],
+  "warnings": [],
+  "error": null,
+  "action": null
+}
+```
+
+Read tool-specific fields from `data`; never infer success from text content.
+Expected argument, target, observation, provider, and postcondition failures
+return `success=false` with a stable `error.code`. An MCP `isError` or an
+`action.outcome="unknown"` means the side effect may have occurred: re-observe
+before deciding whether to act again.
+
+Images are MCP image content only. Match them to `artifacts[]` through
+`content_index`; do not expect base64 or image paths in `data`. Side-effect
+tools return a transient action outcome, but there is no action ledger or
+query API.
+
 ## Window Workflow
 
 1. Discover candidates with `computer_list_apps` first. Use
@@ -64,8 +91,9 @@ or debugging a single call.
 3. Resolve the target with `computer_get_window`. For the foreground app,
    `{"active": true}` is valid.
 4. Capture state with `computer_get_window_state({"window": window})`.
-5. Replace the stored window with the returned `state.window`.
-6. Use the returned `screenshot_id` for coordinate actions from that screenshot.
+5. Replace the stored window with the returned `result.data.window`.
+6. Use `result.data.observation_id` for element actions and
+   `result.data.screenshot_id` for coordinates from that screenshot.
 7. After layout, modal, focus, or window changes, capture a fresh state before
    reusing element indexes or coordinates.
 
@@ -74,14 +102,15 @@ state-changing action, verify or re-observe, then decide the next action. Batch
 only stable, precomputed low-risk sequences such as drawing strokes, repeated
 scrolls, or deterministic keyboard navigation.
 
-Use canonical `window` objects instead of hand-built `pid/window_id` pairs:
+Protocol 0.2 target inputs accept only canonical `window` objects:
 
 ```json
 {"window": {"id": 123456, "pid": 8888}}
 ```
 
-`window.id` and `window.window_id` are equivalent. Do not hand-author
-`window_ref`; it is internal recording/replay metadata.
+Do not pass `window_id`, `windowId`, top-level target `pid/window_id`, or extra
+window metadata. Do not hand-author `window_ref`; it is internal
+recording/replay metadata.
 
 ## Observation
 
@@ -102,6 +131,9 @@ default state summary for planning; inspect `nodes`, `screenshots`, and
 Returned node boxes use `nodes_coordinate_space="window_resized"` and align
 with the returned screenshot. When clicking or dragging from that screenshot,
 pass `coordinate_space="window_resized"` and the returned `screenshot_id`.
+When acting on `element_index`, pass the latest `observation_id` from the same
+window. A new observation immediately stales older observation, screenshot,
+and zoom bindings for that window.
 Only the 100 highest-priority nodes are returned by default. Use `query` to
 narrow first, increase `max_nodes` when more candidates are needed, or set
 `max_nodes=0` only when the full node list is truly useful.
@@ -121,7 +153,8 @@ known to be poor.
 
 Use `computer_zoom` when a target is visually small. Pass the parent
 `screenshot_id`; use the returned `zoom_id` for follow-up zoom-coordinate
-actions.
+actions. A zoom becomes stale when a newer observation is captured for its
+window.
 
 When one candidate is ambiguous, prefer a targeted probe pattern over full
 window reasoning: zoom or query around the candidate, inspect the node text,
@@ -144,10 +177,10 @@ Prefer high-level action tools:
 
 When a canonical `window` is supplied, input tools activate and verify the
 target before sending input. Calls without a window act on current focus.
-After actions, read `action_path.target_profile`, `delivery_risk`, and
-`delivery_note` when diagnosing Chromium/Electron, terminal, WPF/WinUI, or
-classic VCL/SAL behavior. These fields explain risk; they do not mean the tool
-changed input mode.
+After actions, first inspect the top-level protocol `action` outcome, then read
+`data.action_path.target_profile`, `delivery_risk`, and `delivery_note` when
+diagnosing Chromium/Electron, terminal, WPF/WinUI, or classic VCL/SAL behavior.
+These fields explain risk; they do not mean the tool changed input mode.
 
 Batch stable action sequences after one state capture. Example flow:
 
@@ -184,11 +217,14 @@ control from the latest observation or targeted OCR.
 
 ## Recovery
 
-- Stale window: call `computer_get_window({"id": oldWindow.id, "app": oldWindow.app})`.
+- Stale window: call `computer_get_window({"id": oldWindow.id})`, optionally
+  adding a separately known app hint.
 - Lost bindings: call `computer_list_apps` or `computer_list_windows` again and
   select from returned windows.
-- Layout changed: re-run `computer_get_window_state`; old element indexes may
-  no longer point to the intended node.
+- `STALE_OBSERVATION`: re-run `computer_get_window_state` and use only the new
+  `observation_id`, `screenshot_id`, node indexes, and subsequent `zoom_id`.
+- `ACTION_OUTCOME_UNKNOWN` or MCP `isError`: re-observe before retrying; the
+  prior input may already have been delivered.
 - Interrupted key/mouse down or failed replay: call `computer_release_all_inputs`.
 - Weak accessibility tree: rely on SOM vision; do not keep retrying UIA-only
   assumptions.

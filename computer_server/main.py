@@ -4,9 +4,13 @@ import os
 from contextlib import asynccontextmanager
 from typing import Any
 
-from fastapi import Body, Depends, FastAPI, Header, HTTPException
+from fastapi import Body, Depends, FastAPI, Header, HTTPException, Request
+from fastapi.exception_handlers import request_validation_exception_handler
+from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
 
+from . import __version__
 from .tool_rpc import (
     AUTH_HEADER,
     BATCH_HEADER,
@@ -74,6 +78,44 @@ logger = logging.getLogger(__name__)
 logger.setLevel(logging.INFO)
 
 
+def _transport_error_payload(
+    message: str,
+    *,
+    code: str = "INVALID_REQUEST",
+    retry_safety: str = "safe",
+) -> dict[str, Any]:
+    return {
+        "protocol_version": "0.2",
+        "result": None,
+        "content": [],
+        "transport_error": {
+            "code": code,
+            "message": message,
+            "retry_safety": retry_safety,
+        },
+    }
+
+
+async def _call_token_error(
+    x_cua_token: str | None = Header(default=None, alias=AUTH_HEADER),
+) -> dict[str, Any] | None:
+    """Return a protocol transport error instead of raising for /call."""
+    token = os.environ.get(DAEMON_TOKEN_ENV)
+    if not token:
+        return _transport_error_payload(
+            "CLI JSON RPC is not enabled",
+            code="TRANSPORT_ERROR",
+            retry_safety="do_not_retry",
+        )
+    if x_cua_token != token:
+        return _transport_error_payload(
+            "missing or invalid daemon token",
+            code="PERMISSION_DENIED",
+            retry_safety="do_not_retry",
+        )
+    return None
+
+
 @asynccontextmanager
 async def _lifespan(fastapi_app: FastAPI):
     """Lazy-mount the MCP server on HTTP startup."""
@@ -88,7 +130,7 @@ async def _lifespan(fastapi_app: FastAPI):
 app = FastAPI(
     title="Computer API",
     description="API for the Computer project",
-    version="0.1.4",
+    version="0.2.0",
     lifespan=_lifespan,
     redirect_slashes=False,
 )
@@ -109,6 +151,21 @@ app.add_middleware(
 )
 
 
+@app.exception_handler(RequestValidationError)
+async def _request_validation_error(
+    request: Request,
+    exc: RequestValidationError,
+) -> JSONResponse:
+    if request.url.path == "/call":
+        return JSONResponse(
+            status_code=200,
+            content=_transport_error_payload(
+                "request body is not valid JSON",
+            ),
+        )
+    return await request_validation_exception_handler(request, exc)
+
+
 @app.get("/status")
 async def status():
     features = []
@@ -116,6 +173,8 @@ async def status():
         features.append("mcp")
     result = {
         "status": "ok",
+        "version": __version__,
+        "protocol_version": "0.2",
         "os_type": OS_TYPE,
         "features": features,
         "mcp_endpoint": "/mcp",
@@ -150,35 +209,50 @@ async def describe_tool(tool_name: str) -> dict[str, Any]:
     raise HTTPException(status_code=404, detail=f"unknown tool: {tool_name}")
 
 
-@app.post("/call", dependencies=[Depends(_require_cli_token)])
+@app.post("/call")
 async def call_tool(
-    body: dict[str, Any] = Body(...),
+    body: Any = Body(default=None),
     x_cua_batch: str | None = Header(default=None, alias=BATCH_HEADER),
+    token_error: dict[str, Any] | None = Depends(_call_token_error),
 ) -> dict[str, Any]:
+    if token_error is not None:
+        return token_error
+    if not isinstance(body, dict):
+        return _transport_error_payload("request body must be an object")
     name = body.get("name")
-    arguments = body.get("arguments") or {}
     if not isinstance(name, str) or not name:
-        raise HTTPException(status_code=400, detail="name is required")
+        return _transport_error_payload("name is required")
+    raw_arguments = body.get("arguments")
+    arguments = {} if raw_arguments is None else raw_arguments
     if not isinstance(arguments, dict):
-        raise HTTPException(status_code=400, detail="arguments must be an object")
+        return _transport_error_payload("arguments must be an object")
 
-    mcp = _get_mcp_server()
-    if mcp is None:
-        raise HTTPException(status_code=503, detail="MCP server unavailable")
     batch_call = isinstance(x_cua_batch, str) and x_cua_batch.strip().lower() in {
         "1",
         "true",
     }
-    if batch_call:
-        from computer_server.overlay import suppress_animation
+    try:
+        mcp = _get_mcp_server()
+        if mcp is None:
+            return _transport_error_payload(
+                "MCP server unavailable",
+                code="TRANSPORT_ERROR",
+                retry_safety="reobserve",
+            )
+        if batch_call:
+            from computer_server.overlay import suppress_animation
 
-        with suppress_animation():
+            with suppress_animation():
+                result = await mcp.call_tool(name, arguments)
+        else:
             result = await mcp.call_tool(name, arguments)
-    else:
-        result = await mcp.call_tool(name, arguments)
-    payload = call_result_to_json(result)
-    payload.update({"tool": name, "mode": "daemon"})
-    return payload
+        return call_result_to_json(result)
+    except Exception as exc:
+        return _transport_error_payload(
+            str(exc),
+            code="TRANSPORT_ERROR",
+            retry_safety="reobserve",
+        )
 
 
 @app.post("/shutdown", dependencies=[Depends(_require_cli_token)])

@@ -12,6 +12,13 @@ from computer_server.handlers.element_cache import CachedElement, get_element_ca
 from computer_server.mcp_server import create_mcp_server
 
 
+def _data(result):
+    envelope = result.structured_content
+    assert envelope["protocol_version"] == "0.2"
+    assert envelope["success"] is True, envelope
+    return envelope["data"]
+
+
 class _Automation:
     def __init__(self) -> None:
         self.mouse_events: list[tuple[str, str]] = []
@@ -89,7 +96,7 @@ async def test_recording_replay_uses_current_consolidated_tool_names(
             "capture_screenshots": False,
         },
     )
-    assert start.structured_content["success"] is True
+    _data(start)
 
     await mcp.call_tool(
         "computer_mouse",
@@ -109,11 +116,15 @@ async def test_recording_replay_uses_current_consolidated_tool_names(
     )
     await mcp.call_tool(
         "computer_manage_window",
-        {"action": "activate", "window_id": 456},
+        {"action": "activate", "window": {"id": 456, "pid": 123}},
     )
 
     stop = await mcp.call_tool("computer_recording", {"action": "stop"})
-    assert stop.structured_content["success"] is True
+    _data(stop)
+    manifest = json.loads(
+        (tmp_path / "recording.json").read_text(encoding="utf-8")
+    )
+    assert manifest["protocol_version"] == "0.2"
 
     action_files = sorted(tmp_path.glob("turn-*/action.json"))
     actions = [
@@ -128,8 +139,11 @@ async def test_recording_replay_uses_current_consolidated_tool_names(
         "computer_manage_window",
     ]
     keyboard_actions = actions[2:4]
-    assert [action["args"]["window_id"] for action in keyboard_actions] == [456, 456]
-    assert [action["args"]["pid"] for action in keyboard_actions] == [123, 123]
+    assert [action["args"]["window"] for action in keyboard_actions] == [
+        {"id": 456, "pid": 123},
+        {"id": 456, "pid": 123},
+    ]
+    assert all(action["protocol_version"] == "0.2" for action in actions)
 
     automation.mouse_events.clear()
     automation.key_events.clear()
@@ -144,7 +158,7 @@ async def test_recording_replay_uses_current_consolidated_tool_names(
         },
     )
 
-    assert replay.structured_content == {
+    assert _data(replay) == {
         "turns_replayed": 5,
         "turns_failed": 0,
         "turns_total": 5,
@@ -168,6 +182,8 @@ async def test_recording_replay_secondary_action_uses_current_element(
 ):
     import computer_server.mcp_server as mcp_module
     import computer_server.services.replay_resolver as replay_resolver
+    import computer_server.services.window_identity_service as window_identity
+    import computer_server.services.window_state_service as window_state_service
 
     async def noop_animate(_x: int, _y: int) -> None:
         return None
@@ -187,6 +203,31 @@ async def test_recording_replay_secondary_action_uses_current_element(
         replay_resolver,
         "resolve_live_window",
         lambda _source: (456, (100, 200, 500, 500)),
+    )
+    monkeypatch.setattr(
+        window_identity,
+        "build_window",
+        lambda window_id, **_kwargs: {"id": int(window_id), "pid": 123},
+    )
+
+    async def fake_get_window_state_snapshot(
+        _automation_handler,
+        _pid,
+        _window_id,
+        **_kwargs,
+    ):
+        return {
+            "success": True,
+            "node_count": 1,
+            "unfiltered_node_count": 1,
+            "nodes": [],
+            "tree_markdown": "",
+        }
+
+    monkeypatch.setattr(
+        window_state_service,
+        "get_window_state_snapshot",
+        fake_get_window_state_snapshot,
     )
 
     try:
@@ -218,21 +259,26 @@ async def test_recording_replay_secondary_action_uses_current_element(
                 "capture_screenshots": False,
             },
         )
-        assert start.structured_content["success"] is True
+        _data(start)
+
+        observation = await mcp.call_tool(
+            "computer_get_window_state",
+            {"window": {"id": 456, "pid": 123}},
+        )
 
         action = await mcp.call_tool(
             "computer_perform_secondary_action",
             {
                 "element_index": 7,
                 "action": "expand",
-                "pid": 123,
-                "window_id": 456,
+                "window": {"id": 456, "pid": 123},
+                "observation_id": _data(observation)["observation_id"],
             },
         )
-        assert action.structured_content["success"] is True
+        _data(action)
 
         stop = await mcp.call_tool("computer_recording", {"action": "stop"})
-        assert stop.structured_content["success"] is True
+        _data(stop)
 
         recorded = json.loads(
             next(tmp_path.glob("turn-*/action.json")).read_text(encoding="utf-8")
@@ -251,7 +297,7 @@ async def test_recording_replay_secondary_action_uses_current_element(
             },
         )
 
-        assert replay.structured_content == {
+        assert _data(replay) == {
             "turns_replayed": 1,
             "turns_failed": 0,
             "turns_total": 1,

@@ -43,16 +43,6 @@ def tool_to_json(tool: Any) -> dict[str, Any]:
 
 
 def call_result_to_json(result: Any) -> dict[str, Any]:
-    content = getattr(result, "content", None)
-    if content is not None:
-        content = [
-            item.model_dump(mode="json", by_alias=True, exclude_none=True)
-            if hasattr(item, "model_dump")
-            else item
-            for item in content
-        ]
-    return {
-        "is_error": bool(getattr(result, "is_error", False)),
-        "structured_content": getattr(result, "structured_content", None),
-        "content": content,
-    }
+    from computer_server.services.protocol_service import transport_payload
+
+    return transport_payload(result)

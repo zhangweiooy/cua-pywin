@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import base64
 import hashlib
 import http.client
 import importlib.metadata
@@ -1070,10 +1071,10 @@ def _parse_batch_actions(raw: str | None) -> list[dict[str, Any]]:
 
 
 def _batch_payload_failed(payload: dict[str, Any]) -> bool:
-    if payload.get("is_error"):
+    if payload.get("transport_error") is not None:
         return True
-    structured = payload.get("structured_content")
-    return isinstance(structured, dict) and structured.get("success") is False
+    result = payload.get("result")
+    return not isinstance(result, dict) or result.get("success") is not True
 
 
 def _validate_batch_action(item: dict[str, Any]) -> tuple[str, str, dict[str, Any]]:
@@ -1186,8 +1187,18 @@ def _execute_batch(
                     milliseconds = validated["milliseconds"]
                     time.sleep(float(milliseconds) / 1000.0)
                     payload: dict[str, Any] = {
-                        "success": True,
-                        "waited_ms": milliseconds,
+                        "protocol_version": "0.2",
+                        "result": {
+                            "protocol_version": "0.2",
+                            "success": True,
+                            "data": {"waited_ms": milliseconds},
+                            "artifacts": [],
+                            "warnings": [],
+                            "error": None,
+                            "action": None,
+                        },
+                        "content": [],
+                        "transport_error": None,
                     }
                     item_failed = False
                 else:
@@ -1199,7 +1210,16 @@ def _execute_batch(
                     item_failed = _batch_payload_failed(payload)
             except (RuntimeError, ValueError) as exc:
                 label = str(item.get("tool") or item.get("type") or "invalid")
-                payload = {"success": False, "error": str(exc)}
+                payload = {
+                    "protocol_version": "0.2",
+                    "result": None,
+                    "content": [],
+                    "transport_error": {
+                        "code": "TRANSPORT_ERROR",
+                        "message": str(exc),
+                        "retry_safety": "reobserve",
+                    },
+                }
                 item_failed = True
 
             elapsed_ms = round((time.monotonic() - item_started) * 1000, 2)
@@ -1945,14 +1965,68 @@ def _format_tools(payload: dict[str, Any], json_mode: bool) -> None:
 
 
 def _format_call(payload: dict[str, Any], json_mode: bool) -> None:
-    if json_mode:
-        _json_print(payload)
+    result = payload.get("result")
+    if isinstance(result, dict):
+        _json_print(result)
         return
-    structured = payload.get("structured_content")
-    if structured is not None:
-        _json_print(structured)
-        return
-    _json_print(payload)
+    _json_print(payload if json_mode else payload.get("transport_error") or payload)
+
+
+def _save_call_images(
+    payload: dict[str, Any],
+    *,
+    output: str | None,
+    output_dir: str | None,
+) -> list[str]:
+    """Save image content blocks using result artifact bindings."""
+    if not output and not output_dir:
+        return []
+    result = payload.get("result")
+    content = payload.get("content")
+    if not isinstance(result, dict) or not isinstance(content, list):
+        raise SystemExit("call returned no structured image artifacts")
+    artifacts = [
+        artifact
+        for artifact in result.get("artifacts", [])
+        if isinstance(artifact, dict) and artifact.get("type") == "image"
+    ]
+    if not artifacts:
+        raise SystemExit("call returned no image artifacts")
+
+    saved: list[str] = []
+
+    def _write_artifact(artifact: dict[str, Any], path: Path) -> None:
+        index = artifact.get("content_index")
+        if isinstance(index, bool) or not isinstance(index, int):
+            raise SystemExit("image artifact has an invalid content_index")
+        if index < 0 or index >= len(content):
+            raise SystemExit("image artifact content_index is out of range")
+        block = content[index]
+        if not isinstance(block, dict) or block.get("type") != "image":
+            raise SystemExit("image artifact does not reference image content")
+        try:
+            raw = base64.b64decode(str(block.get("data") or ""), validate=True)
+        except Exception as exc:
+            raise SystemExit(f"image content is not valid base64: {exc}") from exc
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(raw)
+        saved.append(str(path))
+
+    if output:
+        _write_artifact(artifacts[0], Path(output).expanduser())
+    if output_dir:
+        directory = Path(output_dir).expanduser()
+        directory.mkdir(parents=True, exist_ok=True)
+        for index, artifact in enumerate(artifacts):
+            mime_type = str(artifact.get("mime_type") or "image/png")
+            extension = ".jpg" if mime_type == "image/jpeg" else ".png"
+            artifact_id = re.sub(
+                r"[^A-Za-z0-9_.-]+",
+                "-",
+                str(artifact.get("id") or f"image-{index + 1}"),
+            )
+            _write_artifact(artifact, directory / f"{artifact_id}{extension}")
+    return saved
 
 
 async def _inprocess_list_tools() -> dict[str, Any]:
@@ -1979,9 +2053,7 @@ async def _inprocess_call(tool_name: str, tool_args: dict[str, Any]) -> dict[str
 
         mcp = create_mcp_server()
         result = await mcp.call_tool(tool_name, tool_args)
-    payload = _call_result_to_json(result)
-    payload.update({"tool": tool_name, "mode": "in-process"})
-    return payload
+    return _call_result_to_json(result)
 
 
 def _rewrite_implicit_call(argv: Sequence[str]) -> list[str]:
@@ -2309,8 +2381,18 @@ def _cmd_call(args: argparse.Namespace) -> int:
             payload={"name": args.tool, "arguments": tool_args},
             timeout=args.timeout,
         )
+    failed = _batch_payload_failed(payload)
     _format_call(payload, json_mode=args.json)
-    return 1 if payload.get("is_error") else 0
+    try:
+        _save_call_images(
+            payload,
+            output=args.output,
+            output_dir=args.output_dir,
+        )
+    except SystemExit as exc:
+        print(f"artifact save failed: {exc}", file=sys.stderr)
+        return 1
+    return 1 if failed else 0
 
 
 def _cmd_batch(args: argparse.Namespace) -> int:
@@ -2643,7 +2725,15 @@ def build_parser() -> argparse.ArgumentParser:
     call.add_argument(
         "--json",
         action="store_true",
-        help="Print the full machine-readable call envelope.",
+        help="Print the machine-readable 0.2 result envelope.",
+    )
+    call.add_argument(
+        "--output",
+        help="Save the primary image artifact to this path.",
+    )
+    call.add_argument(
+        "--output-dir",
+        help="Save every image artifact to this directory.",
     )
     call.add_argument(
         "--timeout",

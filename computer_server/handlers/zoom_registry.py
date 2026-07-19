@@ -1,7 +1,7 @@
 """Zoom context registry for coordinate back-translation.
 
-Stores per-window zoom context so that `from_zoom=True` click/drag coordinates
-can be translated back from zoomed-image space to original screen coordinates.
+Stores per-window zoom context so coordinates bound to a public ``zoom_id`` can
+be translated back from zoomed-image space to original screen coordinates.
 """
 
 from __future__ import annotations
@@ -24,10 +24,11 @@ class ZoomContext:
     output_width: int
     output_height: int
     padding: int
+    screenshot_id: Optional[str] = None
 
 
 class ZoomRegistry:
-    """Stores last zoom context per window for from_zoom coordinate translation.
+    """Stores the last zoom context per window for coordinate translation.
 
     Thread-safe singleton.
     """

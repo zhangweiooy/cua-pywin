@@ -140,14 +140,14 @@ uv run python scripts/run_agent_smoke.py --dry-run --scenario fixture-basic
 uv run --no-sync python "C:\Users\vinfl\.codex\skills\.system\skill-creator\scripts\quick_validate.py" skills/cua-win
 
 # Build and validate a release candidate
-./scripts/build_release.ps1 -Version 0.1.0
+./scripts/build_release.ps1 -Version 0.2.0
 
 # Build a local Nuitka standalone executable directory
 ./scripts/build_nuitka.ps1
-./scripts/build_nuitka.ps1 -Version 0.1.0
+./scripts/build_nuitka.ps1 -Version 0.2.0
 
 # Build a Windows setup.exe from the standalone output
-./scripts/build_installer.ps1 -Version 0.1.0
+./scripts/build_installer.ps1 -Version 0.2.0
 
 # Fast local Nuitka iteration after dependencies are already synced
 ./scripts/build_nuitka.ps1 -SkipSync -SkipChecks
@@ -165,17 +165,18 @@ uv run --no-sync python "C:\Users\vinfl\.codex\skills\.system\skill-creator\scri
 
 `computer_click`, `computer_drag`, and `computer_scroll` accept optional
 `coordinate_space`: `screen`, `window_resized`, `window_full_res`, `zoom`, or
-`element`. If omitted, default inference is preserved: `element_index` means
-`element`, zoom args mean `zoom`, `pid + window_id` means `window_resized`,
-otherwise `screen`.
+`element`. If omitted, `element_index` means `element`, `zoom_id` means `zoom`,
+and all other coordinates mean `screen`. Window-relative coordinate spaces
+must be selected explicitly.
 
-`computer_get_window_state` returns both `snapshot_id` and `screenshot_id`.
-`snapshot_id` binds the observation/node snapshot and rejects stale element
-observations. `screenshot_id` binds the exact screenshot/crop geometry used for
+`computer_get_window_state` returns both `observation_id` and `screenshot_id`.
+`observation_id` binds the observation/node snapshot and rejects stale element
+actions. `screenshot_id` binds the exact screenshot/crop geometry used for
 `window_resized` and `window_full_res` coordinate conversion; prefer passing it
 to `computer_click`, `computer_drag`, `computer_scroll`, and `computer_zoom`
 when coordinates come from a returned screenshot. `computer_zoom` returns
-`zoom_id`; zoom actions can use it instead of implicit per-window zoom state.
+`zoom_id`; zoom-coordinate actions must use it. A new observation immediately
+stales older observation, screenshot, and zoom bindings for the same window.
 Returned `nodes` use `nodes_coordinate_space="window_resized"`, so their
 bounding boxes and centers align with the returned target screenshot. By
 default, only the 100 highest-priority nodes are returned; set `max_nodes=0` to
@@ -195,21 +196,36 @@ compact state is insufficient.
 Key invariant: `ElementCache` stores window-relative coordinates, and
 `_resolve_element_center` returns screen coordinates.
 
+## Protocol 0.2 Contract
+
+All 25 public tools return the fixed
+`protocol_version/success/data/artifacts/warnings/error/action` envelope.
+Expected validation, target, observation, permission, provider, capture, action,
+and postcondition failures are normal MCP results with `success=false`.
+Uncaught exceptions and transport failures use MCP `isError`.
+
+Tool-specific fields belong in `data`. Images exist only as MCP image content
+and are described by `artifacts[]`; public structured payloads must not contain
+base64 image data or debug output paths. Side-effect calls return a transient
+`action_id` with `completed/rejected/unknown` and retry safety. Do not add an
+action ledger, persistence, idempotency store, or query tool without new
+evidence.
+
 ## Window Identity Contract
 
-Public tools should prefer `window` over top-level `pid/window_id`:
+Targeted public tools accept only canonical `window`:
 
 ```json
 {"window":{"id":5678,"pid":1234}}
 ```
 
-`window.id` and `window.window_id` are equivalent HWND fields. Top-level
-`pid/window_id` remains supported for compatibility, but if both forms are
-provided they must identify the same target or the tool returns a validation
-error. `computer_list_windows`, `computer_list_apps`, `computer_get_window`,
-and `computer_get_window_state` return canonical `window` objects for follow-up
-calls. Use `computer_get_window({"id":..., "app":...})` to rehydrate a stale or
-lost window binding, and `computer_get_window({"active":true})` for the current
+The only public window fields are `id` and `pid`, and both are required.
+`window_id`, `windowId`, extra window metadata, and top-level target
+`pid/window_id` are rejected. `computer_list_windows`, `computer_list_apps`,
+`computer_get_window`, and `computer_get_window_state` return canonical
+`window` objects for follow-up calls. Use
+`computer_get_window({"id":..., "app":...})` to rehydrate a stale or lost
+window binding, and `computer_get_window({"active":true})` for the current
 foreground window.
 
 Merged public entry points:
@@ -221,8 +237,7 @@ Merged public entry points:
   window preserve current-focus behavior, while key-up skips activation so a
   held key can always be released.
 - `computer_click`, `computer_drag`, and `computer_scroll` activate and verify
-  an explicitly supplied canonical `window` before mouse input. Legacy
-  top-level `pid/window_id` calls preserve their prior foreground behavior.
+  an explicitly supplied canonical `window` before mouse input.
 - Keyboard down/up primitives use
   `computer_press_key({"key":"Shift","action":"down|up"})`.
 - Mouse move/down/up primitives use `computer_mouse({"action":"move|down|up"})`.
@@ -338,21 +353,20 @@ is internal replay metadata.
   input flags, visibility requirements, coordinate source) so callers can tell
   whether the action used UIA Invoke, force-frontmost mouse events, or normal
   pixel click.
-- `computer_get_window_state` returns an additive `screenshots` array. The
+- `computer_get_window_state` returns `data.screenshots` descriptors. The
   target has `role="target"` and `zIndex=0`; visible related same-process
   menus, popovers, or dialogs can appear as `role="transient"` entries with
   independent `window`, `screenshot_id`, screen origin, capture metadata, and
-  positive `zIndex`. Top-level `screenshot` and `screenshot_id` remain the
-  target capture for compatibility.
+  positive `zIndex`. Actual images are MCP content bound through artifacts.
 - `computer_perform_secondary_action` is the narrow entry point for
   non-primary node actions. It currently supports only the observable MSAA
   dropdown/splitbutton `expand` path and activates the target before input.
 - `computer_click(verify_query=..., require_verification=True)` performs a
   post-action window-state check and marks the result failed when the query is
-  not observed. `pid` and `window_id` are required for verification.
+  not observed. A canonical `window` is required for verification.
 - `capture_after=True` is supported by click, scroll, type, and secondary-action
-  tools. It returns a fresh snapshot with `snapshot_id`, `screenshot_id`, and
-  `capture`. Pass `include_post_action_delta=True` only when a lightweight
+  tools. It returns a fresh observation with `observation_id`, `screenshot_id`,
+  and `capture`. Pass `include_post_action_delta=True` only when a lightweight
   before/after comparison is worth an extra pre-action observation; then the
   result also includes `post_action_delta` summarizing node count, added/removed
   nodes, text changes, tree-quality changes, and before/after screenshot ids.
@@ -646,8 +660,9 @@ uv run cua-win stop
 
 ### Current State
 
-- `v0.1.0` has been published through GitHub Releases with installer, wheel,
-  and separate SHA-256 files. The repository is still private.
+- Protocol `0.2` and package version `0.2.0` are the active development line.
+  It intentionally has no 0.1 public compatibility mode. The repository is
+  still private.
 - Do not move an existing release tag for documentation-only cleanup. Move a
   release tag only when correcting a failed or incomplete release workflow.
 - Keep the public MCP surface at 25 tools for now. Do not merge distinct

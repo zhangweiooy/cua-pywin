@@ -10,9 +10,11 @@ Usage:
 
 import asyncio
 import base64
+import functools
 import logging
 import os
 import sys
+from contextvars import ContextVar
 
 _LIGHTWEIGHT_MCP_IMPORT = os.environ.get("CUA_LIGHTWEIGHT_MCP_IMPORT") == "1"
 
@@ -66,13 +68,14 @@ if not _LIGHTWEIGHT_MCP_IMPORT:
             preload_uiautomation()
         except Exception:
             pass
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Callable, Dict, List, Optional, Tuple
 
 if sys.platform != "win32":
     raise RuntimeError("cua-pywin 仅支持 Windows 平台")
 
 from fastmcp import FastMCP
 from fastmcp.tools import ToolResult
+from pydantic import BaseModel, ConfigDict, Field
 
 # Agent cursor overlay — optional, degrades silently if init fails
 try:
@@ -83,6 +86,20 @@ except Exception:
 from fastmcp.utilities.types import Image
 
 logger = logging.getLogger(__name__)
+
+_REGISTER_PUBLIC_OBSERVATION: ContextVar[bool] = ContextVar(
+    "cua_register_public_observation",
+    default=True,
+)
+
+
+class CanonicalWindow(BaseModel):
+    """Strict public target identity for the 0.2 protocol."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    id: int = Field(gt=0, strict=True)
+    pid: int = Field(gt=0, strict=True)
 
 
 def _uia_action_timeout_s() -> float:
@@ -469,7 +486,7 @@ async def _get_tool_map(mcp: FastMCP) -> Any:
             name = getattr(tool, "name", None)
             fn = getattr(tool, "fn", None)
             if name and fn:
-                tool_map[name] = fn
+                tool_map[name] = getattr(fn, "__wrapped__", fn)
     except Exception:
         logger.warning("Could not enumerate tools for replay; replay will fail for unknown tools", exc_info=True)
     return tool_map
@@ -482,8 +499,11 @@ def create_mcp_server() -> FastMCP:
     Returns:
         FastMCP: Configured MCP server instance
     """
+    from computer_server import __version__
+
     mcp = FastMCP(
         name="cua-pywin",
+        version=__version__,
         instructions="""You are connected to cua-pywin, a Windows desktop control server.
 
         Preferred workflow:
@@ -492,8 +512,8 @@ def create_mcp_server() -> FastMCP:
         2. Observe it with computer_get_window_state. Reuse the returned window object.
         3. Read agent_state/state_text first for a compact summary, then inspect nodes,
            screenshots, and tree_markdown only as needed.
-        4. Prefer element_index actions from the latest snapshot when available. When using
-           screenshot coordinates from get_window_state, pass screenshot_id and
+        4. Prefer element_index actions from the latest observation when available. Pass
+           observation_id with element_index. When using screenshot coordinates, pass screenshot_id and
            coordinate_space="window_resized".
         5. After any state-changing action, verify with capture_after, verify_query, or a fresh
            computer_get_window_state. Do not treat input dispatch alone as task success.
@@ -504,21 +524,84 @@ def create_mcp_server() -> FastMCP:
         irreversible actions such as sending, deleting, purchasing, or changing settings.""",
     )
     from computer_server.server_context import ServerContext
+    from computer_server.services.protocol_service import (
+        ProtocolValidationMiddleware,
+        current_action_context,
+        mark_action_dispatch_started,
+    )
 
     context = ServerContext()
+    mcp.add_middleware(ProtocolValidationMiddleware())
+
+    def _protocol_tool(*, annotations: Dict[str, Any]):
+        """Register a tool behind the fixed public 0.2 protocol boundary."""
+        from computer_server.services.protocol_service import (
+            action_execution_scope,
+            begin_action_context,
+            log_unknown_action,
+            protocolize_tool_result,
+            validation_failure_result,
+        )
+        from computer_server.services.validation_service import ValidationError
+
+        def _decorate(func: Any) -> Any:
+            @functools.wraps(func)
+            async def _wrapped(*args: Any, **kwargs: Any) -> Any:
+                window = kwargs.get("window")
+                if isinstance(window, CanonicalWindow):
+                    kwargs["window"] = window.model_dump()
+                action_context = begin_action_context(func.__name__, kwargs)
+                action_id = (
+                    action_context.action_id
+                    if action_context is not None
+                    else None
+                )
+                with action_execution_scope(action_context):
+                    try:
+                        raw_result = await func(*args, **kwargs)
+                    except ValidationError as exc:
+                        return validation_failure_result(
+                            str(exc),
+                            action_id=action_id,
+                        )
+                    except Exception:
+                        log_unknown_action(func.__name__, action_id)
+                        raise
+                    return protocolize_tool_result(
+                        raw_result,
+                        tool_name=func.__name__,
+                        arguments=kwargs,
+                        action_id=action_id,
+                        action_context=action_context,
+                    )
+
+            return mcp.tool(annotations=annotations)(_wrapped)
+
+        return _decorate
 
     async def _run_uia_action_with_timeout(
         pid: int,
         window_id: int,
         action_name: str,
         func: Any,
-    ) -> Tuple[bool, Optional[str]]:
+        pre_dispatch_check: Optional[Callable[[], Optional[Dict[str, Any]]]] = None,
+    ) -> Tuple[bool, Optional[str], Optional[Dict[str, Any]], bool]:
         """Run a UIA action behind the per-window action gate."""
         from computer_server.services.window_state_service import run_window_operation_with_gate
 
-        def _wrapped() -> bool:
+        action_context = current_action_context()
+        dispatch_state = {"started": False}
+
+        def _wrapped() -> Tuple[bool, Optional[Dict[str, Any]]]:
+            if pre_dispatch_check is not None:
+                binding_error = pre_dispatch_check()
+                if binding_error is not None:
+                    return False, binding_error
+            dispatch_state["started"] = True
+            if action_context is not None:
+                action_context.mark_dispatch_started()
             func()
-            return True
+            return True, None
 
         result, error = await run_window_operation_with_gate(
             pid=pid,
@@ -535,7 +618,10 @@ def create_mcp_server() -> FastMCP:
                 window_id,
                 error,
             )
-        return bool(result), error
+        if result is not None:
+            invoked, binding_error = result
+            return bool(invoked), error, binding_error, dispatch_state["started"]
+        return False, error, None, dispatch_state["started"]
 
     def _build_target_profile_dict(
         pid: Optional[int],
@@ -550,49 +636,60 @@ def create_mcp_server() -> FastMCP:
             window_id=window_id,
         ).to_dict()
 
-    def _resolve_snapshot_ref(
-        snapshot_id: Optional[str],
+    def _resolve_observation_ref(
+        observation_id: Optional[str],
         pid: Optional[int],
         window_id: Optional[int],
     ) -> Tuple[Optional[int], Optional[int], Optional[Dict[str, Any]]]:
-        """Resolve an optional snapshot handle to pid/window_id."""
-        if not snapshot_id:
+        """Resolve an optional fresh observation handle to pid/window_id."""
+        if not observation_id:
             return pid, window_id, None
 
-        snapshot = context.observations.get_snapshot(snapshot_id)
-        if snapshot is None:
+        observation = context.observations.get_observation(observation_id)
+        if observation is None:
             return pid, window_id, {
                 "success": False,
-                "code": "snapshot_not_found",
-                "error": f"Unknown or expired snapshot_id: {snapshot_id}",
-                "suggestion": "Call computer_get_window_state again and use the returned snapshot_id.",
+                "code": "OBSERVATION_NOT_FOUND",
+                "error": f"Unknown or expired observation_id: {observation_id}",
+                "suggestion": "Call computer_get_window_state again and use its observation_id.",
             }
-        if not context.observations.is_latest(snapshot_id):
+        if not context.observations.is_latest_observation(observation_id):
             return pid, window_id, {
                 "success": False,
-                "code": "snapshot_stale",
-                "error": f"snapshot_id is stale for pid={snapshot.pid}, window_id={snapshot.window_id}",
-                "target_profile": _build_target_profile_dict(snapshot.pid, snapshot.window_id),
-                "suggestion": "Use the latest snapshot_id returned by computer_get_window_state or capture_after.",
-            }
-        if pid is not None and int(pid) != snapshot.pid:
-            return pid, window_id, {
-                "success": False,
-                "error": f"snapshot_id pid mismatch: snapshot has pid={snapshot.pid}, got pid={pid}",
-            }
-        if window_id is not None and int(window_id) != snapshot.window_id:
-            return pid, window_id, {
-                "success": False,
+                "code": "STALE_OBSERVATION",
                 "error": (
-                    "snapshot_id window_id mismatch: "
-                    f"snapshot has window_id={snapshot.window_id}, got window_id={window_id}"
+                    "observation_id is stale for "
+                    f"pid={observation.pid}, window={observation.window_id}"
+                ),
+                "target_profile": _build_target_profile_dict(
+                    observation.pid,
+                    observation.window_id,
+                ),
+                "suggestion": "Reobserve the window and use its latest observation_id.",
+            }
+        if pid is not None and int(pid) != observation.pid:
+            return pid, window_id, {
+                "success": False,
+                "code": "OBSERVATION_TARGET_MISMATCH",
+                "error": (
+                    "observation_id pid mismatch: "
+                    f"observation has pid={observation.pid}, got pid={pid}"
                 ),
             }
-        return snapshot.pid, snapshot.window_id, None
+        if window_id is not None and int(window_id) != observation.window_id:
+            return pid, window_id, {
+                "success": False,
+                "code": "OBSERVATION_TARGET_MISMATCH",
+                "error": (
+                    "observation_id target mismatch: "
+                    f"observation has window={observation.window_id}, got window={window_id}"
+                ),
+            }
+        return observation.pid, observation.window_id, None
 
     def _resolve_screenshot_ref(
         screenshot_id: Optional[str],
-        snapshot_id: Optional[str],
+        observation_id: Optional[str],
         pid: Optional[int],
         window_id: Optional[int],
     ) -> Tuple[Optional[int], Optional[int], Optional[Any], Optional[Dict[str, Any]]]:
@@ -609,43 +706,86 @@ def create_mcp_server() -> FastMCP:
         if screenshot is None:
             return pid, window_id, None, {
                 "success": False,
-                "code": "screenshot_not_found",
+                "code": "OBSERVATION_NOT_FOUND",
                 "error": f"Unknown or expired screenshot_id: {screenshot_id}",
                 "suggestion": "Call computer_get_window_state again and use the returned screenshot_id.",
             }
         if not context.observations.is_latest_screenshot(screenshot_id):
             return pid, window_id, None, {
                 "success": False,
-                "code": "screenshot_stale",
+                "code": "STALE_OBSERVATION",
                 "error": (
                     "screenshot_id is stale for "
-                    f"pid={screenshot.pid}, window_id={screenshot.window_id}"
+                    f"pid={screenshot.pid}, window={screenshot.window_id}"
                 ),
                 "target_profile": _build_target_profile_dict(screenshot.pid, screenshot.window_id),
                 "suggestion": "Use the latest screenshot_id returned by computer_get_window_state or capture_after.",
             }
-        if snapshot_id is not None and snapshot_id != screenshot.snapshot_id:
+        if (
+            observation_id is not None
+            and observation_id != screenshot.observation_id
+        ):
             return pid, window_id, None, {
                 "success": False,
+                "code": "OBSERVATION_TARGET_MISMATCH",
                 "error": (
-                    "screenshot_id snapshot mismatch: "
-                    f"screenshot has snapshot_id={screenshot.snapshot_id}, got snapshot_id={snapshot_id}"
+                    "screenshot_id observation mismatch: "
+                    f"screenshot has observation_id={screenshot.observation_id}, "
+                    f"got observation_id={observation_id}"
                 ),
             }
         if pid is not None and int(pid) != screenshot.pid:
             return pid, window_id, None, {
                 "success": False,
+                "code": "OBSERVATION_TARGET_MISMATCH",
                 "error": f"screenshot_id pid mismatch: screenshot has pid={screenshot.pid}, got pid={pid}",
             }
         if window_id is not None and int(window_id) != screenshot.window_id:
             return pid, window_id, None, {
                 "success": False,
+                "code": "OBSERVATION_TARGET_MISMATCH",
                 "error": (
-                    "screenshot_id window_id mismatch: "
-                    f"screenshot has window_id={screenshot.window_id}, got window_id={window_id}"
+                    "screenshot_id target mismatch: "
+                    f"screenshot has window={screenshot.window_id}, got window={window_id}"
                 ),
             }
         return screenshot.pid, screenshot.window_id, screenshot, None
+
+    def _revalidate_action_binding(
+        *,
+        observation_id: Optional[str],
+        screenshot_id: Optional[str],
+        zoom_id: Optional[str],
+        pid: Optional[int],
+        window_id: Optional[int],
+    ) -> Optional[Dict[str, Any]]:
+        """Reject a state-derived action if another observation superseded it."""
+        if observation_id:
+            _, _, ref_error = _resolve_observation_ref(
+                observation_id,
+                pid,
+                window_id,
+            )
+            if ref_error is not None:
+                return ref_error
+        if screenshot_id:
+            _, _, _, ref_error = _resolve_screenshot_ref(
+                screenshot_id,
+                observation_id,
+                pid,
+                window_id,
+            )
+            if ref_error is not None:
+                return ref_error
+        if zoom_id:
+            _, _, ref_error = _resolve_zoom_ref(
+                zoom_id,
+                pid,
+                window_id,
+            )
+            if ref_error is not None:
+                return ref_error
+        return None
 
     def _public_capture_from_screenshot(screenshot: Any) -> Dict[str, Any]:
         return screenshot.to_public_capture()
@@ -665,20 +805,42 @@ def create_mcp_server() -> FastMCP:
         if zoom_ctx is None:
             return pid, window_id, {
                 "success": False,
+                "code": "OBSERVATION_NOT_FOUND",
                 "error": f"Unknown or expired zoom_id: {zoom_id}",
                 "suggestion": "Call computer_zoom again and use the returned zoom_id.",
+            }
+        if not zoom_ctx.screenshot_id:
+            return pid, window_id, {
+                "success": False,
+                "code": "OBSERVATION_NOT_FOUND",
+                "error": "zoom_id is not bound to a source screenshot",
+                "suggestion": "Call computer_zoom again from the latest screenshot_id.",
+            }
+        if not context.observations.is_latest_screenshot(
+            zoom_ctx.screenshot_id
+        ):
+            return pid, window_id, {
+                "success": False,
+                "code": "STALE_OBSERVATION",
+                "error": "zoom_id was derived from a stale screenshot",
+                "suggestion": (
+                    "Reobserve the window and create a new zoom from its latest "
+                    "screenshot_id."
+                ),
             }
         if pid is not None and int(pid) != zoom_ctx.pid:
             return pid, window_id, {
                 "success": False,
+                "code": "OBSERVATION_TARGET_MISMATCH",
                 "error": f"zoom_id pid mismatch: zoom has pid={zoom_ctx.pid}, got pid={pid}",
             }
         if window_id is not None and int(window_id) != zoom_ctx.window_id:
             return pid, window_id, {
                 "success": False,
+                "code": "OBSERVATION_TARGET_MISMATCH",
                 "error": (
-                    "zoom_id window_id mismatch: "
-                    f"zoom has window_id={zoom_ctx.window_id}, got window_id={window_id}"
+                    "zoom_id target mismatch: "
+                    f"zoom has window={zoom_ctx.window_id}, got window={window_id}"
                 ),
             }
         return zoom_ctx.pid, zoom_ctx.window_id, None
@@ -688,7 +850,7 @@ def create_mcp_server() -> FastMCP:
         pid: Optional[int],
         window_id: Optional[int],
     ) -> Tuple[Optional[int], Optional[int], Optional[Dict[str, Any]]]:
-        """Resolve the public window object plus top-level pid/window_id args."""
+        """Resolve a canonical public window into internal PID/HWND values."""
         from computer_server.services.validation_service import error_result
         from computer_server.services.window_identity_service import resolve_window_input
 
@@ -733,7 +895,7 @@ def create_mcp_server() -> FastMCP:
         if window is not None and resolved_window_id is None:
             return resolved_pid, resolved_window_id, {
                 "success": False,
-                "error": "window.id or window.window_id is required for targeted input",
+                "error": "window.id is required for targeted input",
             }
         if resolved_window_id is None or not activate:
             return resolved_pid, resolved_window_id, None
@@ -980,6 +1142,7 @@ def create_mcp_server() -> FastMCP:
         query: Optional[str] = None,
         include_all_nodes: bool = False,
         max_nodes: Optional[int] = 100,
+        register_observation: bool = True,
     ) -> Any:
         """Thin wrapper around computer_get_window_state for capture_after use.
 
@@ -988,14 +1151,17 @@ def create_mcp_server() -> FastMCP:
         the parent action result is not lost.
         """
         try:
-            fresh = await computer_get_window_state(
-                pid=pid,
-                window_id=window_id,
-                max_image_dimension=max_image_dimension,
-                query=query,
-                include_all_nodes=include_all_nodes,
-                max_nodes=max_nodes,
-            )
+            token = _REGISTER_PUBLIC_OBSERVATION.set(register_observation)
+            try:
+                fresh = await computer_get_window_state.__wrapped__(
+                    window={"id": window_id, "pid": pid},
+                    max_image_dimension=max_image_dimension,
+                    query=query,
+                    include_all_nodes=include_all_nodes,
+                    max_nodes=max_nodes,
+                )
+            finally:
+                _REGISTER_PUBLIC_OBSERVATION.reset(token)
             if fresh.get("success") is False:
                 return {"success": False, "error": fresh.get("error", "get_window_state returned success=False")}
             return {
@@ -1026,8 +1192,7 @@ def create_mcp_server() -> FastMCP:
                 "accessibility_hint": fresh.get("accessibility_hint"),
                 "observation_recommendation": fresh.get("observation_recommendation"),
                 "node_sources": fresh.get("node_sources", []),
-                "snapshot_id": fresh.get("snapshot_id"),
-                "snapshot_latest": fresh.get("snapshot_latest", True),
+                "observation_id": fresh.get("observation_id"),
                 "query": query,
                 "success": True,
             }
@@ -1048,7 +1213,11 @@ def create_mcp_server() -> FastMCP:
             or window_id is None
         ):
             return None
-        return await _capture_and_detect(pid, window_id)
+        return await _capture_and_detect(
+            pid,
+            window_id,
+            register_observation=False,
+        )
 
     def _annotate_action_path(
         result: Dict[str, Any],
@@ -1119,9 +1288,34 @@ def create_mcp_server() -> FastMCP:
                 "error": capture.get("error", "post-action capture failed"),
             }
 
-        matched_node_count = int(capture.get("returned_node_count", capture.get("node_count", 0)) or 0)
+        query_folded = verify_query.casefold()
+        nodes = capture.get("nodes") or []
+        matched_node_count = 0
+        for node in nodes:
+            if not isinstance(node, dict):
+                continue
+            searchable = " ".join(
+                str(node.get(key) or "")
+                for key in (
+                    "name",
+                    "value",
+                    "text",
+                    "description",
+                    "control_type",
+                )
+            ).casefold()
+            if query_folded in searchable:
+                matched_node_count += 1
+        if capture.get("query") == verify_query:
+            matched_node_count = int(
+                capture.get(
+                    "returned_node_count",
+                    capture.get("node_count", 0),
+                )
+                or 0
+            )
         tree_markdown = str(capture.get("tree_markdown") or "")
-        matched_tree = verify_query.lower() in tree_markdown.lower()
+        matched_tree = query_folded in tree_markdown.casefold()
         matched = matched_node_count > 0 or matched_tree
         return {
             "success": True,
@@ -1129,7 +1323,7 @@ def create_mcp_server() -> FastMCP:
             "matched": matched,
             "matched_node_count": matched_node_count,
             "matched_tree": matched_tree,
-            "snapshot_id": capture.get("snapshot_id"),
+            "observation_id": capture.get("observation_id"),
             "screenshot_id": capture.get("screenshot_id"),
             "capture": capture.get("capture"),
             "tree_quality": capture.get("tree_quality"),
@@ -1154,17 +1348,26 @@ def create_mcp_server() -> FastMCP:
                     "success": False,
                     "query": verify_query,
                     "matched": False,
-                    "error": "pid and window_id are required for post-action verification",
+                    "error": "a canonical window is required for post-action verification",
                 }
                 if require_verification:
                     result["action_success"] = bool(result.get("success"))
                     result["success"] = False
                     result["error_code"] = "post_action_verification_failed"
-                    result["error"] = "pid and window_id are required for post-action verification"
+                    result["error"] = (
+                        "a canonical window is required for post-action verification"
+                    )
             return result
 
-        if capture_after:
-            post_capture = await _capture_and_detect(pid, window_id)
+        post_capture: Optional[Dict[str, Any]] = None
+        if capture_after or verify_query:
+            post_capture = await _capture_and_detect(
+                pid,
+                window_id,
+                query=None if capture_after else verify_query,
+            )
+
+        if capture_after and post_capture is not None:
             result["capture_after"] = post_capture
             if include_post_action_delta and pre_action_capture is not None:
                 from computer_server.services.action_delta_service import (
@@ -1176,14 +1379,8 @@ def create_mcp_server() -> FastMCP:
                     post_capture,
                 )
 
-        if verify_query:
-            verification_capture = await _capture_and_detect(
-                pid,
-                window_id,
-                query=verify_query,
-                include_all_nodes=False,
-            )
-            verification = _verification_from_capture(verify_query, verification_capture)
+        if verify_query and post_capture is not None:
+            verification = _verification_from_capture(verify_query, post_capture)
             result["post_action_verification"] = verification
             if require_verification and not verification.get("matched", False):
                 result["action_success"] = bool(result.get("success"))
@@ -1207,7 +1404,7 @@ def create_mcp_server() -> FastMCP:
     # SCREEN & MOUSE ACTIONS
     # ============================================================
 
-    @mcp.tool(annotations={"readOnlyHint": True, "destructiveHint": False, "idempotentHint": True, "openWorldHint": True})
+    @_protocol_tool(annotations={"readOnlyHint": True, "destructiveHint": False, "idempotentHint": True, "openWorldHint": True})
     async def computer_screenshot(
         format: str = "jpeg",
         quality: int = 85,
@@ -1272,7 +1469,7 @@ def create_mcp_server() -> FastMCP:
             },
         )
 
-    @mcp.tool(annotations={"readOnlyHint": True, "destructiveHint": False, "idempotentHint": True, "openWorldHint": True})
+    @_protocol_tool(annotations={"readOnlyHint": True, "destructiveHint": False, "idempotentHint": True, "openWorldHint": True})
     async def computer_get_screen_size() -> Any:
         """
         Get the screen dimensions.
@@ -1293,7 +1490,7 @@ def create_mcp_server() -> FastMCP:
             response["virtual_screen"] = raw["virtual_screen"]
         return response
 
-    @mcp.tool(annotations={"readOnlyHint": True, "destructiveHint": False, "idempotentHint": True, "openWorldHint": True})
+    @_protocol_tool(annotations={"readOnlyHint": True, "destructiveHint": False, "idempotentHint": True, "openWorldHint": True})
     async def computer_get_cursor_position() -> Any:
         """
         Get the current cursor position.
@@ -1315,6 +1512,7 @@ def create_mcp_server() -> FastMCP:
         element_index: int,
         el: Any,
         recorded_element_ref: Optional[Dict[str, Any]],
+        observation_id: Optional[str],
         capture_after: bool,
         include_post_action_delta: bool,
         verify_query: Optional[str],
@@ -1328,6 +1526,7 @@ def create_mcp_server() -> FastMCP:
 
         import asyncio
 
+        dispatch_started = False
         try:
             import win32gui as _wg
             from computer_server.handlers.element_cache import get_element_cache
@@ -1347,14 +1546,50 @@ def create_mcp_server() -> FastMCP:
                 capture_after,
                 include_post_action_delta,
             )
-
-            invoked, invoke_error = await _run_uia_action_with_timeout(
-                pid,
-                window_id,
-                "invoke",
-                lambda: _invoke_via_uia_point(int(screen_pt[0]), int(screen_pt[1])),
+            binding_error = _revalidate_action_binding(
+                observation_id=observation_id,
+                screenshot_id=None,
+                zoom_id=None,
+                pid=pid,
+                window_id=window_id,
             )
+            if binding_error is not None:
+                return binding_error
+
+            invoked, invoke_error, binding_error, dispatch_started = (
+                await _run_uia_action_with_timeout(
+                    pid,
+                    window_id,
+                    "invoke",
+                    lambda: _invoke_via_uia_point(
+                        int(screen_pt[0]),
+                        int(screen_pt[1]),
+                    ),
+                    pre_dispatch_check=lambda: _revalidate_action_binding(
+                        observation_id=observation_id,
+                        screenshot_id=None,
+                        zoom_id=None,
+                        pid=pid,
+                        window_id=window_id,
+                    ),
+                )
+            )
+            if binding_error is not None:
+                return binding_error
             if not invoked:
+                if invoke_error and " skipped;" not in invoke_error:
+                    return {
+                        "success": False,
+                        "code": "ACTION_OUTCOME_UNKNOWN",
+                        "error": (
+                            "UIA Invoke may have been delivered, but its "
+                            f"result is unknown: {invoke_error}"
+                        ),
+                        "suggestion": (
+                            "Reobserve the target before deciding whether "
+                            "another action is needed."
+                        ),
+                    }
                 logger.debug("UIA Invoke unavailable; falling back to pixel click: %s", invoke_error)
                 return None
             result: Dict[str, Any] = {
@@ -1432,6 +1667,13 @@ def create_mcp_server() -> FastMCP:
             ))
             return result
         except Exception as exc:
+            if dispatch_started:
+                return {
+                    "success": False,
+                    "code": "ACTION_OUTCOME_UNKNOWN",
+                    "error": f"UIA Invoke outcome is unknown: {exc}",
+                    "suggestion": "Reobserve the target before retrying.",
+                }
             logger.debug("UIA Invoke failed (falling back to pixel click): %s", exc)
             return None
 
@@ -1468,7 +1710,7 @@ def create_mcp_server() -> FastMCP:
             return {
                 "success": False,
                 "error": f"MSAA element [{element_index}] has no usable bbox for action='expand'",
-                "suggestion": f"Call get_window_state(pid={pid}, window_id={window_id}) to refresh it",
+                "suggestion": "Reobserve the canonical window to refresh the element.",
             }, None, None
         origin = get_element_cache().get_window_origin_optional(pid, window_id)
         if origin is None:
@@ -1476,9 +1718,9 @@ def create_mcp_server() -> FastMCP:
                 "success": False,
                 "error": (
                     f"MSAA element [{element_index}] found for pid={pid}, "
-                    f"window_id={window_id}, but window origin is missing from the cache"
+                    f"window={window_id}, but window origin is missing from the cache"
                 ),
-                "suggestion": f"Call get_window_state(pid={pid}, window_id={window_id}) to refresh it",
+                "suggestion": "Reobserve the canonical window to refresh the element.",
             }, None, None
         target_x = int(origin[0] + bbox[2] - 4)
         target_y = int(origin[1] + ((bbox[1] + bbox[3]) // 2))
@@ -1489,6 +1731,7 @@ def create_mcp_server() -> FastMCP:
         window_id: Optional[int],
         element_index: Optional[int],
         from_zoom: bool,
+        observation_id: Optional[str],
         capture_after: bool,
         include_post_action_delta: bool,
         verify_query: Optional[str],
@@ -1505,14 +1748,15 @@ def create_mcp_server() -> FastMCP:
         if from_zoom:
             return {
                 "success": False,
-                "error": "element_index and from_zoom are mutually exclusive — element_index already returns screen coords",
-                "suggestion": "Remove from_zoom=True or use x/y coordinates with from_zoom instead",
+                "error": "element_index and zoom coordinates are mutually exclusive",
+                "suggestion": "Use either element_index with observation_id or x/y with zoom_id.",
             }, None, None, None
         if pid is None or window_id is None:
             return {
                 "success": False,
-                "error": "pid and window_id are required with element_index",
-                "suggestion": "Provide pid and window_id from a previous get_window_state call",
+                "code": "TARGET_REQUIRED",
+                "error": "window with id and pid is required with element_index",
+                "suggestion": "Pass the canonical window from computer_get_window_state.",
             }, None, None, None
 
         from computer_server.handlers.element_cache import get_element_cache
@@ -1521,11 +1765,11 @@ def create_mcp_server() -> FastMCP:
         if el is None:
             return {
                 "success": False,
-                "error": f"No cached element at index {element_index} for pid={pid}, window_id={window_id}",
-                "suggestion": (
-                    f"The element cache may have expired. Call get_window_state(pid={pid}, "
-                    f"window_id={window_id}) to refresh it, then use the new element_index"
+                "error": (
+                    f"No cached element at index {element_index} for "
+                    f"window={{id:{window_id},pid:{pid}}}"
                 ),
+                "suggestion": "Reobserve the window and use the new element_index.",
             }, None, None, None
 
         recorded_element_ref = _build_element_ref(pid, window_id, element_index)
@@ -1534,8 +1778,7 @@ def create_mcp_server() -> FastMCP:
                 "success": False,
                 "error": f"Element [{element_index}] is disabled (enabled=false) — the window may not be frontmost",
                 "suggestion": (
-                    f"Call computer_manage_window(action='activate', window_id={window_id}) "
-                    "first, then re-snapshot"
+                    "Activate the canonical window, then reobserve it."
                 ),
             }, None, None, recorded_element_ref
 
@@ -1545,6 +1788,7 @@ def create_mcp_server() -> FastMCP:
             element_index,
             el,
             recorded_element_ref,
+            observation_id,
             capture_after,
             include_post_action_delta,
             verify_query,
@@ -1559,7 +1803,7 @@ def create_mcp_server() -> FastMCP:
             return {
                 "success": False,
                 "error": str(exc),
-                "suggestion": f"Call get_window_state(pid={pid}, window_id={window_id}) to refresh the element cache",
+                "suggestion": "Reobserve the window to refresh the element cache.",
             }, None, None, recorded_element_ref
         return None, resolved_x, resolved_y, recorded_element_ref
 
@@ -1577,10 +1821,11 @@ def create_mcp_server() -> FastMCP:
         if x is None or y is None:
             return {
                 "success": False,
-                "error": "x and y are required (or element_index + pid + window_id)",
+                "code": "INVALID_ARGUMENT",
+                "error": "x and y are required unless element_index is provided",
                 "suggestion": (
-                    "Provide (x, y) pixel coordinates or (element_index + pid + window_id) "
-                    "from a previous get_window_state call"
+                    "Provide x/y coordinates, or pass window, observation_id, "
+                    "and element_index from computer_get_window_state."
                 ),
             }, None, None
 
@@ -1595,8 +1840,8 @@ def create_mcp_server() -> FastMCP:
         if coordinate_space == "zoom" and window_id is None:
             return {
                 "success": False,
-                "error": "window_id is required when from_zoom=True",
-                "suggestion": "Provide the window_id used in the prior computer_zoom call",
+                "error": "window is required for zoom coordinates",
+                "suggestion": "Provide the canonical window used in computer_zoom.",
             }, None, None
         try:
             x, y = _resolve_from_zoom(
@@ -1610,43 +1855,6 @@ def create_mcp_server() -> FastMCP:
         except ValueError as exc:
             return {"success": False, "error": str(exc)}, None, None
         return None, x, y
-
-    async def _write_click_debug_image(
-        automation_handler: Any,
-        actual_x: int,
-        actual_y: int,
-        debug_image_out: Optional[str],
-    ) -> None:
-        if not debug_image_out:
-            return
-        try:
-            screenshot_result = await automation_handler.screenshot()
-            if screenshot_result.get("success") and "image" in screenshot_result:
-                from PIL import ImageDraw
-
-                img = screenshot_result["image"]
-                draw = ImageDraw.Draw(img)
-                r = 12
-                draw.ellipse(
-                    [actual_x - r, actual_y - r, actual_x + r, actual_y + r],
-                    outline="red",
-                    width=3,
-                )
-                draw.line(
-                    [actual_x - r - 4, actual_y, actual_x + r + 4, actual_y],
-                    fill="red",
-                    width=2,
-                )
-                draw.line(
-                    [actual_x, actual_y - r - 4, actual_x, actual_y + r + 4],
-                    fill="red",
-                    width=2,
-                )
-                img.save(debug_image_out)
-            else:
-                logger.warning("debug_image_out: screenshot failed for %s", debug_image_out)
-        except Exception as exc:
-            logger.warning("debug_image_out: %s", exc)
 
     async def _force_frontmost_click(
         pid: Optional[int],
@@ -1664,7 +1872,9 @@ def create_mcp_server() -> FastMCP:
         require_verification: bool,
         coordinate_source: str,
         recorded_element_ref: Optional[Dict[str, Any]],
+        observation_id: Optional[str] = None,
         input_screenshot_id: Optional[str] = None,
+        zoom_id: Optional[str] = None,
         capture_backend: Optional[str] = None,
         capture_coordinate_space: Optional[str] = None,
     ) -> Optional[Dict[str, Any]]:
@@ -1700,6 +1910,16 @@ def create_mcp_server() -> FastMCP:
                 capture_after,
                 include_post_action_delta,
             )
+            binding_error = _revalidate_action_binding(
+                observation_id=observation_id,
+                screenshot_id=input_screenshot_id,
+                zoom_id=zoom_id,
+                pid=pid,
+                window_id=window_id,
+            )
+            if binding_error is not None:
+                return binding_error
+            mark_action_dispatch_started()
             _mouse_event_click(actual_x, actual_y, button, count)
             result: Dict[str, Any] = {
                 "success": True,
@@ -1756,10 +1976,10 @@ def create_mcp_server() -> FastMCP:
         except Exception as exc:
             return {
                 "success": False,
-                "code": "force_frontmost_click_failed",
+                "code": "ACTION_OUTCOME_UNKNOWN",
                 "error": f"force_frontmost click failed: {exc}",
                 "target_profile": _build_target_profile_dict(pid, window_id),
-                "suggestion": "Try without force_frontmost=True, or use computer_press_key with a hotkey to bring the window to front first",
+                "suggestion": "Reobserve the target before deciding whether to retry.",
             }
 
     async def _perform_pixel_click(
@@ -1772,6 +1992,7 @@ def create_mcp_server() -> FastMCP:
     ) -> Dict[str, Any]:
         import asyncio
 
+        mark_action_dispatch_started()
         if modifier:
             for mod in modifier:
                 await automation_handler.key_down(mod)
@@ -1792,23 +2013,19 @@ def create_mcp_server() -> FastMCP:
                 for mod in reversed(modifier):
                     await automation_handler.key_up(mod)
 
-    @mcp.tool(annotations={"readOnlyHint": False, "destructiveHint": True, "idempotentHint": False, "openWorldHint": True})
+    @_protocol_tool(annotations={"readOnlyHint": False, "destructiveHint": True, "idempotentHint": False, "openWorldHint": True})
     async def computer_click(
         x: Optional[int] = None,
         y: Optional[int] = None,
         button: str = "left",
         element_index: Optional[int] = None,
-        window_id: Optional[int] = None,
-        pid: Optional[int] = None,
-        window: Optional[Dict[str, Any]] = None,
-        snapshot_id: Optional[str] = None,
+        window: Optional[CanonicalWindow] = None,
+        observation_id: Optional[str] = None,
         screenshot_id: Optional[str] = None,
-        from_zoom: bool = False,
         zoom_id: Optional[str] = None,
         coordinate_space: Optional[str] = None,
         modifier: Optional[List[str]] = None,
         count: int = 1,
-        debug_image_out: Optional[str] = None,
         force_frontmost: bool = False,
         capture_after: bool = False,
         include_post_action_delta: bool = False,
@@ -1821,32 +2038,27 @@ def create_mcp_server() -> FastMCP:
         Addressing modes:
         - coordinate_space='screen': x/y are absolute screen coordinates.
         - coordinate_space='window_resized': x/y are coordinates in the resized
-          get_window_state screenshot for pid/window_id.
+          screenshot identified by screenshot_id.
         - coordinate_space='window_full_res': x/y are full-resolution
           window-local coordinates.
         - coordinate_space='zoom': x/y are zoom-image coordinates.
         - coordinate_space='element': element_index addresses a cached node.
 
-        If coordinate_space is omitted, default inference is preserved:
-        element_index -> element, zoom args -> zoom, pid/window_id ->
-        window_resized, otherwise screen.
+        If coordinate_space is omitted, element_index selects element mode,
+        zoom_id selects zoom mode, and all other coordinates default to screen.
 
         Args:
             x: X coordinate in pixels (ignored when element_index is set)
             y: Y coordinate in pixels (ignored when element_index is set)
             button: Mouse button - 'left', 'right', or 'middle' (default: 'left')
             element_index: Index from get_window_state nodes to click via element cache
-            window_id: Top-level window ID (required with element_index)
-            pid: Top-level process ID (required with element_index)
             window: Canonical window object from list/get_window_state output.
-            snapshot_id: Snapshot id returned by computer_get_window_state.
+            observation_id: Observation id returned by computer_get_window_state.
             screenshot_id: Screenshot id returned by computer_get_window_state for bound coordinate conversion.
-            from_zoom: When True, x/y are zoomed-image coords and get translated back
             zoom_id: Zoom id returned by computer_zoom.
             coordinate_space: Explicit coordinate space for x/y or element_index.
             modifier: Modifier keys held during click (ctrl, alt, shift, win)
             count: Click count - 1 (single), 2 (double), 3 (triple). Default 1.
-            debug_image_out: Optional path to save a debug image with click crosshair.
             force_frontmost: When True, calls SetForegroundWindow before click.
             capture_after: When True, take a fresh screenshot + SOM after the action.
             include_post_action_delta: When True with capture_after, also capture before the action
@@ -1884,15 +2096,26 @@ def create_mcp_server() -> FastMCP:
 
         _suppress_learning_input(3.0)
 
-        pid, window_id, ref_error = _resolve_window_arg(window, pid, window_id)
+        pid, window_id, ref_error = _resolve_window_arg(window, None, None)
         if ref_error is not None:
             return ref_error
-        pid, window_id, ref_error = _resolve_snapshot_ref(snapshot_id, pid, window_id)
+        if element_index is not None and not observation_id:
+            return {
+                "success": False,
+                "code": "OBSERVATION_REQUIRED",
+                "error": "element_index requires the latest observation_id",
+                "suggestion": "Reobserve the target window before using element_index.",
+            }
+        pid, window_id, ref_error = _resolve_observation_ref(
+            observation_id,
+            pid,
+            window_id,
+        )
         if ref_error is not None:
             return ref_error
         pid, window_id, screenshot_ctx, ref_error = _resolve_screenshot_ref(
             screenshot_id,
-            snapshot_id,
+            observation_id,
             pid,
             window_id,
         )
@@ -1903,12 +2126,12 @@ def create_mcp_server() -> FastMCP:
                 return {
                     "success": False,
                     "error": "element_index and zoom_id are mutually exclusive",
-                    "suggestion": "Use either a snapshot element_index or raw x/y coordinates from the zoom image.",
+                    "suggestion": "Use either an observation element_index or x/y coordinates from the zoom image.",
                 }
             pid, window_id, ref_error = _resolve_zoom_ref(zoom_id, pid, window_id)
             if ref_error is not None:
                 return ref_error
-            from_zoom = True
+        from_zoom = bool(zoom_id)
 
         try:
             coordinate_space = resolve_coordinate_space(
@@ -1923,6 +2146,31 @@ def create_mcp_server() -> FastMCP:
             return error_result(e)
         if coordinate_space == "zoom":
             from_zoom = True
+        if coordinate_space in {"element", "window_resized", "window_full_res", "zoom"}:
+            if window is None:
+                return {
+                    "success": False,
+                    "code": "TARGET_REQUIRED",
+                    "error": f"coordinate_space='{coordinate_space}' requires window",
+                }
+        if (
+            coordinate_space in {"window_resized", "window_full_res"}
+            and screenshot_ctx is None
+        ):
+            return {
+                "success": False,
+                "code": "OBSERVATION_REQUIRED",
+                "error": (
+                    f"coordinate_space='{coordinate_space}' requires the latest screenshot_id"
+                ),
+                "suggestion": "Reobserve the target window and bind the action to its screenshot_id.",
+            }
+        if coordinate_space == "zoom" and not zoom_id:
+            return {
+                "success": False,
+                "code": "OBSERVATION_REQUIRED",
+                "error": "coordinate_space='zoom' requires zoom_id",
+            }
 
         explicit_window_activated = False
         if window is not None:
@@ -1940,6 +2188,7 @@ def create_mcp_server() -> FastMCP:
             window_id,
             element_index,
             from_zoom,
+            observation_id,
             capture_after,
             include_post_action_delta,
             verify_query,
@@ -1979,8 +2228,6 @@ def create_mcp_server() -> FastMCP:
 
         automation_handler = _get_handlers().automation
 
-        await _write_click_debug_image(automation_handler, actual_x, actual_y, debug_image_out)
-
         if force_frontmost:
             result = await _force_frontmost_click(
                 pid,
@@ -1998,7 +2245,9 @@ def create_mcp_server() -> FastMCP:
                 require_verification,
                 "element" if element_index is not None else coordinate_space,
                 recorded_element_ref,
+                observation_id=observation_id,
                 input_screenshot_id=screenshot_ctx.screenshot_id if screenshot_ctx is not None else None,
+                zoom_id=zoom_id,
                 capture_backend=(
                     screenshot_ctx.capture_metadata.get("capture_backend")
                     if screenshot_ctx is not None
@@ -2029,6 +2278,15 @@ def create_mcp_server() -> FastMCP:
             capture_after,
             include_post_action_delta,
         )
+        binding_error = _revalidate_action_binding(
+            observation_id=observation_id,
+            screenshot_id=screenshot_id,
+            zoom_id=zoom_id,
+            pid=pid,
+            window_id=window_id,
+        )
+        if binding_error is not None:
+            return binding_error
         result = await _perform_pixel_click(
             automation_handler,
             actual_x,
@@ -2082,12 +2340,14 @@ def create_mcp_server() -> FastMCP:
         wr = _build_window_ref(pid, window_id, actual_x, actual_y)
         await _recording_hook(_recorded_turn(
             "computer_click",
-            {
-                "x": x,
-                "y": y,
-                "button": button,
-                "count": count,
-                "screenshot_id": screenshot_id,
+                {
+                    "x": x,
+                    "y": y,
+                    "button": button,
+                    "count": count,
+                    "window": _build_public_window(pid, window_id),
+                    "observation_id": observation_id,
+                    "screenshot_id": screenshot_id,
                 "verify_query": verify_query,
                 "require_verification": require_verification,
             },
@@ -2099,14 +2359,12 @@ def create_mcp_server() -> FastMCP:
 
         return result
 
-    @mcp.tool(annotations={"readOnlyHint": False, "destructiveHint": True, "idempotentHint": False, "openWorldHint": True})
+    @_protocol_tool(annotations={"readOnlyHint": False, "destructiveHint": True, "idempotentHint": False, "openWorldHint": True})
     async def computer_perform_secondary_action(
         element_index: int,
         action: str,
-        window_id: Optional[int] = None,
-        pid: Optional[int] = None,
-        window: Optional[Dict[str, Any]] = None,
-        snapshot_id: Optional[str] = None,
+        window: Optional[CanonicalWindow] = None,
+        observation_id: Optional[str] = None,
         capture_after: bool = False,
         include_post_action_delta: bool = False,
         verify_query: Optional[str] = None,
@@ -2123,10 +2381,8 @@ def create_mcp_server() -> FastMCP:
         Args:
             element_index: Cached node index from computer_get_window_state.
             action: Secondary action name. Currently only 'expand'.
-            window_id: Top-level window ID associated with the cached node.
-            pid: Top-level process ID associated with the cached node.
             window: Canonical window object from list/get_window_state output.
-            snapshot_id: Snapshot id used to reject stale node observations.
+            observation_id: Observation id used to reject stale node observations.
             capture_after: Capture a fresh window state after the action.
             include_post_action_delta: When True with capture_after, also capture before the action
                 and return a lightweight before/after delta.
@@ -2163,24 +2419,44 @@ def create_mcp_server() -> FastMCP:
 
         _suppress_learning_input(3.0)
 
-        pid, window_id, ref_error = _resolve_window_arg(window, pid, window_id)
+        if window is None:
+            return {
+                "success": False,
+                "code": "TARGET_REQUIRED",
+                "error": "window is required",
+            }
+        if not observation_id:
+            return {
+                "success": False,
+                "code": "OBSERVATION_REQUIRED",
+                "error": "observation_id is required",
+            }
+        pid, window_id, ref_error = _resolve_window_arg(window, None, None)
         if ref_error is not None:
             return ref_error
-        pid, window_id, ref_error = _resolve_snapshot_ref(snapshot_id, pid, window_id)
+        pid, window_id, ref_error = _resolve_observation_ref(
+            observation_id,
+            pid,
+            window_id,
+        )
         if ref_error is not None:
             return ref_error
         if pid is None or window_id is None:
             return {
                 "success": False,
-                "error": "pid and window_id are required with element_index",
-                "suggestion": "Pass the window and snapshot_id from computer_get_window_state",
+                "code": "TARGET_REQUIRED",
+                "error": "window with id and pid is required with element_index",
+                "suggestion": "Pass window and observation_id from computer_get_window_state",
             }
 
         element = get_element_cache().get_element(pid, window_id, element_index)
         if element is None:
             return {
                 "success": False,
-                "error": f"No cached element at index {element_index} for pid={pid}, window_id={window_id}",
+                "error": (
+                    f"No cached element at index {element_index} for "
+                    f"window={{id:{window_id},pid:{pid}}}"
+                ),
                 "suggestion": "Call computer_get_window_state again and use the new element_index",
             }
         if action not in (element.actions or []):
@@ -2226,6 +2502,15 @@ def create_mcp_server() -> FastMCP:
             capture_after,
             include_post_action_delta,
         )
+        binding_error = _revalidate_action_binding(
+            observation_id=observation_id,
+            screenshot_id=None,
+            zoom_id=None,
+            pid=pid,
+            window_id=window_id,
+        )
+        if binding_error is not None:
+            return binding_error
         result = await _perform_pixel_click(
             _get_handlers().automation,
             actual_x,
@@ -2267,8 +2552,8 @@ def create_mcp_server() -> FastMCP:
             {
                 "element_index": element_index,
                 "action": action,
-                "pid": pid,
-                "window_id": window_id,
+                "window": _build_public_window(pid, window_id),
+                "observation_id": observation_id,
                 "verify_query": verify_query,
                 "require_verification": require_verification,
             },
@@ -2279,7 +2564,7 @@ def create_mcp_server() -> FastMCP:
         ))
         return result
 
-    @mcp.tool(annotations={"readOnlyHint": False, "destructiveHint": True, "idempotentHint": False, "openWorldHint": True})
+    @_protocol_tool(annotations={"readOnlyHint": False, "destructiveHint": True, "idempotentHint": False, "openWorldHint": True})
     async def computer_mouse(
         action: str,
         x: Optional[int] = None,
@@ -2324,11 +2609,13 @@ def create_mcp_server() -> FastMCP:
             await _animate_cursor_to(actual_x, actual_y)
 
         if normalized_action == "move":
+            mark_action_dispatch_started()
             result = await automation_handler.move_cursor(actual_x, actual_y)
         elif normalized_action == "down":
             already_held = button in context.held_mouse_buttons
             suppression_active = False if already_held else _begin_learning_input_suppression()
             try:
+                mark_action_dispatch_started()
                 result = await automation_handler.mouse_down(actual_x, actual_y, button=button)
             except Exception:
                 if suppression_active:
@@ -2341,6 +2628,7 @@ def create_mcp_server() -> FastMCP:
         else:
             _suppress_learning_input(1.0)
             was_held = button in context.held_mouse_buttons
+            mark_action_dispatch_started()
             result = await automation_handler.mouse_up(actual_x, actual_y, button=button)
             if result.get("success") is not False:
                 context.held_mouse_buttons.discard(button)
@@ -2366,7 +2654,7 @@ def create_mcp_server() -> FastMCP:
         ))
         return result
 
-    @mcp.tool(annotations={"readOnlyHint": False, "destructiveHint": True, "idempotentHint": False, "openWorldHint": True})
+    @_protocol_tool(annotations={"readOnlyHint": False, "destructiveHint": True, "idempotentHint": False, "openWorldHint": True})
     async def computer_drag(
         start_x: Optional[int] = None,
         start_y: Optional[int] = None,
@@ -2375,12 +2663,9 @@ def create_mcp_server() -> FastMCP:
         button: str = "left",
         duration: float = 0.5,
         element_index: Optional[int] = None,
-        window_id: Optional[int] = None,
-        pid: Optional[int] = None,
-        window: Optional[Dict[str, Any]] = None,
-        snapshot_id: Optional[str] = None,
+        window: Optional[CanonicalWindow] = None,
+        observation_id: Optional[str] = None,
         screenshot_id: Optional[str] = None,
-        from_zoom: bool = False,
         zoom_id: Optional[str] = None,
         coordinate_space: Optional[str] = None,
         modifier: Optional[List[str]] = None,
@@ -2396,12 +2681,9 @@ def create_mcp_server() -> FastMCP:
             button: Mouse button to use (default: 'left')
             duration: Duration of the drag in seconds (default: 0.5)
             element_index: Index from get_window_state to use as drag source
-            window_id: Top-level window ID (required with element_index or from_zoom)
-            pid: Top-level process ID (required with element_index)
             window: Canonical window object from list/get_window_state output.
-            snapshot_id: Snapshot id returned by computer_get_window_state.
+            observation_id: Observation id returned by computer_get_window_state.
             screenshot_id: Screenshot id returned by computer_get_window_state for bound coordinate conversion.
-            from_zoom: When True, coords are in zoomed-image space
             zoom_id: Zoom id returned by computer_zoom.
             coordinate_space: Explicit coordinate space for start/end coords.
             modifier: Modifier keys held during drag (cmd, shift, option, ctrl)
@@ -2428,15 +2710,25 @@ def create_mcp_server() -> FastMCP:
 
         _suppress_learning_input(max(1.0, duration + 0.75))
 
-        pid, window_id, ref_error = _resolve_window_arg(window, pid, window_id)
+        pid, window_id, ref_error = _resolve_window_arg(window, None, None)
         if ref_error is not None:
             return ref_error
-        pid, window_id, ref_error = _resolve_snapshot_ref(snapshot_id, pid, window_id)
+        if element_index is not None and not observation_id:
+            return {
+                "success": False,
+                "code": "OBSERVATION_REQUIRED",
+                "error": "element_index requires the latest observation_id",
+            }
+        pid, window_id, ref_error = _resolve_observation_ref(
+            observation_id,
+            pid,
+            window_id,
+        )
         if ref_error is not None:
             return ref_error
         pid, window_id, screenshot_ctx, ref_error = _resolve_screenshot_ref(
             screenshot_id,
-            snapshot_id,
+            observation_id,
             pid,
             window_id,
         )
@@ -2447,12 +2739,15 @@ def create_mcp_server() -> FastMCP:
                 return {
                     "success": False,
                     "error": "element_index and zoom_id are mutually exclusive",
-                    "suggestion": "Use either a snapshot element_index or raw coordinates from the zoom image.",
+                    "suggestion": (
+                        "Use either an observation element_index or coordinates "
+                        "from the zoom image."
+                    ),
                 }
             pid, window_id, ref_error = _resolve_zoom_ref(zoom_id, pid, window_id)
             if ref_error is not None:
                 return ref_error
-            from_zoom = True
+        from_zoom = bool(zoom_id)
 
         try:
             coordinate_space = resolve_coordinate_space(
@@ -2467,6 +2762,30 @@ def create_mcp_server() -> FastMCP:
             return error_result(e)
         if coordinate_space == "zoom":
             from_zoom = True
+        if coordinate_space in {"element", "window_resized", "window_full_res", "zoom"}:
+            if window is None:
+                return {
+                    "success": False,
+                    "code": "TARGET_REQUIRED",
+                    "error": f"coordinate_space='{coordinate_space}' requires window",
+                }
+        if (
+            coordinate_space in {"window_resized", "window_full_res"}
+            and screenshot_ctx is None
+        ):
+            return {
+                "success": False,
+                "code": "OBSERVATION_REQUIRED",
+                "error": (
+                    f"coordinate_space='{coordinate_space}' requires the latest screenshot_id"
+                ),
+            }
+        if coordinate_space == "zoom" and not zoom_id:
+            return {
+                "success": False,
+                "code": "OBSERVATION_REQUIRED",
+                "error": "coordinate_space='zoom' requires zoom_id",
+            }
 
         explicit_window_activated = False
         if window is not None:
@@ -2483,14 +2802,30 @@ def create_mcp_server() -> FastMCP:
 
         if element_index is not None:
             if from_zoom:
-                return {"success": False, "error": "element_index and from_zoom are mutually exclusive — element_index already returns screen coords", "suggestion": "Remove from_zoom=True or use raw coordinates with from_zoom instead"}
+                return {
+                    "success": False,
+                    "error": "element_index and zoom_id are mutually exclusive",
+                    "suggestion": (
+                        "Use either an observation element_index or coordinates "
+                        "from the zoom image."
+                    ),
+                }
             if pid is None or window_id is None:
-                return {"success": False, "error": "pid and window_id are required with element_index", "suggestion": "Provide pid and window_id from a previous get_window_state call"}
+                return {
+                    "success": False,
+                    "code": "TARGET_REQUIRED",
+                    "error": "window with id and pid is required with element_index",
+                    "suggestion": "Pass the canonical observed window.",
+                }
             recorded_element_ref = _build_element_ref(pid, window_id, element_index)
             try:
                 start_x, start_y = _resolve_element_center(pid, window_id, element_index)
             except ValueError as e:
-                return {"success": False, "error": str(e), "suggestion": f"Call get_window_state(pid={pid}, window_id={window_id}) to refresh the element cache"}
+                return {
+                    "success": False,
+                    "error": str(e),
+                    "suggestion": "Reobserve the window to refresh the element cache.",
+                }
 
         if start_x is None or start_y is None or end_x is None or end_y is None:
             return {"success": False, "error": "start_x, start_y, end_x, end_y are required", "suggestion": "Provide all four coordinates: start_x, start_y (from cursor position or element), and end_x, end_y (target position)"}
@@ -2537,7 +2872,12 @@ def create_mcp_server() -> FastMCP:
                 return {"success": False, "error": str(e)}
 
         if coordinate_space == "zoom" and window_id is None:
-            return {"success": False, "error": "window_id is required when from_zoom=True", "suggestion": "Provide the window_id used in the prior computer_zoom call"}
+            return {
+                "success": False,
+                "code": "TARGET_REQUIRED",
+                "error": "window is required for zoom coordinates",
+                "suggestion": "Pass the canonical window used in computer_zoom.",
+            }
         try:
             start_x, start_y = _resolve_from_zoom(
                 start_x,
@@ -2562,6 +2902,16 @@ def create_mcp_server() -> FastMCP:
         actual_end_x, actual_end_y = _scale_to_actual(end_x, end_y)
         await _animate_cursor_to(actual_start_x, actual_start_y)
         automation_handler = _get_handlers().automation
+        binding_error = _revalidate_action_binding(
+            observation_id=observation_id,
+            screenshot_id=screenshot_id,
+            zoom_id=zoom_id,
+            pid=pid,
+            window_id=window_id,
+        )
+        if binding_error is not None:
+            return binding_error
+        mark_action_dispatch_started()
         await automation_handler.move_cursor(actual_start_x, actual_start_y)
 
         # Step the drag manually so the overlay arrow tracks the path.
@@ -2571,22 +2921,57 @@ def create_mcp_server() -> FastMCP:
 
         _agent_cursor = overlay._agent_cursor
 
-        await automation_handler.mouse_down(actual_start_x, actual_start_y, button=button)
-        steps = max(1, int(duration / 0.02))
-        for i in range(1, steps + 1):
-            t = i / steps
-            ix = int(actual_start_x + (actual_end_x - actual_start_x) * t)
-            iy = int(actual_start_y + (actual_end_y - actual_start_y) * t)
-            automation_handler.mouse.position = (ix, iy)
-            # Track overlay along the drag path and keep it visible
-            if (
-                _agent_cursor is not None
-                and not overlay.is_animation_suppressed()
-            ):
-                _agent_cursor.set_position_visible(ix, iy)
-            await asyncio.sleep(duration / steps)
-        automation_handler.mouse.position = (actual_end_x, actual_end_y)
-        await automation_handler.mouse_up(actual_end_x, actual_end_y, button=button)
+        down_result = await automation_handler.mouse_down(
+            actual_start_x,
+            actual_start_y,
+            button=button,
+        )
+        if down_result.get("success") is False:
+            return down_result
+
+        context.held_mouse_buttons.add(button)
+        release_result: Dict[str, Any] = {"success": True}
+        release_x: Optional[int] = None
+        release_y: Optional[int] = None
+        try:
+            steps = max(1, int(duration / 0.02))
+            for i in range(1, steps + 1):
+                t = i / steps
+                ix = int(actual_start_x + (actual_end_x - actual_start_x) * t)
+                iy = int(actual_start_y + (actual_end_y - actual_start_y) * t)
+                automation_handler.mouse.position = (ix, iy)
+                # Track overlay along the drag path and keep it visible
+                if (
+                    _agent_cursor is not None
+                    and not overlay.is_animation_suppressed()
+                ):
+                    _agent_cursor.set_position_visible(ix, iy)
+                await asyncio.sleep(duration / steps)
+            automation_handler.mouse.position = (actual_end_x, actual_end_y)
+            release_x = actual_end_x
+            release_y = actual_end_y
+        finally:
+            release_result = await automation_handler.mouse_up(
+                release_x,
+                release_y,
+                button=button,
+            )
+            if release_result.get("success") is not False:
+                context.held_mouse_buttons.discard(button)
+
+        if release_result.get("success") is False:
+            return {
+                "success": False,
+                "code": "ACTION_OUTCOME_UNKNOWN",
+                "error": (
+                    "The drag was delivered, but releasing the mouse button "
+                    f"failed: {release_result.get('error', 'unknown error')}"
+                ),
+                "suggestion": (
+                    "Call computer_release_all_inputs, then reobserve the "
+                    "target before deciding whether to retry."
+                ),
+            }
         if overlay.is_animation_suppressed():
             overlay.set_position_hidden(actual_end_x, actual_end_y)
         result = {"success": True}
@@ -2621,6 +3006,8 @@ def create_mcp_server() -> FastMCP:
             {
                 "start_x": start_x, "start_y": start_y,
                 "end_x": end_x, "end_y": end_y, "button": button,
+                "window": _build_public_window(pid, window_id),
+                "observation_id": observation_id,
                 "screenshot_id": screenshot_id,
             },
             result,
@@ -2630,7 +3017,7 @@ def create_mcp_server() -> FastMCP:
         ))
         return result
 
-    @mcp.tool(annotations={"readOnlyHint": False, "destructiveHint": True, "idempotentHint": False, "openWorldHint": True})
+    @_protocol_tool(annotations={"readOnlyHint": False, "destructiveHint": True, "idempotentHint": False, "openWorldHint": True})
     async def computer_scroll(
         x: Optional[int] = None,
         y: Optional[int] = None,
@@ -2641,12 +3028,9 @@ def create_mcp_server() -> FastMCP:
         amount: int = 3,
         smooth: bool = True,
         element_index: Optional[int] = None,
-        window_id: Optional[int] = None,
-        pid: Optional[int] = None,
-        window: Optional[Dict[str, Any]] = None,
-        snapshot_id: Optional[str] = None,
+        window: Optional[CanonicalWindow] = None,
+        observation_id: Optional[str] = None,
         screenshot_id: Optional[str] = None,
-        from_zoom: bool = False,
         zoom_id: Optional[str] = None,
         coordinate_space: Optional[str] = None,
         capture_after: bool = False,
@@ -2666,12 +3050,9 @@ def create_mcp_server() -> FastMCP:
             smooth: When True, emit scroll as many small wheel ticks with 15ms spacing
                 for human-like smooth scrolling (default: True).
             element_index: Index from get_window_state to scroll on
-            window_id: Top-level window ID (required with element_index)
-            pid: Top-level process ID (required with element_index)
             window: Canonical window object from list/get_window_state output.
-            snapshot_id: Snapshot id returned by computer_get_window_state.
+            observation_id: Observation id returned by computer_get_window_state.
             screenshot_id: Screenshot id returned by computer_get_window_state for bound coordinate conversion.
-            from_zoom: When True, x/y are zoomed-image coords and get translated back
             zoom_id: Zoom id returned by computer_zoom.
             coordinate_space: Explicit coordinate space for x/y or element_index.
             capture_after: When True, take a fresh screenshot + nodes after the action.
@@ -2705,15 +3086,25 @@ def create_mcp_server() -> FastMCP:
 
         _suppress_learning_input(max(1.0, abs(scroll_x) * 0.02, abs(scroll_y) * 0.02, amount * 0.02))
 
-        pid, window_id, ref_error = _resolve_window_arg(window, pid, window_id)
+        pid, window_id, ref_error = _resolve_window_arg(window, None, None)
         if ref_error is not None:
             return ref_error
-        pid, window_id, ref_error = _resolve_snapshot_ref(snapshot_id, pid, window_id)
+        if element_index is not None and not observation_id:
+            return {
+                "success": False,
+                "code": "OBSERVATION_REQUIRED",
+                "error": "element_index requires the latest observation_id",
+            }
+        pid, window_id, ref_error = _resolve_observation_ref(
+            observation_id,
+            pid,
+            window_id,
+        )
         if ref_error is not None:
             return ref_error
         pid, window_id, screenshot_ctx, ref_error = _resolve_screenshot_ref(
             screenshot_id,
-            snapshot_id,
+            observation_id,
             pid,
             window_id,
         )
@@ -2724,12 +3115,15 @@ def create_mcp_server() -> FastMCP:
                 return {
                     "success": False,
                     "error": "element_index and zoom_id are mutually exclusive",
-                    "suggestion": "Use either a snapshot element_index or raw coordinates from the zoom image.",
+                    "suggestion": (
+                        "Use either an observation element_index or coordinates "
+                        "from the zoom image."
+                    ),
                 }
             pid, window_id, ref_error = _resolve_zoom_ref(zoom_id, pid, window_id)
             if ref_error is not None:
                 return ref_error
-            from_zoom = True
+        from_zoom = bool(zoom_id)
 
         try:
             coordinate_space = resolve_coordinate_space(
@@ -2744,6 +3138,30 @@ def create_mcp_server() -> FastMCP:
             return error_result(e)
         if coordinate_space == "zoom":
             from_zoom = True
+        if coordinate_space in {"element", "window_resized", "window_full_res", "zoom"}:
+            if window is None:
+                return {
+                    "success": False,
+                    "code": "TARGET_REQUIRED",
+                    "error": f"coordinate_space='{coordinate_space}' requires window",
+                }
+        if (
+            coordinate_space in {"window_resized", "window_full_res"}
+            and screenshot_ctx is None
+        ):
+            return {
+                "success": False,
+                "code": "OBSERVATION_REQUIRED",
+                "error": (
+                    f"coordinate_space='{coordinate_space}' requires the latest screenshot_id"
+                ),
+            }
+        if coordinate_space == "zoom" and not zoom_id:
+            return {
+                "success": False,
+                "code": "OBSERVATION_REQUIRED",
+                "error": "coordinate_space='zoom' requires zoom_id",
+            }
 
         explicit_window_activated = False
         if window is not None:
@@ -2770,12 +3188,21 @@ def create_mcp_server() -> FastMCP:
 
         if element_index is not None:
             if pid is None or window_id is None:
-                return {"success": False, "error": "pid and window_id are required with element_index", "suggestion": "Provide pid and window_id from a previous get_window_state call"}
+                return {
+                    "success": False,
+                    "code": "TARGET_REQUIRED",
+                    "error": "window with id and pid is required with element_index",
+                    "suggestion": "Pass the canonical observed window.",
+                }
             recorded_element_ref = _build_element_ref(pid, window_id, element_index)
             try:
                 x, y = _resolve_element_center(pid, window_id, element_index)
             except ValueError as e:
-                return {"success": False, "error": str(e), "suggestion": f"Call get_window_state(pid={pid}, window_id={window_id}) to refresh the element cache"}
+                return {
+                    "success": False,
+                    "error": str(e),
+                    "suggestion": "Reobserve the window to refresh the element cache.",
+                }
 
         # Convert explicit/default non-screen spaces to absolute screen coords.
         # Scroll only uses (x, y) when both are provided; partial coords go
@@ -2816,7 +3243,12 @@ def create_mcp_server() -> FastMCP:
             and coordinate_space == "zoom"
         ):
             if window_id is None:
-                return {"success": False, "error": "window_id is required when from_zoom=True", "suggestion": "Provide the window_id used in the prior computer_zoom call"}
+                return {
+                    "success": False,
+                    "code": "TARGET_REQUIRED",
+                    "error": "window is required for zoom coordinates",
+                    "suggestion": "Pass the canonical window used in computer_zoom.",
+                }
             try:
                 x, y = _resolve_from_zoom(
                     x,
@@ -2836,6 +3268,16 @@ def create_mcp_server() -> FastMCP:
         if x is not None and y is not None:
             scroll_ax, scroll_ay = _scale_to_actual(x, y)
             await _animate_cursor_to(scroll_ax, scroll_ay)
+            binding_error = _revalidate_action_binding(
+                observation_id=observation_id,
+                screenshot_id=screenshot_id,
+                zoom_id=zoom_id,
+                pid=pid,
+                window_id=window_id,
+            )
+            if binding_error is not None:
+                return binding_error
+            mark_action_dispatch_started()
             await automation_handler.move_cursor(scroll_ax, scroll_ay)
 
         pre_action_capture = await _capture_before_action(
@@ -2844,6 +3286,16 @@ def create_mcp_server() -> FastMCP:
             capture_after,
             include_post_action_delta,
         )
+        binding_error = _revalidate_action_binding(
+            observation_id=observation_id,
+            screenshot_id=screenshot_id,
+            zoom_id=zoom_id,
+            pid=pid,
+            window_id=window_id,
+        )
+        if binding_error is not None:
+            return binding_error
+        mark_action_dispatch_started()
         if smooth and scroll_y != 0:
             # Emit many small individual wheel ticks for smooth human-like scrolling
             direction = 1 if scroll_y > 0 else -1
@@ -2905,6 +3357,8 @@ def create_mcp_server() -> FastMCP:
                     "y": y,
                     "scroll_x": scroll_x,
                     "scroll_y": scroll_y,
+                    "window": _build_public_window(pid, window_id),
+                    "observation_id": observation_id,
                     "screenshot_id": screenshot_id,
                 },
                 result,
@@ -2920,6 +3374,8 @@ def create_mcp_server() -> FastMCP:
                     "y": y,
                     "scroll_x": scroll_x,
                     "scroll_y": scroll_y,
+                    "window": _build_public_window(pid, window_id),
+                    "observation_id": observation_id,
                     "screenshot_id": screenshot_id,
                 },
                 result,
@@ -2932,14 +3388,12 @@ def create_mcp_server() -> FastMCP:
     # KEYBOARD ACTIONS
     # ============================================================
 
-    @mcp.tool(annotations={"readOnlyHint": False, "destructiveHint": True, "idempotentHint": False, "openWorldHint": True})
+    @_protocol_tool(annotations={"readOnlyHint": False, "destructiveHint": True, "idempotentHint": False, "openWorldHint": True})
     async def computer_type(
         text: str,
         capture_after: bool = False,
         include_post_action_delta: bool = False,
-        pid: Optional[int] = None,
-        window_id: Optional[int] = None,
-        window: Optional[Dict[str, Any]] = None,
+        window: Optional[CanonicalWindow] = None,
         sensitive: bool = False,
     ) -> Any:
         """
@@ -2954,8 +3408,6 @@ def create_mcp_server() -> FastMCP:
             capture_after: When True, take a fresh screenshot + nodes after the action.
             include_post_action_delta: When True with capture_after, also capture before the action
                 and return a lightweight before/after delta.
-            pid: Top-level process ID for the target/capture_after look-up.
-            window_id: Top-level window ID to activate before typing.
             window: Canonical window object from list/get_window_state output.
             sensitive: When True, redact text in recording metadata.
         """
@@ -2971,8 +3423,8 @@ def create_mcp_server() -> FastMCP:
 
         pid, window_id, ref_error = await _activate_input_window(
             window,
-            pid,
-            window_id,
+            None,
+            None,
         )
         if ref_error is not None:
             return ref_error
@@ -2986,6 +3438,7 @@ def create_mcp_server() -> FastMCP:
             capture_after,
             include_post_action_delta,
         )
+        mark_action_dispatch_started()
         result = await automation_handler.type_text(text)
         _annotate_action_path(
             result,
@@ -3005,9 +3458,7 @@ def create_mcp_server() -> FastMCP:
             "sensitive": sensitive,
         }
         if window_id is not None:
-            record_args["window_id"] = window_id
-        if pid is not None:
-            record_args["pid"] = pid
+            record_args["window"] = _build_public_window(pid, window_id)
         window_ref = (
             _build_window_ref(pid, window_id, 0, 0)
             if window_id is not None
@@ -3032,14 +3483,12 @@ def create_mcp_server() -> FastMCP:
 
         return result
 
-    @mcp.tool(annotations={"readOnlyHint": False, "destructiveHint": True, "idempotentHint": False, "openWorldHint": True})
+    @_protocol_tool(annotations={"readOnlyHint": False, "destructiveHint": True, "idempotentHint": False, "openWorldHint": True})
     async def computer_press_key(
         key: Optional[str] = None,
         keys: Optional[List[str]] = None,
         action: str = "press",
-        pid: Optional[int] = None,
-        window_id: Optional[int] = None,
-        window: Optional[Dict[str, Any]] = None,
+        window: Optional[CanonicalWindow] = None,
     ) -> Any:
         """
         Press, hold, or release a key. Also supports key combinations.
@@ -3048,8 +3497,6 @@ def create_mcp_server() -> FastMCP:
             key: Key or '+'-separated key combination, e.g. 'Return' or 'Control_L+s'.
             keys: Optional list form for a key combination, e.g. ['ctrl', 's'].
             action: press|down|up. Key combinations only support action=press.
-            pid: Top-level process ID of the target window.
-            window_id: Top-level window ID to activate before key input.
             window: Canonical window object from list/get_window_state output.
         """
         from computer_server.services.validation_service import error_result, validate_choice
@@ -3081,8 +3528,8 @@ def create_mcp_server() -> FastMCP:
 
         pid, window_id, ref_error = await _activate_input_window(
             window,
-            pid,
-            window_id,
+            None,
+            None,
             activate=normalized_action != "up",
         )
         if ref_error is not None:
@@ -3091,14 +3538,17 @@ def create_mcp_server() -> FastMCP:
         automation_handler = _get_handlers().automation
         if normalized_keys is not None:
             _suppress_learning_input(1.0)
+            mark_action_dispatch_started()
             result = await automation_handler.hotkey(normalized_keys)
         elif normalized_action == "press":
             _suppress_learning_input(1.0)
+            mark_action_dispatch_started()
             result = await automation_handler.press_key(normalized_key)
         elif normalized_action == "down":
             already_held = normalized_key in context.held_keys
             suppression_active = False if already_held else _begin_learning_input_suppression()
             try:
+                mark_action_dispatch_started()
                 result = await automation_handler.key_down(normalized_key)
             except Exception:
                 if suppression_active:
@@ -3111,6 +3561,7 @@ def create_mcp_server() -> FastMCP:
         else:
             _suppress_learning_input(1.0)
             was_held = normalized_key in context.held_keys
+            mark_action_dispatch_started()
             result = await automation_handler.key_up(normalized_key)
             if result.get("success") is not False:
                 context.held_keys.discard(normalized_key)
@@ -3146,9 +3597,7 @@ def create_mcp_server() -> FastMCP:
         if normalized_keys is not None:
             record_args["keys"] = normalized_keys
         if window_id is not None:
-            record_args["window_id"] = window_id
-        if pid is not None:
-            record_args["pid"] = pid
+            record_args["window"] = _build_public_window(pid, window_id)
         window_ref = (
             _build_window_ref(pid, window_id, 0, 0)
             if window_id is not None
@@ -3162,7 +3611,7 @@ def create_mcp_server() -> FastMCP:
         ))
         return result
 
-    @mcp.tool(annotations={"readOnlyHint": False, "destructiveHint": True, "idempotentHint": True, "openWorldHint": True})
+    @_protocol_tool(annotations={"readOnlyHint": False, "destructiveHint": True, "idempotentHint": True, "openWorldHint": True})
     async def computer_release_all_inputs() -> Any:
         """
         Release all keys and mouse buttons currently tracked as held down.
@@ -3172,6 +3621,7 @@ def create_mcp_server() -> FastMCP:
         return input state to neutral.
         """
         _suppress_learning_input(1.0)
+        mark_action_dispatch_started()
         result = await _release_tracked_inputs()
         _clear_learning_input_suppression()
         return result
@@ -3180,15 +3630,13 @@ def create_mcp_server() -> FastMCP:
     # ELEMENT VALUE ACTIONS
     # ============================================================
 
-    @mcp.tool(annotations={"readOnlyHint": False, "destructiveHint": True, "idempotentHint": False, "openWorldHint": True})
+    @_protocol_tool(annotations={"readOnlyHint": False, "destructiveHint": True, "idempotentHint": False, "openWorldHint": True})
     async def computer_set_value(
         element_index: int,
         value: str,
-        window_id: Optional[int] = None,
-        pid: Optional[int] = None,
-        window: Optional[Dict[str, Any]] = None,
+        window: Optional[CanonicalWindow] = None,
+        observation_id: Optional[str] = None,
         sensitive: bool = False,
-        snapshot_id: Optional[str] = None,
     ) -> Any:
         """
         Set a value on a UI element (text field, slider, checkbox, select).
@@ -3204,11 +3652,9 @@ def create_mcp_server() -> FastMCP:
         Args:
             element_index: Index from get_window_state nodes.
             value: New value to set.
-            window_id: Top-level window ID.
-            pid: Top-level process ID.
             window: Canonical window object from list/get_window_state output.
+            observation_id: Latest observation id for the cached element.
             sensitive: When True, redact value in result and recording metadata.
-            snapshot_id: Snapshot id returned by computer_get_window_state.
 
         Returns:
             Dictionary with success status.
@@ -3217,24 +3663,44 @@ def create_mcp_server() -> FastMCP:
 
         from computer_server.handlers.element_cache import get_element_cache
 
-        pid, window_id, ref_error = _resolve_window_arg(window, pid, window_id)
+        if window is None:
+            return {
+                "success": False,
+                "code": "TARGET_REQUIRED",
+                "error": "window is required",
+            }
+        if not observation_id:
+            return {
+                "success": False,
+                "code": "OBSERVATION_REQUIRED",
+                "error": "observation_id is required",
+            }
+        pid, window_id, ref_error = _resolve_window_arg(window, None, None)
         if ref_error is not None:
             return ref_error
-        pid, window_id, ref_error = _resolve_snapshot_ref(snapshot_id, pid, window_id)
+        pid, window_id, ref_error = _resolve_observation_ref(
+            observation_id,
+            pid,
+            window_id,
+        )
         if ref_error is not None:
             return ref_error
         if pid is None or window_id is None:
             return {
                 "success": False,
-                "error": "pid and window_id are required, or provide snapshot_id",
+                "code": "TARGET_REQUIRED",
+                "error": "window with id and pid is required",
             }
 
         el = get_element_cache().get_element(pid, window_id, element_index)
         if el is None:
             return {
                 "success": False,
-                "error": f"No cached element at index {element_index} for pid={pid}, window_id={window_id}",
-                "suggestion": f"The element cache may have expired. Call get_window_state(pid={pid}, window_id={window_id}) to refresh it",
+                "error": (
+                    f"No cached element at index {element_index} for "
+                    f"window={{id:{window_id},pid:{pid}}}"
+                ),
+                "suggestion": "Reobserve the window and use its new element_index.",
             }
         recorded_element_ref = _build_element_ref(pid, window_id, element_index)
 
@@ -3245,13 +3711,10 @@ def create_mcp_server() -> FastMCP:
                 "success": False,
                 "error": (
                     f"Element at index {element_index} found for pid={pid}, "
-                    f"window_id={window_id}, but window origin is missing from "
+                    f"window={window_id}, but window origin is missing from "
                     f"the cache"
                 ),
-                "suggestion": (
-                    f"Call get_window_state(pid={pid}, window_id={window_id}) "
-                    f"to refresh the element cache"
-                ),
+                "suggestion": "Reobserve the window to refresh the element cache.",
             }
         origin_x, origin_y = origin
         screen_cx = origin_x + el.center_x
@@ -3273,8 +3736,8 @@ def create_mcp_server() -> FastMCP:
         record_args = {
             "element_index": element_index,
             "value": response_value,
-            "pid": pid,
-            "window_id": window_id,
+            "window": _build_public_window(pid, window_id),
+            "observation_id": observation_id,
             "sensitive": redact_value,
         }
         is_text_like = ct in (
@@ -3290,12 +3753,36 @@ def create_mcp_server() -> FastMCP:
         # are intentionally not reused across calls / apartments.
         if sys.platform == "win32" and is_text_like:
             try:
-                value_set, value_error = await _run_uia_action_with_timeout(
-                    pid,
-                    window_id,
-                    "set_value",
-                    lambda: _set_value_via_uia_point(screen_cx, screen_cy, value),
+                binding_error = _revalidate_action_binding(
+                    observation_id=observation_id,
+                    screenshot_id=None,
+                    zoom_id=None,
+                    pid=pid,
+                    window_id=window_id,
                 )
+                if binding_error is not None:
+                    return binding_error
+                value_set, value_error, binding_error, _dispatch_started = (
+                    await _run_uia_action_with_timeout(
+                        pid,
+                        window_id,
+                        "set_value",
+                        lambda: _set_value_via_uia_point(
+                            screen_cx,
+                            screen_cy,
+                            value,
+                        ),
+                        pre_dispatch_check=lambda: _revalidate_action_binding(
+                            observation_id=observation_id,
+                            screenshot_id=None,
+                            zoom_id=None,
+                            pid=pid,
+                            window_id=window_id,
+                        ),
+                    )
+                )
+                if binding_error is not None:
+                    return binding_error
                 if value_set:
                     result = {
                         "success": True,
@@ -3310,6 +3797,16 @@ def create_mcp_server() -> FastMCP:
                         element_ref=recorded_element_ref,
                     ))
                     return result
+                if value_error and " skipped;" not in value_error:
+                    return {
+                        "success": False,
+                        "code": "ACTION_OUTCOME_UNKNOWN",
+                        "error": (
+                            "UIA ValuePattern may have been delivered, but "
+                            f"its result is unknown: {value_error}"
+                        ),
+                        "suggestion": "Reobserve the element before retrying.",
+                    }
                 logger.debug("UIA ValuePattern set skipped (will fall back): %s", value_error)
             except Exception as e:
                 logger.debug("UIA ValuePattern set failed (will fall back): %s", e)
@@ -3318,6 +3815,16 @@ def create_mcp_server() -> FastMCP:
         if is_checkable:
             automation_handler = _get_handlers().automation
             actual_cx, actual_cy = _scale_to_actual(screen_cx, screen_cy)
+            binding_error = _revalidate_action_binding(
+                observation_id=observation_id,
+                screenshot_id=None,
+                zoom_id=None,
+                pid=pid,
+                window_id=window_id,
+            )
+            if binding_error is not None:
+                return binding_error
+            mark_action_dispatch_started()
             await automation_handler.move_cursor(actual_cx, actual_cy)
             click_result = await automation_handler.left_click(actual_cx, actual_cy)
             if not click_result.get("success"):
@@ -3337,6 +3844,16 @@ def create_mcp_server() -> FastMCP:
             actual_cx, actual_cy = _scale_to_actual(screen_cx, screen_cy)
 
             # Click to focus the element
+            binding_error = _revalidate_action_binding(
+                observation_id=observation_id,
+                screenshot_id=None,
+                zoom_id=None,
+                pid=pid,
+                window_id=window_id,
+            )
+            if binding_error is not None:
+                return binding_error
+            mark_action_dispatch_started()
             await automation_handler.move_cursor(actual_cx, actual_cy)
             click_result = await automation_handler.left_click(actual_cx, actual_cy)
             if not click_result.get("success"):
@@ -3346,9 +3863,13 @@ def create_mcp_server() -> FastMCP:
             import asyncio
             await asyncio.sleep(0.05)
 
-            await automation_handler.hotkey(["ctrl", "a"])
+            hotkey_result = await automation_handler.hotkey(["ctrl", "a"])
+            if hotkey_result.get("success") is False:
+                return hotkey_result
 
-            await automation_handler.type_text(value)
+            type_result = await automation_handler.type_text(value)
+            if type_result.get("success") is False:
+                return type_result
             result = {"success": True, "element_index": element_index, "value": response_value, "method": "click_type"}
             await _recording_hook(_recorded_turn(
                 "computer_set_value",
@@ -3368,7 +3889,7 @@ def create_mcp_server() -> FastMCP:
     # WINDOW MANAGEMENT
     # ============================================================
 
-    @mcp.tool(annotations={"readOnlyHint": False, "destructiveHint": True, "idempotentHint": False, "openWorldHint": True})
+    @_protocol_tool(annotations={"readOnlyHint": False, "destructiveHint": True, "idempotentHint": False, "openWorldHint": True})
     async def computer_open_url(url: str, browser: str = "") -> Any:
         """Open an HTTP/HTTPS URL in the desktop browser.
 
@@ -3391,6 +3912,7 @@ def create_mcp_server() -> FastMCP:
             }
 
         window_handler = _get_handlers().window
+        mark_action_dispatch_started()
         result = await window_handler.open(url, browser=browser)
         await _recording_hook(_recorded_turn(
             "computer_open_url",
@@ -3399,7 +3921,7 @@ def create_mcp_server() -> FastMCP:
         ))
         return result
 
-    @mcp.tool(annotations={"readOnlyHint": False, "destructiveHint": True, "idempotentHint": False, "openWorldHint": True})
+    @_protocol_tool(annotations={"readOnlyHint": False, "destructiveHint": True, "idempotentHint": False, "openWorldHint": True})
     async def computer_launch_app(
         app: str,
         args: Optional[List[str]] = None,
@@ -3442,6 +3964,7 @@ def create_mcp_server() -> FastMCP:
             return error_result(exc)
 
         window_handler = _get_handlers().window
+        mark_action_dispatch_started()
         result = await window_handler.launch(app, args)
         if not result.get("success") and wait_for_window and not args:
             target_window = find_app_window(app_hint=app, title_hint=app)
@@ -3516,7 +4039,7 @@ def create_mcp_server() -> FastMCP:
         ))
         return result
 
-    @mcp.tool(annotations={"readOnlyHint": True, "destructiveHint": False, "idempotentHint": True, "openWorldHint": True})
+    @_protocol_tool(annotations={"readOnlyHint": True, "destructiveHint": False, "idempotentHint": True, "openWorldHint": True})
     async def computer_get_window(
         id: Optional[int] = None,
         app: Optional[str] = None,
@@ -3557,12 +4080,10 @@ def create_mcp_server() -> FastMCP:
         except ValueError as e:
             return error_result(e)
 
-    @mcp.tool(annotations={"readOnlyHint": False, "destructiveHint": True, "idempotentHint": False, "openWorldHint": True})
+    @_protocol_tool(annotations={"readOnlyHint": False, "destructiveHint": True, "idempotentHint": False, "openWorldHint": True})
     async def computer_manage_window(
         action: str,
-        window: Optional[Dict[str, Any]] = None,
-        window_id: Optional[int] = None,
-        pid: Optional[int] = None,
+        window: Optional[CanonicalWindow] = None,
         x: Optional[int] = None,
         y: Optional[int] = None,
         width: Optional[int] = None,
@@ -3574,8 +4095,6 @@ def create_mcp_server() -> FastMCP:
         Args:
             action: activate|minimize|maximize|close|move|resize.
             window: Canonical window object from list/get_window_state output.
-            window_id: Top-level window id / HWND.
-            pid: Optional top-level process id for consistency checks with window.
             x/y: Required for action=move.
             width/height: Required for action=resize.
             bounds: Optional object containing x/y/width/height.
@@ -3613,33 +4132,43 @@ def create_mcp_server() -> FastMCP:
             width = bounds.get("width", width)
             height = bounds.get("height", height)
 
-        pid, resolved_window_id, ref_error = _resolve_window_arg(window, pid, window_id)
+        if window is None:
+            return {
+                "success": False,
+                "code": "TARGET_REQUIRED",
+                "error": "window is required",
+            }
+        pid, resolved_window_id, ref_error = _resolve_window_arg(
+            window,
+            None,
+            None,
+        )
         if ref_error is not None:
             return ref_error
         if resolved_window_id is None:
-            return {"success": False, "error": "window or window_id is required"}
+            return {
+                "success": False,
+                "code": "TARGET_REQUIRED",
+                "error": "window with id and pid is required",
+            }
 
         window_handler = _get_handlers().window
         record_args: Dict[str, Any] = {
             "action": normalized_action,
-            "window_id": resolved_window_id,
+            "window": _build_public_window(pid, resolved_window_id),
         }
-        if pid is not None:
-            record_args["pid"] = pid
-        public_window = _build_public_window(pid, resolved_window_id)
-        if public_window is not None:
-            if "title" in public_window:
-                record_args["window_title"] = public_window["title"]
-            if "process_name" in public_window:
-                record_args["process_name"] = public_window["process_name"]
 
         if normalized_action == "activate":
+            mark_action_dispatch_started()
             result = await window_handler.activate_window(resolved_window_id)
         elif normalized_action == "minimize":
+            mark_action_dispatch_started()
             result = await window_handler.minimize_window(resolved_window_id)
         elif normalized_action == "maximize":
+            mark_action_dispatch_started()
             result = await window_handler.maximize_window(resolved_window_id)
         elif normalized_action == "close":
+            mark_action_dispatch_started()
             result = await window_handler.close_window(resolved_window_id)
         elif normalized_action in {"move", "position"}:
             if x is None or y is None:
@@ -3650,6 +4179,7 @@ def create_mcp_server() -> FastMCP:
             except ValueError as e:
                 return error_result(e)
             record_args.update({"x": x, "y": y})
+            mark_action_dispatch_started()
             result = await window_handler.set_window_position(resolved_window_id, x, y)
             normalized_action = "move"
         else:
@@ -3661,6 +4191,7 @@ def create_mcp_server() -> FastMCP:
             except ValueError as e:
                 return error_result(e)
             record_args.update({"width": width, "height": height})
+            mark_action_dispatch_started()
             result = await window_handler.set_window_size(resolved_window_id, width, height)
             normalized_action = "resize"
 
@@ -3682,7 +4213,7 @@ def create_mcp_server() -> FastMCP:
     # APP & WINDOW LISTING
     # ============================================================
 
-    @mcp.tool(annotations={"readOnlyHint": True, "destructiveHint": False, "idempotentHint": True, "openWorldHint": True})
+    @_protocol_tool(annotations={"readOnlyHint": True, "destructiveHint": False, "idempotentHint": True, "openWorldHint": True})
     async def computer_list_apps() -> Any:
         """
         List all running and installed applications.
@@ -3716,7 +4247,7 @@ def create_mcp_server() -> FastMCP:
         except Exception as e:
             return {"success": False, "error": str(e)}
 
-    @mcp.tool(annotations={"readOnlyHint": True, "destructiveHint": False, "idempotentHint": True, "openWorldHint": True})
+    @_protocol_tool(annotations={"readOnlyHint": True, "destructiveHint": False, "idempotentHint": True, "openWorldHint": True})
     async def computer_list_windows(
         pid: Optional[int] = None,
         app: Optional[str] = None,
@@ -3828,7 +4359,7 @@ def create_mcp_server() -> FastMCP:
     # DESKTOP ENVIRONMENT
     # ============================================================
 
-    @mcp.tool(annotations={"readOnlyHint": True, "destructiveHint": False, "idempotentHint": True, "openWorldHint": True})
+    @_protocol_tool(annotations={"readOnlyHint": True, "destructiveHint": False, "idempotentHint": True, "openWorldHint": True})
     async def computer_get_desktop_environment() -> Any:
         """Get information about the current desktop environment."""
         desktop_handler = _get_handlers().desktop
@@ -3838,13 +4369,10 @@ def create_mcp_server() -> FastMCP:
     # RICH WINDOW STATE OBSERVATION (Element Cache + UIA + Vision)
     # ============================================================
 
-    @mcp.tool(annotations={"readOnlyHint": True, "destructiveHint": False, "idempotentHint": True, "openWorldHint": True})
+    @_protocol_tool(annotations={"readOnlyHint": True, "destructiveHint": False, "idempotentHint": True, "openWorldHint": True})
     async def computer_get_window_state(
-        pid: Optional[int] = None,
-        window_id: Optional[int] = None,
-        window: Optional[Dict[str, Any]] = None,
+        window: Optional[CanonicalWindow] = None,
         query: Optional[str] = None,
-        screenshot_out_file: Optional[str] = None,
         max_image_dimension: int = 1280,
         force_som: bool = False,
         include_all_nodes: bool = False,
@@ -3860,11 +4388,8 @@ def create_mcp_server() -> FastMCP:
         computer_click, computer_double_click, computer_scroll, etc.
 
         Args:
-            pid: Top-level process ID of the target application.
-            window_id: Top-level window ID to snapshot.
             window: Canonical window object from list/get_window_state output.
             query: Optional substring filter for the debug tree markdown and returned nodes.
-            screenshot_out_file: Optional path to write screenshot PNG (skips inline base64).
             max_image_dimension: Maximum dimension for the screenshot (default 1280).
             force_som: When True, run SOM vision detection regardless of tree quality.
             include_all_nodes: When True, return all nodes even if query is set.
@@ -3874,8 +4399,9 @@ def create_mcp_server() -> FastMCP:
             show_full_text: When True, do not truncate the agent_state text.
 
         Returns:
-            Dictionary with:
-            - screenshot: base64-encoded JPEG or path to file
+            A protocol envelope whose data contains:
+            - observation_id and screenshot_id bindings for follow-up actions
+            - window: the canonical target window
             - nodes: list of elements with element_index, bounds, center,
               control_type, name, actions, and action_hints
             - node_count: total number of nodes
@@ -3885,6 +4411,9 @@ def create_mcp_server() -> FastMCP:
               quality and next-step guidance
             - agent_state / state_text: concise text summary for agent reasoning
             - total_elements: total elements visited
+
+            The screenshot is returned only as MCP image content, described by
+            the matching entry in artifacts.
         """
         from computer_server.services.agent_state_service import (
             MAX_AGENT_TEXT_LIMIT,
@@ -3912,13 +4441,20 @@ def create_mcp_server() -> FastMCP:
         except ValueError as e:
             return error_result(e)
 
-        pid, window_id, ref_error = _resolve_window_arg(window, pid, window_id)
+        if window is None:
+            return {
+                "success": False,
+                "code": "TARGET_REQUIRED",
+                "error": "window is required",
+            }
+        pid, window_id, ref_error = _resolve_window_arg(window, None, None)
         if ref_error is not None:
             return ref_error
         if pid is None or window_id is None:
             return {
                 "success": False,
-                "error": "pid and window_id are required, or provide window",
+                "code": "TARGET_REQUIRED",
+                "error": "window with id and pid is required",
             }
 
         automation_handler = _get_handlers().automation
@@ -3927,7 +4463,7 @@ def create_mcp_server() -> FastMCP:
             pid,
             window_id,
             query=query,
-            screenshot_out_file=screenshot_out_file,
+            screenshot_out_file=None,
             max_image_dimension=max_image_dimension,
             force_som=force_som,
             include_all_nodes=include_all_nodes,
@@ -3937,10 +4473,10 @@ def create_mcp_server() -> FastMCP:
             msaa_gate=context.msaa_walk_gate,
             seen_popovers=context.seen_popovers,
         )
-        if result.get("success"):
+        if result.get("success") and _REGISTER_PUBLIC_OBSERVATION.get():
             capture_geometry = result.pop("_capture_geometry", None)
             related_screenshots = result.pop("_related_screenshots", [])
-            snapshot = context.observations.create_snapshot(
+            observation = context.observations.create_observation(
                 pid=pid,
                 window_id=window_id,
                 node_count=result.get("node_count", 0),
@@ -3953,10 +4489,11 @@ def create_mcp_server() -> FastMCP:
                 capture_geometry=capture_geometry,
                 capture_metadata=result.get("capture_metadata", {}),
             )
-            result["snapshot_id"] = snapshot.snapshot_id
-            result["screenshot_id"] = snapshot.screenshot_id
-            result["snapshot_latest"] = True
-            screenshot = context.observations.get_screenshot(snapshot.screenshot_id)
+            result["observation_id"] = observation.observation_id
+            result["screenshot_id"] = observation.screenshot_id
+            screenshot = context.observations.get_screenshot(
+                observation.screenshot_id
+            )
             public_window = _build_public_window(pid, window_id)
             screenshots: List[Dict[str, Any]] = []
             if screenshot is not None:
@@ -3966,7 +4503,7 @@ def create_mcp_server() -> FastMCP:
                     {
                         "id": screenshot.screenshot_id,
                         "screenshot_id": screenshot.screenshot_id,
-                        "snapshot_id": snapshot.snapshot_id,
+                        "observation_id": observation.observation_id,
                         "role": "target",
                         "zIndex": 0,
                         "pid": pid,
@@ -3996,7 +4533,7 @@ def create_mcp_server() -> FastMCP:
             for related in related_screenshots:
                 related_geometry = related.pop("_capture_geometry", {})
                 related_screenshot = context.observations.create_screenshot(
-                    snapshot_id=snapshot.snapshot_id,
+                    observation_id=observation.observation_id,
                     pid=related["pid"],
                     window_id=related["window_id"],
                     screen_width=related.get("screen_width", 0),
@@ -4012,7 +4549,7 @@ def create_mcp_server() -> FastMCP:
                     {
                         "id": related_screenshot.screenshot_id,
                         "screenshot_id": related_screenshot.screenshot_id,
-                        "snapshot_id": snapshot.snapshot_id,
+                        "observation_id": observation.observation_id,
                         "role": "transient",
                         "zIndex": int(related.get("z_index", 1) or 1),
                         "pid": related["pid"],
@@ -4045,9 +4582,7 @@ def create_mcp_server() -> FastMCP:
             result["screenshots"] = screenshots
             if public_window is not None:
                 result["window"] = public_window
-            window_ref = _build_window_ref(pid, window_id, 0, 0)
-            if window_ref is not None:
-                result["window_ref"] = window_ref
+            result["target_profile"] = _build_target_profile_dict(pid, window_id)
             agent_state = build_agent_state(
                 result,
                 text_limit=agent_text_limit,
@@ -4055,21 +4590,22 @@ def create_mcp_server() -> FastMCP:
             )
             result["agent_state"] = agent_state
             result["state_text"] = agent_state["text"]
+        elif result.get("success"):
+            result.pop("_capture_geometry", None)
+            result.pop("_related_screenshots", None)
         return result
 
     # ============================================================
     # ZOOM
     # ============================================================
 
-    @mcp.tool(annotations={"readOnlyHint": False, "destructiveHint": True, "idempotentHint": False, "openWorldHint": True})
+    @_protocol_tool(annotations={"readOnlyHint": True, "destructiveHint": False, "idempotentHint": True, "openWorldHint": True})
     async def computer_zoom(
         x1: int,
         y1: int,
         x2: int,
         y2: int,
-        pid: Optional[int] = None,
-        window_id: Optional[int] = None,
-        window: Optional[Dict[str, Any]] = None,
+        window: Optional[CanonicalWindow] = None,
         screenshot_id: Optional[str] = None,
     ) -> Any:
         """
@@ -4079,13 +4615,10 @@ def create_mcp_server() -> FastMCP:
         and icons are readable. Coordinates are in the pixel space of the
         screenshot returned by computer_get_window_state (i.e. the resized image).
 
-        After calling computer_zoom, use from_zoom=True on click/drag with the
-        same pid and window_id to target coordinates within the zoomed image.
+        After calling computer_zoom, pass its zoom_id with the same canonical
+        window to target coordinates within the zoomed image.
 
         Args:
-            pid: Top-level process ID — must match a prior computer_get_window_state call.
-            window_id: Top-level window ID — must match the same window used in the prior
-                computer_get_window_state call.
             window: Canonical window object from list/get_window_state output.
             screenshot_id: Screenshot id returned by computer_get_window_state.
             x1: Left edge of the zoom region (resized-image pixels).
@@ -4094,7 +4627,7 @@ def create_mcp_server() -> FastMCP:
             y2: Bottom edge of the zoom region (resized-image pixels).
 
         Returns:
-            Dictionary with zoomed image (base64 PNG), dimensions, and crop_rect.
+            Zoom metadata plus an MCP image content block and artifact descriptor.
         """
         from computer_server.services.window_state_service import create_zoom_image
         from computer_server.services.validation_service import (
@@ -4107,7 +4640,19 @@ def create_mcp_server() -> FastMCP:
         except ValueError as e:
             return error_result(e)
 
-        pid, window_id, ref_error = _resolve_window_arg(window, pid, window_id)
+        if window is None:
+            return {
+                "success": False,
+                "code": "TARGET_REQUIRED",
+                "error": "window is required",
+            }
+        if not screenshot_id:
+            return {
+                "success": False,
+                "code": "OBSERVATION_REQUIRED",
+                "error": "computer_zoom requires the latest screenshot_id",
+            }
+        pid, window_id, ref_error = _resolve_window_arg(window, None, None)
         if ref_error is not None:
             return ref_error
         pid, window_id, screenshot_ctx, ref_error = _resolve_screenshot_ref(
@@ -4121,7 +4666,8 @@ def create_mcp_server() -> FastMCP:
         if pid is None or window_id is None:
             return {
                 "success": False,
-                "error": "pid and window_id are required, or provide window",
+                "code": "TARGET_REQUIRED",
+                "error": "window with id and pid is required",
             }
 
         automation_handler = _get_handlers().automation
@@ -4142,9 +4688,28 @@ def create_mcp_server() -> FastMCP:
             y2,
             zoom_metadata,
         )
+        binding_error = _revalidate_action_binding(
+            observation_id=None,
+            screenshot_id=screenshot_id,
+            zoom_id=None,
+            pid=pid,
+            window_id=window_id,
+        )
+        if binding_error is not None:
+            return binding_error
         if result.get("success"):
             if screenshot_ctx is not None:
                 result["parent_screenshot_id"] = screenshot_ctx.screenshot_id
+                result["observation_id"] = screenshot_ctx.observation_id
+                from computer_server.handlers.zoom_registry import (
+                    get_zoom_registry,
+                )
+
+                zoom_context = get_zoom_registry().get_by_id(
+                    str(result.get("zoom_id") or "")
+                )
+                if zoom_context is not None:
+                    zoom_context.screenshot_id = screenshot_ctx.screenshot_id
             public_window = _build_public_window(pid, window_id)
             if public_window is not None:
                 result["window"] = public_window
@@ -4154,11 +4719,10 @@ def create_mcp_server() -> FastMCP:
     # BROWSER PAGE INTERACTION (CDP)
     # ============================================================
 
-    @mcp.tool(annotations={"readOnlyHint": False, "destructiveHint": True, "idempotentHint": False, "openWorldHint": True})
+    @_protocol_tool(annotations={"readOnlyHint": False, "destructiveHint": True, "idempotentHint": False, "openWorldHint": True})
     async def computer_page(
-        pid: int,
-        window_id: int,
         action: str,
+        window: Optional[CanonicalWindow] = None,
         javascript: Optional[str] = None,
         css_selector: Optional[str] = None,
         attributes: Optional[List[str]] = None,
@@ -4185,9 +4749,7 @@ def create_mcp_server() -> FastMCP:
         - 'execute_javascript': run JS in the active tab and return the result.
 
         Args:
-            pid: Browser process ID. Soft-validated — mismatches are warned but
-                non-fatal; CDP connection is attempted regardless.
-            window_id: Browser window ID.
+            window: Canonical browser window object.
             action: 'get_page_info', 'get_text', 'query_dom', or 'execute_javascript'.
             javascript: JS to execute (action='execute_javascript').
             css_selector: CSS selector (action='query_dom').
@@ -4223,6 +4785,22 @@ def create_mcp_server() -> FastMCP:
                 return {"success": False, "error": "css_selector must be 2048 characters or fewer"}
         except ValueError as e:
             return error_result(e)
+
+        if window is None:
+            return {
+                "success": False,
+                "code": "TARGET_REQUIRED",
+                "error": "window is required",
+            }
+        pid, window_id, ref_error = _resolve_window_arg(window, None, None)
+        if ref_error is not None:
+            return ref_error
+        if pid is None or window_id is None:
+            return {
+                "success": False,
+                "code": "TARGET_REQUIRED",
+                "error": "window with id and pid is required",
+            }
 
         # --- Soft-validate pid + window_id (best-effort, non-fatal) ---
         try:
@@ -4336,6 +4914,7 @@ def create_mcp_server() -> FastMCP:
                 javascript = validate_javascript(javascript, allow_javascript)
             except (PermissionError, ValueError) as e:
                 return error_result(e)
+            mark_action_dispatch_started()
             js_result = await cdp.evaluate(
                 port=resolved_port,
                 expression=javascript,
@@ -4353,7 +4932,8 @@ def create_mcp_server() -> FastMCP:
             return {"success": False, "error": f"Unknown action: {action}. Use 'execute_javascript', 'get_text', 'query_dom', or 'get_page_info'."}
 
         record_args = {
-            "pid": pid, "window_id": window_id, "action": action,
+            "window": _build_public_window(pid, window_id),
+            "action": action,
             "port": resolved_port, "tab_index": tab_index,
             "target_id": result.get("target_id") or target_id,
         }
@@ -4374,7 +4954,7 @@ def create_mcp_server() -> FastMCP:
     # RECORDING TOOLS
     # ============================================================
 
-    @mcp.tool(annotations={"readOnlyHint": False, "destructiveHint": True, "idempotentHint": False, "openWorldHint": True})
+    @_protocol_tool(annotations={"readOnlyHint": False, "destructiveHint": True, "idempotentHint": False, "openWorldHint": True})
     async def computer_recording(
         action: str,
         output_dir: Optional[str] = None,
@@ -4390,14 +4970,18 @@ def create_mcp_server() -> FastMCP:
 
         Args:
             action: start|stop|status.
-            output_dir: Directory for turn folders (required when action=start).
+            output_dir: New or empty directory for turn folders (required when
+                action=start). Existing contents are never overwritten.
             capture_screenshots: Include screenshots in turn folders.
             screenshot_every_n: Capture one screenshot every N turns.
 
         Returns:
             Dictionary with recording state summary.
         """
-        from computer_server.recording.session import RecordingSession
+        from computer_server.recording.session import (
+            RecordingDirectoryError,
+            RecordingSession,
+        )
         from computer_server.services.validation_service import (
             error_result,
             validate_choice,
@@ -4426,18 +5010,30 @@ def create_mcp_server() -> FastMCP:
                 capture_screenshots=capture_screenshots,
                 screenshot_every_n=screenshot_every_n,
             )
-            session.start()
+            try:
+                session.start()
+            except RecordingDirectoryError as exc:
+                return {
+                    "success": False,
+                    "code": "INVALID_ARGUMENT",
+                    "error": str(exc),
+                    "suggestion": (
+                        "Choose a new or empty output_dir for each recording."
+                    ),
+                }
+            mark_action_dispatch_started()
             context.recording_session = session
             return {"success": True, **session.state}
 
         session = context.recording_session
         if session is not None:
+            mark_action_dispatch_started()
             summary = session.stop()
             context.recording_session = None
             return {"success": True, **summary}
         return {"success": True, "message": "Recording was not active"}
 
-    @mcp.tool(annotations={"readOnlyHint": False, "destructiveHint": True, "idempotentHint": False, "openWorldHint": True})
+    @_protocol_tool(annotations={"readOnlyHint": False, "destructiveHint": True, "idempotentHint": False, "openWorldHint": True})
     async def computer_replay_trajectory(
         recording_dir: str,
         delay_ms: int = 500,
@@ -4486,13 +5082,17 @@ def create_mcp_server() -> FastMCP:
                 "computer_scroll",
                 "computer_set_value",
             }:
-                refresh_pid = resolved.get("pid") or element_ref.get("pid")
-                refresh_window_id = resolved.get("window_id") or element_ref.get("window_id")
-                if refresh_pid is not None and refresh_window_id is not None:
+                refresh_window = resolved.get("window")
+                if not isinstance(refresh_window, dict):
+                    refresh_window = {
+                        "id": element_ref.get("window_id"),
+                        "pid": element_ref.get("pid"),
+                    }
+                fresh_observation: Optional[Dict[str, Any]] = None
+                if refresh_window.get("id") is not None:
                     try:
-                        await computer_get_window_state(
-                            pid=int(refresh_pid),
-                            window_id=int(refresh_window_id),
+                        fresh_observation = await computer_get_window_state.__wrapped__(
+                            window=refresh_window,
                             query=element_ref.get("name") or None,
                             include_all_nodes=True,
                         )
@@ -4503,6 +5103,17 @@ def create_mcp_server() -> FastMCP:
                     resolved,
                     element_ref=element_ref,
                 )
+                if (
+                    fresh_observation
+                    and fresh_observation.get("success") is not False
+                ):
+                    resolved["observation_id"] = fresh_observation.get(
+                        "observation_id"
+                    )
+                    resolved["window"] = fresh_observation.get(
+                        "window",
+                        resolved.get("window"),
+                    )
 
             try:
                 return await tool_map[tool_name](**resolved)
@@ -4510,6 +5121,7 @@ def create_mcp_server() -> FastMCP:
                 return {"success": False, "error": str(e)}
 
         previous_suppressed = context.recording_suppressed
+        replay_action_context = current_action_context()
         context.recording_suppressed = True
         try:
             replay_result = await _replay(
@@ -4518,16 +5130,27 @@ def create_mcp_server() -> FastMCP:
                 delay_ms=delay_ms,
                 stop_on_error=stop_on_error,
             )
-            release_result = await _release_tracked_inputs()
+            replay_result["success"] = bool(
+                replay_result.get("completed", False)
+            )
             if (
-                release_result.get("released_keys")
-                or release_result.get("released_mouse_buttons")
-                or release_result.get("errors")
+                replay_action_context is not None
+                and replay_action_context.dispatch_started
             ):
-                replay_result["release_all_inputs"] = release_result
+                release_result = await _release_tracked_inputs()
+                if (
+                    release_result.get("released_keys")
+                    or release_result.get("released_mouse_buttons")
+                    or release_result.get("errors")
+                ):
+                    replay_result["release_all_inputs"] = release_result
             return replay_result
         finally:
-            await _release_tracked_inputs()
+            if (
+                replay_action_context is not None
+                and replay_action_context.dispatch_started
+            ):
+                await _release_tracked_inputs()
             _clear_learning_input_suppression()
             context.recording_suppressed = previous_suppressed
 
@@ -4535,7 +5158,7 @@ def create_mcp_server() -> FastMCP:
     # LEARNING ACTIONS — human user recording with UIA enrichment
     # ============================================================
 
-    @mcp.tool(annotations={"readOnlyHint": False, "destructiveHint": True, "idempotentHint": False, "openWorldHint": True})
+    @_protocol_tool(annotations={"readOnlyHint": False, "destructiveHint": True, "idempotentHint": False, "openWorldHint": True})
     async def computer_learn(
         action: str,
         task_description: Optional[str] = None,
@@ -4617,6 +5240,7 @@ def create_mcp_server() -> FastMCP:
                     "error": error.value,
                     "suggestion": error.suggestion(),
                 }
+            mark_action_dispatch_started()
             return {
                 "success": True,
                 "data": {
@@ -4635,6 +5259,7 @@ def create_mcp_server() -> FastMCP:
                 "suggestion": "Call computer_learn(action='start') first to begin recording.",
             }
 
+        mark_action_dispatch_started()
         success, result = recorder.stop()
 
         if not success:

@@ -16,15 +16,15 @@ from computer_server.services.window_identity_service import (
 )
 
 
-def test_normalize_window_accepts_id_and_window_id():
-    assert normalize_window_input({"id": "123", "window_id": 123, "pid": "456"}) == (
+def test_normalize_window_accepts_canonical_id_and_pid():
+    assert normalize_window_input({"id": "123", "pid": "456"}) == (
         456,
         123,
     )
 
 
-def test_normalize_window_rejects_id_mismatch():
-    with pytest.raises(ValidationError, match="window.id/window.window_id mismatch"):
+def test_normalize_window_rejects_legacy_alias():
+    with pytest.raises(ValidationError, match="only accepts canonical fields"):
         normalize_window_input({"id": 123, "window_id": 124})
 
 
@@ -34,9 +34,7 @@ def test_resolve_window_input_accepts_top_level_values():
     assert resolved.pid == 456
     assert resolved.window_id == 123
     assert resolved.window is not None
-    assert resolved.window["id"] == 123
-    assert resolved.window["window_id"] == 123
-    assert resolved.window["pid"] == 456
+    assert resolved.window == {"id": 123, "pid": 456}
 
 
 def test_resolve_window_input_infers_pid_from_window_id(monkeypatch):
@@ -49,9 +47,7 @@ def test_resolve_window_input_infers_pid_from_window_id(monkeypatch):
     assert resolved.pid == 456
     assert resolved.window_id == 123
     assert resolved.window is not None
-    assert resolved.window["id"] == 123
-    assert resolved.window["window_id"] == 123
-    assert resolved.window["pid"] == 456
+    assert resolved.window == {"id": 123, "pid": 456}
 
 
 def test_resolve_window_input_rejects_pid_mismatch():
@@ -64,21 +60,39 @@ def test_resolve_window_input_rejects_window_id_mismatch():
         resolve_window_input(window={"id": 123, "pid": 456}, pid=456, window_id=124)
 
 
-def test_build_window_keeps_public_ids():
+def test_resolve_window_input_rejects_live_owner_pid_mismatch(monkeypatch):
+    import computer_server.services.window_identity_service as identity
+
+    monkeypatch.setattr(identity, "_get_pid_for_window", lambda _window_id: 999)
+
+    with pytest.raises(ValidationError, match="belongs to pid=999"):
+        resolve_window_input(window={"id": 123, "pid": 456})
+
+
+def test_get_pid_for_window_checks_hwnd_is_live(monkeypatch):
+    import computer_server.services.window_identity_service as identity
+
+    class Win32Gui:
+        @staticmethod
+        def IsWindow(_window_id):
+            return False
+
+    class Win32Process:
+        @staticmethod
+        def GetWindowThreadProcessId(_window_id):
+            raise AssertionError("dead HWND must not reach owner lookup")
+
+    modules = __import__("sys").modules
+    monkeypatch.setitem(modules, "win32gui", Win32Gui)
+    monkeypatch.setitem(modules, "win32process", Win32Process)
+
+    assert identity._get_pid_for_window(123) is None
+
+
+def test_build_window_returns_only_canonical_ids():
     window = build_window(123, pid=456, title="Target", app="Target.exe")
 
-    assert window is not None
-    assert {
-        key: window[key]
-        for key in ("id", "window_id", "pid", "app", "process_name", "title")
-    } == {
-        "id": 123,
-        "window_id": 123,
-        "pid": 456,
-        "app": "Target.exe",
-        "process_name": "Target.exe",
-        "title": "Target",
-    }
+    assert window == {"id": 123, "pid": 456}
 
 
 def test_is_window_minimized_uses_inclusive_iconic_coordinate_fallback(
@@ -96,26 +110,10 @@ def test_is_window_minimized_uses_inclusive_iconic_coordinate_fallback(
     assert is_window_minimized(123) is True
 
 
-def test_build_window_uses_is_iconic_state_instead_of_rect_threshold(monkeypatch):
-    import computer_server.services.window_identity_service as identity
-
-    monkeypatch.setattr(
-        identity,
-        "_get_window_rect",
-        lambda _window_id: (-32000, -32000, -31686, -31950),
-    )
-    monkeypatch.setattr(identity, "_is_window_visible", lambda _window_id: True)
-    monkeypatch.setattr(identity, "is_window_minimized", lambda _window_id, _rect: True)
-    monkeypatch.setattr(identity, "_foreground_window_id", lambda: 123)
-
+def test_build_window_does_not_embed_mutable_window_state():
     window = build_window(123, pid=456, title="Target", app="Target.exe")
 
-    assert window is not None
-    assert window["state"] == {
-        "visible": True,
-        "minimized": True,
-        "foreground": False,
-    }
+    assert window == {"id": 123, "pid": 456}
 
 
 def test_add_window_field_preserves_existing_record():
@@ -124,38 +122,20 @@ def test_add_window_field_preserves_existing_record():
     assert add_window_field(record) is record
     assert record["id"] == 123
     assert record["window_id"] == 123
-    assert record["window"]["id"] == 123
-    assert record["window"]["window_id"] == 123
-    assert record["window"]["pid"] == 456
-    assert record["window"]["title"] == "Target"
+    assert record["window"] == {"id": 123, "pid": 456}
 
 
-def test_add_window_field_mirrors_canonical_window_fields(monkeypatch):
-    import computer_server.services.window_identity_service as identity
-
-    monkeypatch.setattr(identity, "_get_process_name", lambda _pid: "Weixin.exe")
-    monkeypatch.setattr(identity, "_get_window_title", lambda _window_id: "微信")
-    monkeypatch.setattr(identity, "_get_window_class", lambda _window_id: "Qt51514QWindowIcon")
-    monkeypatch.setattr(identity, "_get_window_rect", lambda _window_id: (10, 20, 110, 220))
-    monkeypatch.setattr(identity, "_is_window_visible", lambda _window_id: True)
-    monkeypatch.setattr(identity, "_foreground_window_id", lambda: 999)
-
+def test_add_window_field_does_not_mirror_metadata_into_window():
     record = {"id": 123, "window_id": 123, "pid": 456}
 
     add_window_field(record)
 
-    assert record["app"] == "Weixin.exe"
-    assert record["process_name"] == "Weixin.exe"
-    assert record["title"] == "微信"
-    assert record["class_name"] == "Qt51514QWindowIcon"
-    assert record["bounds"] == {"x": 10, "y": 20, "width": 100, "height": 200}
-    assert record["state"] == {
-        "visible": True,
-        "minimized": False,
-        "foreground": False,
+    assert record == {
+        "id": 123,
+        "window_id": 123,
+        "pid": 456,
+        "window": {"id": 123, "pid": 456},
     }
-    assert record["window"]["process_name"] == record["process_name"]
-    assert record["window"]["class_name"] == record["class_name"]
 
 
 def test_add_window_field_does_not_overwrite_existing_values(monkeypatch):
@@ -178,7 +158,7 @@ def test_add_window_field_does_not_overwrite_existing_values(monkeypatch):
     assert record["app"] == "Hint.exe"
     assert record["process_name"] == "Hint.exe"
     assert record["class_name"] == "HintClass"
-    assert record["window"]["app"] == "Hint.exe"
+    assert record["window"] == {"id": 123, "pid": 456}
 
 
 def test_rehydrate_window_returns_canonical_window(monkeypatch):
@@ -196,23 +176,9 @@ def test_rehydrate_window_returns_canonical_window(monkeypatch):
     result = rehydrate_window(123, app="Display Name")
 
     assert result["success"] is True
-    assert result["id"] == 123
-    assert result["window_id"] == 123
-    assert result["pid"] == 456
     assert result["title"] == "Target"
-    assert result["app"] == "Target.exe"
-    assert result["window"]["class_name"] == "TargetClass"
-    assert result["window"]["bounds"] == {
-        "x": 10,
-        "y": 20,
-        "width": 100,
-        "height": 200,
-    }
-    assert result["window"]["state"] == {
-        "visible": True,
-        "minimized": False,
-        "foreground": True,
-    }
+    assert result["app"] == "Display Name"
+    assert result["window"] == {"id": 123, "pid": 456}
 
 
 def test_rehydrate_window_rejects_non_integer_id():
@@ -242,7 +208,8 @@ def test_rehydrate_window_allows_app_hint_mismatch(monkeypatch):
     result = rehydrate_window(123, app="Different Display Name")
 
     assert result["success"] is True
-    assert result["window"]["app"] == "Actual.exe"
+    assert result["app"] == "Different Display Name"
+    assert result["window"] == {"id": 123, "pid": 456}
 
 
 def test_filter_window_records_matches_chinese_app_aliases():

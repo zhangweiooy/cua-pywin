@@ -8,7 +8,7 @@ def test_post_action_delta_summarizes_node_changes() -> None:
         "success": True,
         "pid": 10,
         "window_id": 20,
-        "snapshot_id": "snap-before",
+        "observation_id": "obs-before",
         "screenshot_id": "shot-before",
         "node_count": 2,
         "returned_node_count": 2,
@@ -33,7 +33,7 @@ def test_post_action_delta_summarizes_node_changes() -> None:
         "success": True,
         "pid": 10,
         "window_id": 20,
-        "snapshot_id": "snap-after",
+        "observation_id": "obs-after",
         "screenshot_id": "shot-after",
         "node_count": 3,
         "returned_node_count": 3,
@@ -65,8 +65,8 @@ def test_post_action_delta_summarizes_node_changes() -> None:
     delta = build_post_action_delta(before, after)
 
     assert delta["success"] is True
-    assert delta["before_snapshot_id"] == "snap-before"
-    assert delta["after_snapshot_id"] == "snap-after"
+    assert delta["before_observation_id"] == "obs-before"
+    assert delta["after_observation_id"] == "obs-after"
     assert delta["window_changed"] is False
     assert delta["node_count_delta"] == 1
     assert delta["added_node_count"] == 2

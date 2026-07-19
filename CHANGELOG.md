@@ -4,6 +4,48 @@ All notable changes to this project will be documented in this file.
 
 ## Unreleased
 
+## 0.2.0 - 2026-07-19
+
+### Breaking
+
+- Reset the public MCP protocol to `0.2`. All 25 tools now return the fixed
+  `protocol_version/success/data/artifacts/warnings/error/action` envelope for
+  successful calls and expected business failures.
+- Targeted tools accept only canonical `window: {id, pid}` inputs. Public
+  `window_id`, `windowId`, top-level target `pid/window_id`, and compatibility
+  aliases have been removed.
+- Renamed public `snapshot_id` to `observation_id`. Element actions require the
+  latest `observation_id`, screenshot-coordinate actions require the latest
+  `screenshot_id`, and zoom-coordinate actions require a current `zoom_id`.
+- New observations immediately stale older observation, screenshot, and zoom
+  bindings for the same window.
+- Recording manifests and turn files now declare protocol `0.2`; replay
+  rejects pre-0.2 recordings instead of attempting an implicit migration.
+
+### Added
+
+- Side-effect calls return a transient `action` outcome with `action_id`,
+  `completed/rejected/unknown`, and explicit retry safety. No action ledger or
+  persistence layer was added.
+- Image payloads now live only in MCP image content. Structured
+  `artifacts[]` entries bind each image to its content index, dimensions,
+  MIME type, byte count, window, and observation identifiers.
+- The daemon `/call` transport now returns a fixed
+  `{protocol_version,result,content,transport_error}` wrapper. CLI calls read
+  the protocol result directly and support `--output` and `--output-dir` for
+  image artifacts.
+- Stable protocol errors distinguish invalid arguments, missing/mismatched
+  targets, missing/stale observations, permissions, unavailable providers,
+  capture failures, rejected or unknown actions, and failed postconditions.
+
+### Changed
+
+- Version metadata is advanced to `0.2.0`.
+- Post-action capture and query verification share one fresh observation, so
+  returned capture bindings are not already stale.
+- The recording pipeline writes only canonical public arguments while keeping
+  internal HWND/window references for relocation.
+
 ### Fixed
 
 - `computer_learn` now owns UI Automation through a dedicated STA worker with

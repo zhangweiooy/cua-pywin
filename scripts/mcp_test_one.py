@@ -287,24 +287,25 @@ def do_call(tool_name: str, tool_args: dict, json_mode: bool, user_timeout: int 
             "arguments": tool_args,
         }, timeout=tool_timeout)
 
-        content = resp["result"]["content"]
+        call_result = resp["result"]
+        content = call_result.get("content", [])
+        structured = call_result.get("structuredContent")
+        if structured is None:
+            structured = call_result.get("structured_content")
 
         if json_mode:
             output = {
                 "tool": tool_name,
                 "server": f"{server_name} v{server_ver}",
+                "result": structured,
                 "content": content,
             }
             print(json.dumps(output, indent=2, ensure_ascii=False))
         else:
+            if structured is not None:
+                print(json.dumps(structured, indent=2, ensure_ascii=False))
             for item in content:
-                if item["type"] == "text":
-                    try:
-                        parsed = json.loads(item["text"])
-                        print(json.dumps(parsed, indent=2, ensure_ascii=False))
-                    except (json.JSONDecodeError, TypeError):
-                        print(item["text"])
-                elif item["type"] == "image":
+                if item["type"] == "image":
                     data_len = len(item.get("data", ""))
                     mime = item.get("mimeType", "?")
                     print(f"[image: {mime}, {data_len} base64 chars]")
@@ -312,6 +313,22 @@ def do_call(tool_name: str, tool_args: dict, json_mode: bool, user_timeout: int 
                     print(f"[resource: {item.get('resource', {})}]")
                 else:
                     print(json.dumps(item, indent=2, ensure_ascii=False))
+
+        if call_result.get("isError"):
+            die(f"{tool_name}: MCP transport/tool execution error")
+        if not isinstance(structured, dict):
+            die(f"{tool_name}: missing structured protocol result")
+        if structured.get("protocol_version") != "0.2":
+            die(f"{tool_name}: unsupported protocol result")
+        if structured.get("success") is not True:
+            error = structured.get("error")
+            code = error.get("code") if isinstance(error, dict) else "UNKNOWN"
+            message = (
+                error.get("message")
+                if isinstance(error, dict)
+                else "tool call failed"
+            )
+            die(f"{tool_name}: {code}: {message}")
 
         ok(f"{tool_name} on {server_name} v{server_ver}")
         time.sleep(0.6)

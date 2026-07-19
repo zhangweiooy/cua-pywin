@@ -46,9 +46,13 @@ def _get_pid_for_window(window_id: Optional[int]) -> Optional[int]:
     if window_id is None:
         return None
     try:
+        import win32gui
         import win32process
 
-        _, pid = win32process.GetWindowThreadProcessId(int(window_id))
+        hwnd = int(window_id)
+        if not win32gui.IsWindow(hwnd):
+            return None
+        _, pid = win32process.GetWindowThreadProcessId(hwnd)
         return int(pid) if pid else None
     except Exception:
         return None
@@ -424,13 +428,13 @@ def rehydrate_window(window_id: Any, app: Optional[str] = None) -> Dict[str, Any
             "error": f"Window {wid} could not be resolved",
             "suggestion": "Call computer_list_apps or computer_list_windows to select a current window.",
         }
-    if app and "app" not in window:
-        window["app"] = app
-
     result: Dict[str, Any] = {"success": True, "window": window}
-    for key in ("id", "window_id", "pid", "title", "app"):
-        if key in window:
-            result[key] = window[key]
+    title = _get_window_title(wid)
+    process_name = app or _get_process_name(window.get("pid"))
+    if title:
+        result["title"] = title
+    if process_name:
+        result["app"] = process_name
     return result
 
 
@@ -465,23 +469,13 @@ def normalize_window_input(window: Optional[Mapping[str, Any]]) -> tuple[Optiona
     if not isinstance(window, Mapping):
         raise ValidationError("window must be an object")
 
-    wid_from_id = _coerce_optional_int("window.id", _window_value(window, "id"))
-    wid_from_window_id = _coerce_optional_int(
-        "window.window_id",
-        _window_value(window, "window_id"),
-    )
-    if (
-        wid_from_id is not None
-        and wid_from_window_id is not None
-        and wid_from_id != wid_from_window_id
-    ):
+    if "window_id" in window or "windowId" in window:
         raise ValidationError(
-            f"window.id/window.window_id mismatch: {wid_from_id} != {wid_from_window_id}"
+            "window only accepts canonical fields: window.id and window.pid"
         )
-
+    wid_from_id = _coerce_optional_int("window.id", _window_value(window, "id"))
     pid = _coerce_optional_int("window.pid", _window_value(window, "pid"))
-    window_id = wid_from_id if wid_from_id is not None else wid_from_window_id
-    return pid, window_id
+    return pid, wid_from_id
 
 
 def resolve_window_input(
@@ -519,6 +513,14 @@ def resolve_window_input(
     )
     if resolved_pid is None and resolved_window_id is not None:
         resolved_pid = _get_pid_for_window(resolved_window_id)
+    elif resolved_pid is not None and resolved_window_id is not None:
+        live_pid = _get_pid_for_window(resolved_window_id)
+        if live_pid is not None and live_pid != resolved_pid:
+            raise ValidationError(
+                "window.pid target mismatch: "
+                f"window {resolved_window_id} belongs to pid={live_pid}, "
+                f"got pid={resolved_pid}"
+            )
     return ResolvedWindow(
         pid=resolved_pid,
         window_id=resolved_window_id,
@@ -549,44 +551,9 @@ def build_window(
     if resolved_pid is None:
         resolved_pid = _get_pid_for_window(wid)
 
-    process_name = app or _get_process_name(resolved_pid)
-    window_title = title or _get_window_title(wid)
-    rect = _get_window_rect(wid)
-    visible = _is_window_visible(wid)
-    minimized = is_window_minimized(wid, rect)
-    foreground = _foreground_window_id()
-
-    result: Dict[str, Any] = {
-        "id": wid,
-        "window_id": wid,
-    }
+    result: Dict[str, Any] = {"id": wid}
     if resolved_pid is not None:
         result["pid"] = resolved_pid
-    if process_name:
-        result["app"] = process_name
-        result["process_name"] = process_name
-    if window_title:
-        result["title"] = window_title
-    class_name = _get_window_class(wid)
-    if class_name:
-        result["class_name"] = class_name
-    if rect is not None:
-        left, top, right, bottom = rect
-        result["bounds"] = {
-            "x": left,
-            "y": top,
-            "width": int(right - left),
-            "height": int(bottom - top),
-        }
-        result["state"] = {
-            "visible": bool(visible) if visible is not None else None,
-            "minimized": minimized,
-            "foreground": (
-                foreground == wid and minimized is not True
-                if foreground is not None
-                else None
-            ),
-        }
     return result
 
 
@@ -599,17 +566,6 @@ def add_window_field(record: Dict[str, Any]) -> Dict[str, Any]:
     window = build_window(window_id, pid=pid, title=title, app=app)
     if window is not None:
         record["window"] = window
-        for key in (
-            "pid",
-            "app",
-            "process_name",
-            "title",
-            "class_name",
-            "bounds",
-            "state",
-        ):
-            if key in window and key not in record:
-                record[key] = window[key]
     return record
 
 

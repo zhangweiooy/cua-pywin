@@ -5,10 +5,17 @@ from computer_server.services import replay_resolver
 
 
 def test_resolve_replay_click_adjusts_coordinates_for_moved_window(monkeypatch):
+    import computer_server.services.window_identity_service as window_identity
+
     monkeypatch.setattr(
         replay_resolver,
         "resolve_live_window",
         lambda source: (200, (300, 400, 800, 900)),
+    )
+    monkeypatch.setattr(
+        window_identity,
+        "build_window",
+        lambda window_id: {"id": int(window_id), "pid": 999},
     )
 
     args = {"x": 120, "y": 130, "window_title": "old", "process_name": "app.exe"}
@@ -26,15 +33,27 @@ def test_resolve_replay_click_adjusts_coordinates_for_moved_window(monkeypatch):
         window_ref=window_ref,
     )
 
-    assert resolved == {"x": 320, "y": 430, "window_id": "200"}
+    assert resolved == {
+        "x": 320,
+        "y": 430,
+        "window": {"id": 200, "pid": 999},
+        "coordinate_space": "screen",
+    }
     assert args["x"] == 120
 
 
 def test_resolve_replay_drag_adjusts_both_points(monkeypatch):
+    import computer_server.services.window_identity_service as window_identity
+
     monkeypatch.setattr(
         replay_resolver,
         "resolve_live_window",
         lambda source: (100, (50, 60, 500, 600)),
+    )
+    monkeypatch.setattr(
+        window_identity,
+        "build_window",
+        lambda window_id: {"id": int(window_id), "pid": 999},
     )
 
     resolved = replay_resolver.resolve_replay_args(
@@ -48,6 +67,8 @@ def test_resolve_replay_drag_adjusts_both_points(monkeypatch):
         "start_y": 80,
         "end_x": 100,
         "end_y": 140,
+        "window": {"id": 100, "pid": 999},
+        "coordinate_space": "screen",
     }
 
 
@@ -84,18 +105,30 @@ def test_resolve_replay_mouse_down_preserves_current_cursor_mode(monkeypatch):
 
 
 def test_resolve_replay_manage_window_rewrites_stale_hwnd(monkeypatch):
+    import computer_server.services.window_identity_service as window_identity
+
     monkeypatch.setattr(
         replay_resolver,
         "resolve_live_window",
         lambda source: (222, (0, 0, 100, 100)),
     )
+    monkeypatch.setattr(
+        window_identity,
+        "build_window",
+        lambda window_id: {"id": int(window_id)},
+    )
 
     resolved = replay_resolver.resolve_replay_args(
         "computer_manage_window",
-        {"action": "activate", "window_id": "111", "window_title": "title", "process_name": "app.exe"},
+        {
+            "action": "activate",
+            "window": {"id": 111, "pid": 123},
+            "window_title": "title",
+            "process_name": "app.exe",
+        },
     )
 
-    assert resolved == {"action": "activate", "window_id": "222"}
+    assert resolved == {"action": "activate", "window": {"id": 222}}
 
 
 def test_resolve_replay_keyboard_action_rebinds_target_window(monkeypatch):
@@ -109,23 +142,21 @@ def test_resolve_replay_keyboard_action_rebinds_target_window(monkeypatch):
     monkeypatch.setattr(
         window_identity,
         "build_window",
-        lambda window_id: {"id": window_id, "window_id": window_id, "pid": 999},
+        lambda window_id: {"id": window_id, "pid": 999},
     )
 
     resolved = replay_resolver.resolve_replay_args(
         "computer_press_key",
         {
             "key": "Return",
-            "window_id": 111,
-            "pid": 123,
+            "window": {"id": 111, "pid": 123},
         },
         window_ref={"window_id": 111, "process_name": "app.exe"},
     )
 
     assert resolved == {
         "key": "Return",
-        "window_id": 222,
-        "pid": 999,
+        "window": {"id": 222, "pid": 999},
     }
 
 
@@ -154,7 +185,12 @@ def test_resolve_replay_click_relocates_cached_element(monkeypatch):
 
         resolved = replay_resolver.resolve_replay_args(
             "computer_click",
-            {"x": 300, "y": 400, "button": "left", "pid": 11, "window_id": 22},
+            {
+                "x": 300,
+                "y": 400,
+                "button": "left",
+                "window": {"id": 22, "pid": 11},
+            },
             element_ref={
                 "recorded_element_index": 3,
                 "source": "uia",
@@ -166,7 +202,11 @@ def test_resolve_replay_click_relocates_cached_element(monkeypatch):
             },
         )
 
-        assert resolved == {"button": "left", "pid": 11, "window_id": 22, "element_index": 7}
+        assert resolved == {
+            "button": "left",
+            "window": {"id": 22, "pid": 11},
+            "element_index": 7,
+        }
     finally:
         cache.clear()
 
@@ -200,8 +240,7 @@ def test_resolve_replay_secondary_action_relocates_cached_element(monkeypatch):
             {
                 "element_index": 3,
                 "action": "expand",
-                "pid": 11,
-                "window_id": 22,
+                "window": {"id": 22, "pid": 11},
             },
             element_ref={
                 "recorded_element_index": 3,
@@ -217,8 +256,7 @@ def test_resolve_replay_secondary_action_relocates_cached_element(monkeypatch):
         assert resolved == {
             "element_index": 7,
             "action": "expand",
-            "pid": 11,
-            "window_id": 22,
+            "window": {"id": 22, "pid": 11},
         }
     finally:
         cache.clear()
@@ -229,7 +267,12 @@ def test_resolve_replay_element_keeps_coordinate_fallback_when_no_match(monkeypa
     cache.clear()
     monkeypatch.setattr(cache, "_is_window_valid", lambda _window_id: True)
     try:
-        args = {"x": 300, "y": 400, "button": "left", "pid": 11, "window_id": 22}
+        args = {
+            "x": 300,
+            "y": 400,
+            "button": "left",
+            "window": {"id": 22, "pid": 11},
+        }
         resolved = replay_resolver.resolve_replay_args(
             "computer_click",
             args,
@@ -240,6 +283,6 @@ def test_resolve_replay_element_keeps_coordinate_fallback_when_no_match(monkeypa
             },
         )
 
-        assert resolved == args
+        assert resolved == {**args, "coordinate_space": "screen"}
     finally:
         cache.clear()

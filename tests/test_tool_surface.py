@@ -1,14 +1,41 @@
 from __future__ import annotations
 
+import asyncio
 import os
 from types import SimpleNamespace
 
 os.environ["CUA_SKIP_SOM_WARMUP"] = "1"
 
 import pytest
+from fastmcp.exceptions import ToolError
 
 from computer_server.handlers.element_cache import CachedElement, get_element_cache
 from computer_server.mcp_server import create_mcp_server
+
+
+def _content(result):
+    """Expose tool-specific data while asserting the fixed 0.2 envelope."""
+    envelope = result.structured_content
+    assert set(envelope) == {
+        "protocol_version",
+        "success",
+        "data",
+        "artifacts",
+        "warnings",
+        "error",
+        "action",
+    }
+    assert envelope["protocol_version"] == "0.2"
+    if envelope["success"]:
+        return {"success": True, **envelope["data"]}
+    error = envelope["error"]
+    return {
+        "success": False,
+        "error": error["message"],
+        "code": error["code"],
+        "suggestion": error["suggestion"],
+        **error["details"],
+    }
 
 
 class _FakeAutomation:
@@ -68,6 +95,116 @@ class _FakeAutomation:
 
 
 @pytest.mark.asyncio
+async def test_drag_runtime_value_error_releases_mouse_and_is_not_rejected(
+    monkeypatch,
+):
+    import computer_server.mcp_server as mcp_module
+
+    class FailingMouse:
+        @property
+        def position(self):
+            return (0, 0)
+
+        @position.setter
+        def position(self, _value):
+            raise ValueError("cursor delivery failed")
+
+    class Automation(_FakeAutomation):
+        def __init__(self):
+            super().__init__()
+            self.mouse = FailingMouse()
+            self.button_down = False
+
+        async def mouse_down(self, x, y, button="left"):
+            self.button_down = True
+            self.mouse_events.append(("down", x, y, button))
+            return {"success": True}
+
+        async def mouse_up(self, x=None, y=None, button="left"):
+            self.button_down = False
+            self.mouse_events.append(("up", x, y, button))
+            return {"success": True}
+
+    automation = Automation()
+    monkeypatch.setattr(
+        mcp_module,
+        "_handlers",
+        SimpleNamespace(automation=automation),
+    )
+
+    with pytest.raises(ToolError, match="cursor delivery failed"):
+        await create_mcp_server().call_tool(
+            "computer_drag",
+            {
+                "start_x": 1,
+                "start_y": 1,
+                "end_x": 2,
+                "end_y": 2,
+                "coordinate_space": "screen",
+                "duration": 0.1,
+            },
+        )
+
+    assert automation.button_down is False
+    assert automation.mouse_events == [
+        ("down", 1, 1, "left"),
+        ("up", None, None, "left"),
+    ]
+
+
+@pytest.mark.asyncio
+async def test_drag_release_failure_is_unknown_and_remains_recoverable(
+    monkeypatch,
+):
+    import computer_server.mcp_server as mcp_module
+
+    class Automation(_FakeAutomation):
+        def __init__(self):
+            super().__init__()
+            self.release_attempts = 0
+
+        async def mouse_up(self, x=None, y=None, button="left"):
+            self.release_attempts += 1
+            self.mouse_events.append(("up", x, y, button))
+            if self.release_attempts == 1:
+                return {"success": False, "error": "release failed"}
+            return {"success": True}
+
+    automation = Automation()
+    monkeypatch.setattr(
+        mcp_module,
+        "_handlers",
+        SimpleNamespace(automation=automation),
+    )
+    mcp = create_mcp_server()
+
+    drag_result = await mcp.call_tool(
+        "computer_drag",
+        {
+            "start_x": 1,
+            "start_y": 1,
+            "end_x": 2,
+            "end_y": 2,
+            "coordinate_space": "screen",
+            "duration": 0.1,
+        },
+    )
+    drag_envelope = drag_result.structured_content
+
+    assert drag_envelope["success"] is False
+    assert drag_envelope["error"]["code"] == "ACTION_OUTCOME_UNKNOWN"
+    assert drag_envelope["action"]["outcome"] == "unknown"
+    assert drag_envelope["action"]["retry_safety"] == "reobserve"
+
+    release_result = await mcp.call_tool("computer_release_all_inputs", {})
+    release_data = _content(release_result)
+
+    assert release_data["success"] is True
+    assert release_data["released_mouse_buttons"] == ["left"]
+    assert automation.release_attempts == 2
+
+
+@pytest.mark.asyncio
 async def test_screenshot_returns_image_and_structured_metadata(monkeypatch):
     import base64
     from io import BytesIO
@@ -103,16 +240,22 @@ async def test_screenshot_returns_image_and_structured_metadata(monkeypatch):
     assert len(result.content) == 1
     assert result.content[0].type == "image"
     assert result.content[0].mimeType == "image/png"
-    assert result.structured_content == {
-        "success": True,
-        "format": "png",
-        "mime_type": "image/png",
-        "mimeType": "image/png",
-        "width": 32,
-        "height": 24,
-        "byte_count": len(base64.b64decode(result.content[0].data)),
-        "imageBytes": len(base64.b64decode(result.content[0].data)),
-    }
+    envelope = result.structured_content
+    assert _content(result) == {"success": True}
+    assert envelope["data"] == {}
+    assert envelope["action"] is None
+    assert envelope["artifacts"] == [
+        {
+            "id": envelope["artifacts"][0]["id"],
+            "type": "image",
+            "role": "screen",
+            "mime_type": "image/png",
+            "content_index": 0,
+            "width": 32,
+            "height": 24,
+            "byte_count": len(base64.b64decode(result.content[0].data)),
+        }
+    ]
 
 
 class _FakeWindow:
@@ -120,7 +263,12 @@ class _FakeWindow:
         self.activations = []
 
     async def get_current_window_id(self):
-        return {"success": True, "window_id": 456, "name": "Target Window"}
+        return {
+            "success": True,
+            "window_id": 456,
+            "pid": 123,
+            "name": "Target Window",
+        }
 
     async def activate_window(self, window_id: int):
         self.activations.append(window_id)
@@ -189,12 +337,11 @@ async def test_launch_app_can_wait_for_canonical_window(monkeypatch):
         {"app": "微信", "wait_for_window": True, "wait_timeout": 1},
     )
 
-    content = result.structured_content
+    content = _content(result)
     assert content["success"] is True
     assert content["window_ready"] is True
     assert content["launch_pid"] == 111
-    assert content["pid"] == 222
-    assert content["window"]["id"] == 456
+    assert content["window"] == {"id": 456, "pid": 222}
     assert calls[0]["process_name"] == "Weixin.exe"
     assert calls[0]["app_hint"] == "微信"
 
@@ -220,7 +367,7 @@ async def test_launch_app_window_wait_timeout_is_explicit(monkeypatch):
         {"app": "sample", "wait_for_window": True, "wait_timeout": 0.1},
     )
 
-    content = result.structured_content
+    content = _content(result)
     assert content["success"] is True
     assert content["window_ready"] is False
     assert "no targetable window appeared" in content["warning"]
@@ -261,13 +408,11 @@ async def test_launch_app_falls_back_to_running_alias_window(monkeypatch):
         {"app": "微信", "wait_for_window": True, "wait_timeout": 1},
     )
 
-    content = result.structured_content
+    content = _content(result)
     assert content["success"] is True
     assert content["already_running"] is True
     assert content["window_ready"] is True
-    assert content["window_id"] == 456
-    assert content["pid"] == 222
-    assert content["window"]["process_name"] == "Weixin.exe"
+    assert content["window"] == {"id": 456, "pid": 222}
     assert content["activation"]["success"] is True
     assert window.activations == [456]
     assert content["launch_fallback"]["launch_error"] == "Could not locate app"
@@ -324,9 +469,11 @@ async def test_open_url_rejects_local_paths():
         {"url": "C:/Windows"},
     )
 
-    assert result.structured_content == {
+    assert _content(result) == {
         "success": False,
         "error": "url must be an absolute http or https URL",
+        "code": "INVALID_ARGUMENT",
+        "suggestion": None,
     }
 
 
@@ -334,12 +481,13 @@ async def test_open_url_rejects_local_paths():
 async def test_click_requires_coordinates_or_element():
     result = await create_mcp_server().call_tool("computer_click", {})
 
-    assert result.structured_content == {
+    assert _content(result) == {
         "success": False,
-        "error": "x and y are required (or element_index + pid + window_id)",
+        "error": "x and y are required unless element_index is provided",
+        "code": "INVALID_ARGUMENT",
         "suggestion": (
-            "Provide (x, y) pixel coordinates or (element_index + pid + window_id) "
-            "from a previous get_window_state call"
+            "Provide x/y coordinates, or pass window, observation_id, "
+            "and element_index from computer_get_window_state."
         ),
     }
 
@@ -351,9 +499,11 @@ async def test_click_rejects_empty_verify_query_before_action():
         {"x": 1, "y": 1, "verify_query": "   "},
     )
 
-    assert result.structured_content == {
+    assert _content(result) == {
         "success": False,
         "error": "verify_query must not be empty",
+        "code": "INVALID_ARGUMENT",
+        "suggestion": None,
     }
 
 
@@ -364,9 +514,11 @@ async def test_click_require_verification_requires_query():
         {"x": 1, "y": 1, "require_verification": True},
     )
 
-    assert result.structured_content == {
+    assert _content(result) == {
         "success": False,
         "error": "require_verification=True requires verify_query",
+        "code": "INVALID_ARGUMENT",
+        "suggestion": None,
     }
 
 
@@ -380,7 +532,7 @@ async def test_click_returns_action_path_for_pixel_click(monkeypatch):
     monkeypatch.setattr(
         mcp_module,
         "_handlers",
-        SimpleNamespace(automation=_FakeAutomation()),
+        SimpleNamespace(automation=_FakeAutomation(), window=_FakeWindow()),
     )
     monkeypatch.setattr(mcp_module, "_animate_cursor_to", noop_animate)
 
@@ -389,9 +541,9 @@ async def test_click_returns_action_path_for_pixel_click(monkeypatch):
         {"x": 1, "y": 2},
     )
 
-    assert result.structured_content["success"] is True
-    assert result.structured_content["method"] == "pixel_click"
-    action_path = result.structured_content["action_path"]
+    assert _content(result)["success"] is True
+    assert _content(result)["method"] == "pixel_click"
+    action_path = _content(result)["action_path"]
     assert action_path == {
         "method": "pixel_click",
         "used_foreground": True,
@@ -409,6 +561,7 @@ async def test_click_returns_action_path_for_pixel_click(monkeypatch):
 @pytest.mark.asyncio
 async def test_type_returns_target_profile_action_path(monkeypatch):
     import computer_server.mcp_server as mcp_module
+    import computer_server.services.target_profile_service as target_profile_service
 
     automation = _FakeAutomation()
     window_handler = _FakeWindow()
@@ -417,22 +570,26 @@ async def test_type_returns_target_profile_action_path(monkeypatch):
         "_handlers",
         SimpleNamespace(automation=automation, window=window_handler),
     )
+    monkeypatch.setattr(
+        target_profile_service,
+        "_process_name_from_pid",
+        lambda _pid: "pwsh.exe",
+    )
+    monkeypatch.setattr(
+        target_profile_service,
+        "_class_name_from_hwnd",
+        lambda _window_id: "CASCADIA_HOSTING_WINDOW_CLASS",
+    )
 
     result = await create_mcp_server().call_tool(
         "computer_type",
         {
             "text": "hello",
-            "window": {
-                "id": 456,
-                "pid": 123,
-                "process_name": "pwsh.exe",
-                "class_name": "CASCADIA_HOSTING_WINDOW_CLASS",
-                "title": "PowerShell",
-            },
+            "window": {"id": 456, "pid": 123},
         },
     )
 
-    action_path = result.structured_content["action_path"]
+    action_path = _content(result)["action_path"]
     assert action_path["method"] == "clipboard_type"
     assert action_path["target_profile"]["family"] == "terminal"
     assert action_path["delivery_risk"] == "terminal_focus_sensitive"
@@ -441,8 +598,40 @@ async def test_type_returns_target_profile_action_path(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_type_preserves_locked_desktop_preflight_rejection(monkeypatch):
+    import computer_server.mcp_server as mcp_module
+    from computer_server.handlers.windows import require_unlocked_desktop
+
+    class LockedAutomation(_FakeAutomation):
+        def is_desktop_locked(self):
+            return True
+
+        @require_unlocked_desktop
+        async def type_text(self, text: str):
+            raise AssertionError("locked desktop must reject before input")
+
+    monkeypatch.setattr(
+        mcp_module,
+        "_handlers",
+        SimpleNamespace(automation=LockedAutomation()),
+    )
+
+    result = await create_mcp_server().call_tool(
+        "computer_type",
+        {"text": "hello"},
+    )
+    envelope = result.structured_content
+
+    assert envelope["success"] is False
+    assert envelope["error"]["code"] == "ACTION_REJECTED"
+    assert envelope["action"]["outcome"] == "rejected"
+    assert envelope["action"]["retry_safety"] == "safe"
+
+
+@pytest.mark.asyncio
 async def test_press_key_returns_target_profile_action_path(monkeypatch):
     import computer_server.mcp_server as mcp_module
+    import computer_server.services.target_profile_service as target_profile_service
 
     automation = _FakeAutomation()
     window_handler = _FakeWindow()
@@ -451,22 +640,26 @@ async def test_press_key_returns_target_profile_action_path(monkeypatch):
         "_handlers",
         SimpleNamespace(automation=automation, window=window_handler),
     )
+    monkeypatch.setattr(
+        target_profile_service,
+        "_process_name_from_pid",
+        lambda _pid: "soffice.bin",
+    )
+    monkeypatch.setattr(
+        target_profile_service,
+        "_class_name_from_hwnd",
+        lambda _window_id: "SALFRAME",
+    )
 
     result = await create_mcp_server().call_tool(
         "computer_press_key",
         {
             "key": "Control_L+s",
-            "window": {
-                "id": 456,
-                "pid": 123,
-                "process_name": "soffice.bin",
-                "class_name": "SALFRAME",
-                "title": "LibreOffice Writer",
-            },
+            "window": {"id": 456, "pid": 123},
         },
     )
 
-    action_path = result.structured_content["action_path"]
+    action_path = _content(result)["action_path"]
     assert action_path["method"] == "hotkey"
     assert action_path["target_profile"]["family"] == "vcl_sal"
     assert action_path["delivery_risk"] == "accelerator_state_sensitive"
@@ -481,10 +674,11 @@ async def test_secondary_action_requires_window_identity():
         {"element_index": 1, "action": "expand"},
     )
 
-    assert result.structured_content == {
+    assert _content(result) == {
         "success": False,
-        "error": "pid and window_id are required with element_index",
-        "suggestion": "Pass the window and snapshot_id from computer_get_window_state",
+        "error": "window is required",
+        "code": "TARGET_REQUIRED",
+        "suggestion": None,
     }
 
 
@@ -495,15 +689,18 @@ async def test_secondary_action_rejects_non_secondary_action():
         {"element_index": 1, "action": "raise"},
     )
 
-    assert result.structured_content == {
+    assert _content(result) == {
         "success": False,
         "error": "action must be one of: expand",
+        "code": "INVALID_ARGUMENT",
+        "suggestion": None,
     }
 
 
 @pytest.mark.asyncio
 async def test_secondary_action_expands_msaa_dropdown(monkeypatch):
     import computer_server.mcp_server as mcp_module
+    import computer_server.services.window_state_service as window_state_service
 
     cache = get_element_cache()
     cache.clear()
@@ -520,6 +717,26 @@ async def test_secondary_action_expands_msaa_dropdown(monkeypatch):
         SimpleNamespace(automation=automation, window=window),
     )
     monkeypatch.setattr(mcp_module, "_animate_cursor_to", noop_animate)
+
+    async def fake_get_window_state_snapshot(
+        _automation_handler,
+        _pid,
+        _window_id,
+        **_kwargs,
+    ):
+        return {
+            "success": True,
+            "node_count": 1,
+            "unfiltered_node_count": 1,
+            "nodes": [],
+            "tree_markdown": "",
+        }
+
+    monkeypatch.setattr(
+        window_state_service,
+        "get_window_state_snapshot",
+        fake_get_window_state_snapshot,
+    )
     try:
         cache.set_window_origin(123, 456, 100, 200)
         cache.update(
@@ -540,17 +757,22 @@ async def test_secondary_action_expands_msaa_dropdown(monkeypatch):
             ],
         )
 
-        result = await create_mcp_server().call_tool(
+        mcp = create_mcp_server()
+        observation = await mcp.call_tool(
+            "computer_get_window_state",
+            {"window": {"id": 456, "pid": 123}},
+        )
+        result = await mcp.call_tool(
             "computer_perform_secondary_action",
             {
                 "element_index": 7,
                 "action": "expand",
-                "pid": 123,
-                "window_id": 456,
+                "window": {"id": 456, "pid": 123},
+                "observation_id": _content(observation)["observation_id"],
             },
         )
 
-        content = result.structured_content
+        content = _content(result)
         assert content["success"] is True
         assert content["action"] == "expand"
         assert content["element_index"] == 7
@@ -578,12 +800,10 @@ async def test_get_window_active_returns_canonical_window(monkeypatch):
         {"active": True},
     )
 
-    window_record = result.structured_content
-    assert window_record["id"] == 456
-    assert window_record["window_id"] == 456
+    window_record = _content(result)
+    assert "id" not in window_record
     assert window_record["window"]["id"] == 456
-    assert window_record["window"]["window_id"] == 456
-    assert window_record["window"]["title"] == "Target Window"
+    assert window_record["name"] == "Target Window"
 
 
 @pytest.mark.asyncio
@@ -603,16 +823,21 @@ async def test_manage_window_activates_and_resizes(monkeypatch):
     )
     resize_result = await mcp.call_tool(
         "computer_manage_window",
-        {"window_id": 456, "action": "resize", "width": 800, "height": 600},
+        {
+            "window": {"id": 456, "pid": 123},
+            "action": "resize",
+            "width": 800,
+            "height": 600,
+        },
     )
 
-    assert activate_result.structured_content["success"] is True
-    assert activate_result.structured_content["action"] == "activate"
-    assert resize_result.structured_content["success"] is True
-    assert resize_result.structured_content["window_id"] == 456
-    assert resize_result.structured_content["width"] == 800
-    assert resize_result.structured_content["height"] == 600
-    assert resize_result.structured_content["action"] == "resize"
+    assert _content(activate_result)["success"] is True
+    assert _content(activate_result)["action"] == "activate"
+    assert _content(resize_result)["success"] is True
+    assert _content(resize_result)["window"] == {"id": 456, "pid": 123}
+    assert _content(resize_result)["width"] == 800
+    assert _content(resize_result)["height"] == 600
+    assert _content(resize_result)["action"] == "resize"
 
 
 @pytest.mark.asyncio
@@ -659,11 +884,11 @@ async def test_list_windows_marks_minimized_window_off_screen(monkeypatch):
         {"on_screen_only": True},
     )
 
-    record = all_windows.structured_content["windows"][0]
+    record = _content(all_windows)["windows"][0]
     assert record["minimized"] is True
     assert record["is_on_screen"] is False
-    assert record["window"]["state"]["minimized"] is True
-    assert on_screen.structured_content["windows"] == []
+    assert record["window"] == {"id": 456, "pid": 123}
+    assert _content(on_screen)["windows"] == []
 
 
 @pytest.mark.asyncio
@@ -693,7 +918,7 @@ async def test_list_apps_uses_shared_window_records(monkeypatch):
 
     result = await create_mcp_server().call_tool("computer_list_apps", {})
 
-    apps = result.structured_content["apps"]
+    apps = _content(result)["apps"]
     assert len(apps) == 1
     assert apps[0]["name"] == "Weixin.exe"
     assert apps[0]["windows"][0]["window"]["id"] == 456
@@ -738,7 +963,7 @@ async def test_list_windows_query_matches_unicode_window_title(monkeypatch):
         {"query": "\u5fae\u4fe1"},
     )
 
-    windows = result.structured_content["windows"]
+    windows = _content(result)["windows"]
     assert len(windows) == 1
     assert windows[0]["title"] == "\u5fae\u4fe1"
 
@@ -769,8 +994,8 @@ async def test_mouse_accepts_move_and_button_actions(monkeypatch):
         {"action": "down", "x": 10, "y": 20, "button": "right"},
     )
 
-    assert move_result.structured_content == {"success": True, "x": 10, "y": 20}
-    assert down_result.structured_content == {
+    assert _content(move_result) == {"success": True, "x": 10, "y": 20}
+    assert _content(down_result) == {
         "success": True,
         "x": 10,
         "y": 20,
@@ -795,7 +1020,7 @@ async def test_press_key_accepts_hotkey_string(monkeypatch):
         {"key": "Control_L+s"},
     )
 
-    content = result.structured_content
+    content = _content(result)
     assert content["success"] is True
     assert content["keys"] == ["Control_L", "s"]
     assert content["action_path"]["method"] == "hotkey"
@@ -832,10 +1057,9 @@ async def test_type_activates_target_window_before_input(monkeypatch):
         },
     )
 
-    assert result.structured_content["success"] is True
-    assert result.structured_content["window_id"] == 456
-    assert result.structured_content["pid"] == 123
-    assert result.structured_content["target_window_activated"] is True
+    assert _content(result)["success"] is True
+    assert _content(result)["window"] == {"id": 456, "pid": 123}
+    assert _content(result)["target_window_activated"] is True
     assert events == [("activate", 456), ("type", "你好")]
 
 
@@ -863,8 +1087,8 @@ async def test_press_key_does_not_send_input_when_activation_fails(monkeypatch):
         },
     )
 
-    assert result.structured_content["success"] is False
-    assert "Failed to activate target window 456" in result.structured_content["error"]
+    assert _content(result)["success"] is False
+    assert "Failed to activate target window 456" in _content(result)["error"]
     assert automation.key_events == []
 
 
@@ -889,8 +1113,8 @@ async def test_press_key_up_releases_without_reactivating_window(monkeypatch):
         },
     )
 
-    assert result.structured_content["success"] is True
-    assert result.structured_content["target_window_activated"] is False
+    assert _content(result)["success"] is True
+    assert _content(result)["target_window_activated"] is False
     assert window.activations == []
     assert automation.key_events == [("up", "Shift")]
 
@@ -916,14 +1140,14 @@ async def test_press_key_accepts_down_and_up_actions(monkeypatch):
         {"key": "Shift", "action": "up"},
     )
 
-    assert down_result.structured_content["success"] is True
-    assert down_result.structured_content["key"] == "Shift"
-    assert down_result.structured_content["action"] == "down"
-    assert down_result.structured_content["action_path"]["method"] == "key_down"
-    assert up_result.structured_content["success"] is True
-    assert up_result.structured_content["key"] == "Shift"
-    assert up_result.structured_content["action"] == "up"
-    assert up_result.structured_content["action_path"]["method"] == "key_up"
+    assert _content(down_result)["success"] is True
+    assert _content(down_result)["key"] == "Shift"
+    assert _content(down_result)["action"] == "down"
+    assert _content(down_result)["action_path"]["method"] == "key_down"
+    assert _content(up_result)["success"] is True
+    assert _content(up_result)["key"] == "Shift"
+    assert _content(up_result)["action"] == "up"
+    assert _content(up_result)["action_path"]["method"] == "key_up"
     assert fake.key_events == [("down", "Shift"), ("up", "Shift")]
 
 
@@ -988,7 +1212,7 @@ async def test_mouse_actions_activate_explicit_window_before_input(monkeypatch):
         },
     )
     assert events[:2] == [("activate", 456), ("click", 10, 20)]
-    assert click.structured_content["target_window_activated"] is True
+    assert _content(click)["target_window_activated"] is True
 
     events.clear()
     drag = await mcp.call_tool(
@@ -1005,7 +1229,7 @@ async def test_mouse_actions_activate_explicit_window_before_input(monkeypatch):
     )
     assert events[0] == ("activate", 456)
     assert ("down", 10, 20, "left") in events
-    assert drag.structured_content["target_window_activated"] is True
+    assert _content(drag)["target_window_activated"] is True
 
     events.clear()
     scroll = await mcp.call_tool(
@@ -1024,7 +1248,7 @@ async def test_mouse_actions_activate_explicit_window_before_input(monkeypatch):
         ("move", 10, 20),
         ("scroll", 0, -1),
     ]
-    assert scroll.structured_content["target_window_activated"] is True
+    assert _content(scroll)["target_window_activated"] is True
 
     events.clear()
     smooth_scroll = await mcp.call_tool(
@@ -1044,8 +1268,8 @@ async def test_mouse_actions_activate_explicit_window_before_input(monkeypatch):
         ("wheel", 0, -1),
         ("wheel", 0, -1),
     ]
-    assert smooth_scroll.structured_content["success"] is True
-    assert smooth_scroll.structured_content["target_window_activated"] is True
+    assert _content(smooth_scroll)["success"] is True
+    assert _content(smooth_scroll)["target_window_activated"] is True
 
 
 @pytest.mark.asyncio
@@ -1080,40 +1304,19 @@ async def test_click_does_not_send_input_when_explicit_window_activation_fails(
         },
     )
 
-    assert result.structured_content["success"] is False
-    assert "Failed to activate target window 456" in result.structured_content["error"]
+    assert _content(result)["success"] is False
+    assert "Failed to activate target window 456" in _content(result)["error"]
 
 
 @pytest.mark.asyncio
-async def test_legacy_click_window_ids_do_not_auto_activate(monkeypatch):
-    import computer_server.mcp_server as mcp_module
+async def test_click_schema_removes_legacy_window_ids():
+    tools = await create_mcp_server().list_tools()
+    click = next(tool for tool in tools if tool.name == "computer_click")
+    properties = click.parameters["properties"]
 
-    window = _FakeWindow()
-
-    async def noop_animate(_x: int, _y: int) -> None:
-        return None
-
-    monkeypatch.setattr(
-        mcp_module,
-        "_handlers",
-        SimpleNamespace(automation=_FakeAutomation(), window=window),
-    )
-    monkeypatch.setattr(mcp_module, "_animate_cursor_to", noop_animate)
-
-    result = await create_mcp_server().call_tool(
-        "computer_click",
-        {
-            "pid": 123,
-            "window_id": 456,
-            "coordinate_space": "screen",
-            "x": 10,
-            "y": 20,
-        },
-    )
-
-    assert result.structured_content["success"] is True
-    assert "target_window_activated" not in result.structured_content
-    assert window.activations == []
+    assert "window" in properties
+    assert "pid" not in properties
+    assert "window_id" not in properties
 
 
 @pytest.mark.asyncio
@@ -1123,7 +1326,11 @@ async def test_recording_status_uses_merged_tool():
         {"action": "status"},
     )
 
-    assert result.structured_content == {"active": False, "turn_count": 0}
+    assert _content(result) == {
+        "success": True,
+        "active": False,
+        "turn_count": 0,
+    }
 
 
 @pytest.mark.asyncio
@@ -1133,8 +1340,8 @@ async def test_learn_status_uses_merged_tool():
         {"action": "status"},
     )
 
-    assert result.structured_content["success"] is True
-    data = result.structured_content["data"]
+    assert _content(result)["success"] is True
+    data = _content(result)
     assert data["recording"] is False
     assert data["mode"] == "off"
     assert data["action_count"] == 0
@@ -1175,19 +1382,10 @@ async def test_get_window_rehydrates_canonical_window(monkeypatch):
         {"id": 456, "app": "Target.exe"},
     )
 
-    assert result.structured_content == {
+    assert _content(result) == {
         "success": True,
-        "id": 456,
-        "window_id": 456,
-        "pid": 123,
         "title": "Target",
-        "window": {
-            "id": 456,
-            "window_id": 456,
-            "pid": 123,
-            "app": "Target.exe",
-            "title": "Target",
-        },
+        "window": {"id": 456, "pid": 123},
     }
 
 
@@ -1205,9 +1403,11 @@ async def test_get_window_rejects_invalid_id(monkeypatch):
         {"id": 456},
     )
 
-    assert result.structured_content == {
+    assert _content(result) == {
         "success": False,
         "error": "id must be an integer",
+        "code": "INVALID_ARGUMENT",
+        "suggestion": None,
     }
 
 
@@ -1264,34 +1464,27 @@ async def test_get_window_state_accepts_window_and_returns_window(monkeypatch):
 
     result = await create_mcp_server().call_tool(
         "computer_get_window_state",
-        {"window": {"id": 456, "pid": 123, "title": "Target"}},
+        {"window": {"id": 456, "pid": 123}},
     )
 
-    content = result.structured_content
+    content = _content(result)
     assert content["success"] is True
-    assert content["snapshot_id"].startswith("snap-")
+    assert content["observation_id"].startswith("obs-")
     assert content["screenshot_id"].startswith("shot-")
     assert content["capture"]["id"] == content["screenshot_id"]
-    assert content["capture"]["snapshot_id"] == content["snapshot_id"]
+    assert content["capture"]["observation_id"] == content["observation_id"]
     assert content["capture"]["screen_width"] == 100
     assert content["capture"]["screen_height"] == 50
     assert content["capture"]["capture_backend"] == "wgc"
     assert content["nodes_coordinate_space"] == "window_resized"
-    assert content["screenshots"][0]["id"] == content["screenshot_id"]
-    assert content["screenshots"][0]["role"] == "target"
-    assert content["screenshots"][0]["zIndex"] == 0
-    assert content["screenshots"][0]["originX"] == 10
-    assert content["screenshots"][0]["originY"] == 20
-    assert content["window"]["id"] == 456
-    assert content["window"]["window_id"] == 456
-    assert content["window"]["pid"] == 123
-    assert content["window_ref"]["version"] == 1
-    assert content["window_ref"]["pid"] == 123
-    assert content["window_ref"]["window_id"] == 456
+    assert content["window"] == {"id": 456, "pid": 123}
+    assert content["target_profile"]["family"]
+    assert "screenshots" not in content
+    assert "window_ref" not in content
     assert content["agent_state"]["text_limit"] == 500
     assert content["agent_state"]["show_full_text"] is False
     assert content["state_text"] == content["agent_state"]["text"]
-    assert "snapshot_id=" in content["state_text"]
+    assert "observation_id=" in content["state_text"]
 
 
 @pytest.mark.asyncio
@@ -1307,22 +1500,32 @@ async def test_get_window_state_validates_agent_text_options(monkeypatch):
     result = await create_mcp_server().call_tool(
         "computer_get_window_state",
         {
-            "pid": 123,
-            "window_id": 456,
+            "window": {"id": 456, "pid": 123},
             "agent_text_limit": 20001,
         },
     )
 
-    assert result.structured_content == {
+    assert _content(result) == {
         "success": False,
         "error": "agent_text_limit must be between 0 and 20000",
+        "code": "INVALID_ARGUMENT",
+        "suggestion": None,
     }
 
 
 @pytest.mark.asyncio
-async def test_get_window_state_registers_related_transient_screenshots(monkeypatch):
+async def test_get_window_state_registers_related_transient_screenshots(
+    monkeypatch,
+    tmp_path,
+):
     import computer_server.mcp_server as mcp_module
     import computer_server.services.window_state_service as window_state_service
+    from PIL import Image
+
+    target_path = tmp_path / "target.jpg"
+    popup_path = tmp_path / "popup.jpg"
+    Image.new("RGB", (100, 50), "white").save(target_path)
+    Image.new("RGB", (40, 30), "white").save(popup_path)
 
     async def noop_animate(_x: int, _y: int) -> None:
         return None
@@ -1335,7 +1538,7 @@ async def test_get_window_state_registers_related_transient_screenshots(monkeypa
     ):
         return {
             "success": True,
-            "screenshot": "target.jpg",
+            "screenshot": str(target_path),
             "node_count": 0,
             "unfiltered_node_count": 0,
             "nodes": [],
@@ -1352,7 +1555,7 @@ async def test_get_window_state_registers_related_transient_screenshots(monkeypa
             },
             "_related_screenshots": [
                 {
-                    "screenshot": "popup.jpg",
+                    "screenshot": str(popup_path),
                     "pid": pid,
                     "window_id": 789,
                     "title": "Popup",
@@ -1379,7 +1582,7 @@ async def test_get_window_state_registers_related_transient_screenshots(monkeypa
     monkeypatch.setattr(
         mcp_module,
         "_handlers",
-        SimpleNamespace(automation=_FakeAutomation()),
+        SimpleNamespace(automation=_FakeAutomation(), window=_FakeWindow()),
     )
     monkeypatch.setattr(mcp_module, "_scale_x", 1.0)
     monkeypatch.setattr(mcp_module, "_scale_y", 1.0)
@@ -1388,37 +1591,39 @@ async def test_get_window_state_registers_related_transient_screenshots(monkeypa
     mcp = create_mcp_server()
     result = await mcp.call_tool(
         "computer_get_window_state",
-        {"pid": 123, "window_id": 456},
+        {"window": {"id": 456, "pid": 123}},
     )
 
-    content = result.structured_content
-    assert len(content["screenshots"]) == 2
-    popup = content["screenshots"][1]
+    content = _content(result)
+    assert "screenshots" not in content
+    assert len(result.content) == 2
+    artifacts = result.structured_content["artifacts"]
+    assert len(artifacts) == 2
+    assert artifacts[0]["role"] == "target"
+    popup = artifacts[1]
     assert popup["role"] == "transient"
-    assert popup["zIndex"] == 2
-    assert popup["window_id"] == 789
-    assert popup["parent_window_id"] == 456
-    assert popup["path"] == "popup.jpg"
-    assert popup["originX"] == 30
-    assert popup["originY"] == 40
-    assert popup["capture"]["capture_backend"] == "wgc"
+    assert popup["window"] == {"id": 789, "pid": 123}
+    assert popup["observation_id"] == content["observation_id"]
+    assert popup["content_index"] == 1
     assert popup["screenshot_id"].startswith("shot-")
 
     click = await mcp.call_tool(
         "computer_click",
         {
+            "window": {"id": 789, "pid": 123},
             "screenshot_id": popup["screenshot_id"],
+            "coordinate_space": "window_resized",
             "x": 5,
             "y": 6,
         },
     )
-    assert click.structured_content["success"] is True
-    assert click.structured_content["x"] == 35
-    assert click.structured_content["y"] == 46
+    assert _content(click)["success"] is True
+    assert _content(click)["x"] == 35
+    assert _content(click)["y"] == 46
 
 
 @pytest.mark.asyncio
-async def test_snapshot_id_rejects_window_mismatch(monkeypatch):
+async def test_observation_id_rejects_window_mismatch(monkeypatch):
     import computer_server.mcp_server as mcp_module
     import computer_server.services.window_state_service as window_state_service
     from computer_server.handlers.element_cache import get_element_cache
@@ -1454,19 +1659,30 @@ async def test_snapshot_id_rejects_window_mismatch(monkeypatch):
     )
     mcp = create_mcp_server()
 
-    snapshot_result = await mcp.call_tool(
+    observation_result = await mcp.call_tool(
         "computer_get_window_state",
-        {"pid": 123, "window_id": 456},
+        {"window": {"id": 456, "pid": 123}},
     )
-    snapshot_id = snapshot_result.structured_content["snapshot_id"]
+    observation_id = _content(observation_result)["observation_id"]
     result = await mcp.call_tool(
         "computer_click",
-        {"snapshot_id": snapshot_id, "window": {"id": 789, "pid": 123}, "x": 1, "y": 2},
+        {
+            "observation_id": observation_id,
+            "window": {"id": 789, "pid": 123},
+            "coordinate_space": "screen",
+            "x": 1,
+            "y": 2,
+        },
     )
 
-    assert result.structured_content == {
+    assert _content(result) == {
         "success": False,
-        "error": "snapshot_id window_id mismatch: snapshot has window_id=456, got window_id=789",
+        "error": (
+            "observation_id target mismatch: observation has window=456, "
+            "got window=789"
+        ),
+        "code": "OBSERVATION_TARGET_MISMATCH",
+        "suggestion": None,
     }
 
 
@@ -1523,15 +1739,15 @@ async def test_screenshot_id_binds_click_coordinates_to_capture(monkeypatch):
     monkeypatch.setattr(
         mcp_module,
         "_handlers",
-        SimpleNamespace(automation=fake_automation),
+        SimpleNamespace(automation=fake_automation, window=_FakeWindow()),
     )
     mcp = create_mcp_server()
 
-    snapshot_result = await mcp.call_tool(
+    observation_result = await mcp.call_tool(
         "computer_get_window_state",
-        {"pid": 123, "window_id": 456},
+        {"window": {"id": 456, "pid": 123}},
     )
-    screenshot_id = snapshot_result.structured_content["screenshot_id"]
+    screenshot_id = _content(observation_result)["screenshot_id"]
     mcp_module._zoom_metadata[(123, 456)] = {
         "compression_ratio": 10.0,
         "crop_origin_screen_x": 1000,
@@ -1540,10 +1756,16 @@ async def test_screenshot_id_binds_click_coordinates_to_capture(monkeypatch):
 
     result = await mcp.call_tool(
         "computer_click",
-        {"screenshot_id": screenshot_id, "x": 5, "y": 6},
+        {
+            "window": {"id": 456, "pid": 123},
+            "screenshot_id": screenshot_id,
+            "coordinate_space": "window_resized",
+            "x": 5,
+            "y": 6,
+        },
     )
 
-    content = result.structured_content
+    content = _content(result)
     assert content["success"] is True
     assert content["x"] == 20
     assert content["y"] == 32
@@ -1605,15 +1827,15 @@ async def test_screenshot_id_binds_drag_and_scroll_coordinates(monkeypatch):
     monkeypatch.setattr(
         mcp_module,
         "_handlers",
-        SimpleNamespace(automation=fake_automation),
+        SimpleNamespace(automation=fake_automation, window=_FakeWindow()),
     )
     mcp = create_mcp_server()
 
-    snapshot_result = await mcp.call_tool(
+    observation_result = await mcp.call_tool(
         "computer_get_window_state",
-        {"pid": 123, "window_id": 456},
+        {"window": {"id": 456, "pid": 123}},
     )
-    screenshot_id = snapshot_result.structured_content["screenshot_id"]
+    screenshot_id = _content(observation_result)["screenshot_id"]
     mcp_module._zoom_metadata[(123, 456)] = {
         "compression_ratio": 10.0,
         "crop_origin_screen_x": 1000,
@@ -1623,7 +1845,9 @@ async def test_screenshot_id_binds_drag_and_scroll_coordinates(monkeypatch):
     drag_result = await mcp.call_tool(
         "computer_drag",
         {
+            "window": {"id": 456, "pid": 123},
             "screenshot_id": screenshot_id,
+            "coordinate_space": "window_resized",
             "start_x": 1,
             "start_y": 2,
             "end_x": 3,
@@ -1634,7 +1858,9 @@ async def test_screenshot_id_binds_drag_and_scroll_coordinates(monkeypatch):
     scroll_result = await mcp.call_tool(
         "computer_scroll",
         {
+            "window": {"id": 456, "pid": 123},
             "screenshot_id": screenshot_id,
+            "coordinate_space": "window_resized",
             "x": 5,
             "y": 6,
             "scroll_y": 1,
@@ -1642,13 +1868,13 @@ async def test_screenshot_id_binds_drag_and_scroll_coordinates(monkeypatch):
         },
     )
 
-    assert drag_result.structured_content["success"] is True
+    assert _content(drag_result)["success"] is True
     assert fake_automation.mouse_events[0] == ("down", 12, 24, "left")
     assert fake_automation.mouse_events[-1] == ("up", 16, 28, "left")
-    assert drag_result.structured_content["action_path"]["input_screenshot_id"] == screenshot_id
-    assert scroll_result.structured_content["success"] is True
+    assert _content(drag_result)["action_path"]["input_screenshot_id"] == screenshot_id
+    assert _content(scroll_result)["success"] is True
     assert fake_automation.moves[-1] == (20, 32)
-    assert scroll_result.structured_content["action_path"]["input_screenshot_id"] == screenshot_id
+    assert _content(scroll_result)["action_path"]["input_screenshot_id"] == screenshot_id
 
 
 @pytest.mark.asyncio
@@ -1695,35 +1921,39 @@ async def test_screenshot_id_rejects_snapshot_mismatch(monkeypatch):
     monkeypatch.setattr(
         mcp_module,
         "_handlers",
-        SimpleNamespace(automation=_FakeAutomation()),
+        SimpleNamespace(automation=_FakeAutomation(), window=_FakeWindow()),
     )
     mcp = create_mcp_server()
 
     first = await mcp.call_tool(
         "computer_get_window_state",
-        {"pid": 123, "window_id": 456},
+        {"window": {"id": 456, "pid": 123}},
     )
     second = await mcp.call_tool(
         "computer_get_window_state",
-        {"pid": 123, "window_id": 789},
+        {"window": {"id": 789, "pid": 123}},
     )
     result = await mcp.call_tool(
         "computer_click",
         {
-            "snapshot_id": first.structured_content["snapshot_id"],
-            "screenshot_id": second.structured_content["screenshot_id"],
+            "window": {"id": 456, "pid": 123},
+            "observation_id": _content(first)["observation_id"],
+            "screenshot_id": _content(second)["screenshot_id"],
+            "coordinate_space": "window_resized",
             "x": 1,
             "y": 2,
         },
     )
 
-    assert result.structured_content == {
+    assert _content(result) == {
         "success": False,
         "error": (
-            "screenshot_id snapshot mismatch: "
-            f"screenshot has snapshot_id={second.structured_content['snapshot_id']}, "
-            f"got snapshot_id={first.structured_content['snapshot_id']}"
+            "screenshot_id observation mismatch: "
+            f"screenshot has observation_id={_content(second)['observation_id']}, "
+            f"got observation_id={_content(first)['observation_id']}"
         ),
+        "code": "OBSERVATION_TARGET_MISMATCH",
+        "suggestion": None,
     }
 
 
@@ -1777,25 +2007,247 @@ async def test_screenshot_id_rejects_stale_capture(monkeypatch):
 
     first = await mcp.call_tool(
         "computer_get_window_state",
-        {"pid": 123, "window_id": 456},
+        {"window": {"id": 456, "pid": 123}},
     )
     await mcp.call_tool(
         "computer_get_window_state",
-        {"pid": 123, "window_id": 456},
+        {"window": {"id": 456, "pid": 123}},
     )
     result = await mcp.call_tool(
         "computer_click",
-        {"screenshot_id": first.structured_content["screenshot_id"], "x": 1, "y": 2},
+        {
+            "window": {"id": 456, "pid": 123},
+            "screenshot_id": _content(first)["screenshot_id"],
+            "coordinate_space": "window_resized",
+            "x": 1,
+            "y": 2,
+        },
     )
 
-    content = result.structured_content
+    content = _content(result)
     assert content["success"] is False
-    assert content["code"] == "screenshot_stale"
-    assert content["error"] == "screenshot_id is stale for pid=123, window_id=456"
+    assert content["code"] == "STALE_OBSERVATION"
+    assert content["error"] == "screenshot_id is stale for pid=123, window=456"
     assert content["target_profile"]["family"]
     assert content["suggestion"] == (
         "Use the latest screenshot_id returned by computer_get_window_state or capture_after."
     )
+
+
+@pytest.mark.asyncio
+async def test_click_rechecks_screenshot_freshness_before_dispatch(monkeypatch):
+    import computer_server.mcp_server as mcp_module
+    import computer_server.services.window_state_service as window_state_service
+
+    activation_started = asyncio.Event()
+    release_activation = asyncio.Event()
+
+    class BlockingWindow(_FakeWindow):
+        async def activate_window(self, window_id: int):
+            activation_started.set()
+            await release_activation.wait()
+            return {"success": True, "window_id": window_id}
+
+    class Automation(_FakeAutomation):
+        def __init__(self):
+            super().__init__()
+            self.clicks = []
+
+        async def left_click(self, x: int, y: int):
+            self.clicks.append((x, y))
+            return {"success": True, "x": x, "y": y}
+
+    async def noop_animate(_x: int, _y: int) -> None:
+        return None
+
+    async def fake_get_window_state_snapshot(
+        _automation_handler,
+        pid,
+        window_id,
+        **_kwargs,
+    ):
+        return {
+            "success": True,
+            "node_count": 0,
+            "unfiltered_node_count": 0,
+            "nodes": [],
+            "tree_markdown": "",
+            "screen_width": 10,
+            "screen_height": 10,
+            "capture_metadata": {"capture_backend": "wgc"},
+            "_capture_geometry": {
+                "compression_ratio": 1.0,
+                "window_origin_x": 10,
+                "window_origin_y": 20,
+                "crop_origin_screen_x": 10,
+                "crop_origin_screen_y": 20,
+            },
+        }
+
+    automation = Automation()
+    monkeypatch.setattr(mcp_module, "_animate_cursor_to", noop_animate)
+    monkeypatch.setattr(
+        window_state_service,
+        "get_window_state_snapshot",
+        fake_get_window_state_snapshot,
+    )
+    monkeypatch.setattr(
+        mcp_module,
+        "_handlers",
+        SimpleNamespace(
+            automation=automation,
+            window=BlockingWindow(),
+        ),
+    )
+    mcp = create_mcp_server()
+    first = await mcp.call_tool(
+        "computer_get_window_state",
+        {"window": {"id": 456, "pid": 123}},
+    )
+    first_screenshot_id = _content(first)["screenshot_id"]
+
+    click_task = asyncio.create_task(
+        mcp.call_tool(
+            "computer_click",
+            {
+                "window": {"id": 456, "pid": 123},
+                "screenshot_id": first_screenshot_id,
+                "coordinate_space": "window_resized",
+                "x": 5,
+                "y": 6,
+            },
+        )
+    )
+    await activation_started.wait()
+    await mcp.call_tool(
+        "computer_get_window_state",
+        {"window": {"id": 456, "pid": 123}},
+    )
+    release_activation.set()
+    result = await click_task
+
+    assert result.structured_content["success"] is False
+    assert result.structured_content["error"]["code"] == "STALE_OBSERVATION"
+    assert result.structured_content["action"]["outcome"] == "rejected"
+    assert automation.clicks == []
+
+
+@pytest.mark.asyncio
+async def test_uia_click_rechecks_freshness_inside_worker(monkeypatch):
+    import computer_server.mcp_server as mcp_module
+    import computer_server.services.window_state_service as window_state_service
+
+    gate_entered = asyncio.Event()
+    release_gate = asyncio.Event()
+    dispatches = []
+
+    async def blocking_gate(*, func, **_kwargs):
+        gate_entered.set()
+        await release_gate.wait()
+        return func(), None
+
+    async def noop_animate(_x: int, _y: int) -> None:
+        return None
+
+    async def fake_get_window_state_snapshot(
+        _automation_handler,
+        _pid,
+        _window_id,
+        **_kwargs,
+    ):
+        return {
+            "success": True,
+            "node_count": 1,
+            "unfiltered_node_count": 1,
+            "nodes": [],
+            "tree_markdown": "",
+            "screen_width": 20,
+            "screen_height": 20,
+            "capture_metadata": {"capture_backend": "wgc"},
+            "_capture_geometry": {
+                "compression_ratio": 1.0,
+                "window_origin_x": 10,
+                "window_origin_y": 20,
+                "crop_origin_screen_x": 10,
+                "crop_origin_screen_y": 20,
+            },
+        }
+
+    cache = get_element_cache()
+    cache.clear()
+    monkeypatch.setattr(cache, "_is_window_valid", lambda _window_id: True)
+    monkeypatch.setattr(mcp_module, "_animate_cursor_to", noop_animate)
+    monkeypatch.setattr(mcp_module, "_window_snapshot", lambda: (0, set()))
+    monkeypatch.setattr(
+        mcp_module,
+        "_invoke_via_uia_point",
+        lambda x, y: dispatches.append((x, y)),
+    )
+    monkeypatch.setattr(
+        window_state_service,
+        "get_window_state_snapshot",
+        fake_get_window_state_snapshot,
+    )
+    monkeypatch.setattr(
+        window_state_service,
+        "run_window_operation_with_gate",
+        blocking_gate,
+    )
+    monkeypatch.setattr(
+        mcp_module,
+        "_handlers",
+        SimpleNamespace(
+            automation=_FakeAutomation(),
+            window=_FakeWindow(),
+        ),
+    )
+
+    mcp = create_mcp_server()
+    first = await mcp.call_tool(
+        "computer_get_window_state",
+        {"window": {"id": 456, "pid": 123}},
+    )
+    cache.set_window_origin(123, 456, 10, 20)
+    cache.update(
+        123,
+        456,
+        [
+            CachedElement(
+                element_index=1,
+                source="uia",
+                center_x=5,
+                center_y=6,
+                bbox=(0, 0, 10, 12),
+                control_type="Button",
+                name="Run",
+                actions=["invoke"],
+                enabled=True,
+            )
+        ],
+    )
+
+    click_task = asyncio.create_task(
+        mcp.call_tool(
+            "computer_click",
+            {
+                "window": {"id": 456, "pid": 123},
+                "observation_id": _content(first)["observation_id"],
+                "element_index": 1,
+            },
+        )
+    )
+    await gate_entered.wait()
+    await mcp.call_tool(
+        "computer_get_window_state",
+        {"window": {"id": 456, "pid": 123}},
+    )
+    release_gate.set()
+    result = await click_task
+
+    assert result.structured_content["success"] is False
+    assert result.structured_content["error"]["code"] == "STALE_OBSERVATION"
+    assert result.structured_content["action"]["outcome"] == "rejected"
+    assert dispatches == []
 
 
 @pytest.mark.asyncio
@@ -1853,7 +2305,7 @@ async def test_capture_after_does_not_build_delta_unless_requested(monkeypatch):
     monkeypatch.setattr(
         mcp_module,
         "_handlers",
-        SimpleNamespace(automation=_FakeAutomation()),
+        SimpleNamespace(automation=_FakeAutomation(), window=_FakeWindow()),
     )
     mcp = create_mcp_server()
 
@@ -1862,32 +2314,55 @@ async def test_capture_after_does_not_build_delta_unless_requested(monkeypatch):
         {
             "x": 1,
             "y": 2,
-            "pid": 123,
-            "window_id": 456,
+            "window": {"id": 456, "pid": 123},
             "coordinate_space": "screen",
             "capture_after": True,
         },
     )
-    assert default_result.structured_content["success"] is True
+    assert _content(default_result)["success"] is True
     assert calls == 1
-    assert "capture_after" in default_result.structured_content
-    assert "post_action_delta" not in default_result.structured_content
+    assert "capture_after" in _content(default_result)
+    assert "post_action_delta" not in _content(default_result)
 
     delta_result = await mcp.call_tool(
         "computer_click",
         {
             "x": 1,
             "y": 2,
-            "pid": 123,
-            "window_id": 456,
+            "window": {"id": 456, "pid": 123},
             "coordinate_space": "screen",
             "capture_after": True,
             "include_post_action_delta": True,
         },
     )
-    assert delta_result.structured_content["success"] is True
+    assert _content(delta_result)["success"] is True
     assert calls == 3
-    assert delta_result.structured_content["post_action_delta"]["success"] is True
+    assert _content(delta_result)["post_action_delta"]["success"] is True
+
+    verified_result = await mcp.call_tool(
+        "computer_click",
+        {
+            "x": 1,
+            "y": 2,
+            "window": {"id": 456, "pid": 123},
+            "coordinate_space": "screen",
+            "capture_after": True,
+            "verify_query": "state",
+            "require_verification": True,
+        },
+    )
+    verified = _content(verified_result)
+    assert verified["success"] is True
+    assert calls == 4
+    assert verified["post_action_verification"]["matched"] is True
+    assert (
+        verified["post_action_verification"]["observation_id"]
+        == verified["capture_after"]["observation_id"]
+    )
+    assert (
+        verified["post_action_verification"]["screenshot_id"]
+        == verified["capture_after"]["screenshot_id"]
+    )
 
 
 @pytest.mark.asyncio
@@ -1901,9 +2376,11 @@ async def test_post_action_delta_requires_capture_after():
         },
     )
 
-    assert result.structured_content == {
+    assert _content(result) == {
         "success": False,
         "error": "include_post_action_delta=True requires capture_after=True",
+        "code": "INVALID_ARGUMENT",
+        "suggestion": None,
     }
 
 
@@ -1985,11 +2462,11 @@ async def test_zoom_uses_screenshot_id_capture_metadata(monkeypatch):
     )
     mcp = create_mcp_server()
 
-    snapshot_result = await mcp.call_tool(
+    observation_result = await mcp.call_tool(
         "computer_get_window_state",
-        {"pid": 123, "window_id": 456},
+        {"window": {"id": 456, "pid": 123}},
     )
-    screenshot_id = snapshot_result.structured_content["screenshot_id"]
+    screenshot_id = _content(observation_result)["screenshot_id"]
     mcp_module._zoom_metadata[(123, 456)] = {
         "compression_ratio": 10.0,
         "crop_origin_screen_x": 1000,
@@ -1999,6 +2476,7 @@ async def test_zoom_uses_screenshot_id_capture_metadata(monkeypatch):
     result = await mcp.call_tool(
         "computer_zoom",
         {
+            "window": {"id": 456, "pid": 123},
             "screenshot_id": screenshot_id,
             "x1": 1,
             "y1": 2,
@@ -2007,16 +2485,17 @@ async def test_zoom_uses_screenshot_id_capture_metadata(monkeypatch):
         },
     )
 
-    assert result.structured_content["success"] is True
-    assert result.structured_content["parent_screenshot_id"] == screenshot_id
+    assert _content(result)["success"] is True
+    assert _content(result)["parent_screenshot_id"] == screenshot_id
 
 
 @pytest.mark.asyncio
-async def test_set_value_falls_back_when_uia_action_times_out(monkeypatch):
+async def test_set_value_reports_unknown_when_uia_action_times_out(monkeypatch):
     import time
 
     import computer_server.mcp_server as mcp_module
     from computer_server.handlers.element_cache import CachedElement, get_element_cache
+    import computer_server.services.window_state_service as window_state_service
 
     async def noop_animate(_x: int, _y: int) -> None:
         return None
@@ -2054,14 +2533,41 @@ async def test_set_value_falls_back_when_uia_action_times_out(monkeypatch):
         SimpleNamespace(automation=_FakeAutomation(), window=_FakeWindow()),
     )
 
-    result = await create_mcp_server().call_tool(
+    async def fake_get_window_state_snapshot(
+        _automation_handler,
+        _pid,
+        _window_id,
+        **_kwargs,
+    ):
+        return {
+            "success": True,
+            "node_count": 1,
+            "unfiltered_node_count": 1,
+            "nodes": [],
+            "tree_markdown": "",
+        }
+
+    monkeypatch.setattr(
+        window_state_service,
+        "get_window_state_snapshot",
+        fake_get_window_state_snapshot,
+    )
+    mcp = create_mcp_server()
+    observation = await mcp.call_tool(
+        "computer_get_window_state",
+        {"window": {"id": 456, "pid": 123}},
+    )
+    result = await mcp.call_tool(
         "computer_set_value",
         {
             "window": {"id": 456, "pid": 123},
+            "observation_id": _content(observation)["observation_id"],
             "element_index": 1,
             "value": "abc",
         },
     )
 
-    assert result.structured_content["success"] is True
-    assert result.structured_content["method"] == "click_type"
+    assert _content(result)["success"] is False
+    assert _content(result)["code"] == "ACTION_OUTCOME_UNKNOWN"
+    assert result.structured_content["action"]["outcome"] == "unknown"
+    assert result.structured_content["action"]["retry_safety"] == "reobserve"

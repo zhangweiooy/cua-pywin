@@ -118,7 +118,7 @@ def test_validate_javascript_requires_explicit_allow_flag():
     assert validate_javascript("document.title", allow_javascript=True) == "document.title"
 
 
-def test_resolve_coordinate_space_preserves_default_inference():
+def test_resolve_coordinate_space_uses_protocol_02_defaults():
     assert resolve_coordinate_space(None, element_index=1) == "element"
     assert resolve_coordinate_space(None, element_index=None, from_zoom=True) == "zoom"
     assert (
@@ -128,7 +128,7 @@ def test_resolve_coordinate_space_preserves_default_inference():
             pid=123,
             window_id=456,
         )
-        == "window_resized"
+        == "screen"
     )
     assert resolve_coordinate_space(None, element_index=None) == "screen"
 

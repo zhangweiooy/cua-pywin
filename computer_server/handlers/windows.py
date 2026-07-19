@@ -29,6 +29,7 @@ def require_unlocked_desktop(func: F) -> F:
         if self.is_desktop_locked():
             return {
                 "success": False,
+                "code": "ACTION_REJECTED",
                 "error": "Windows desktop is locked. Automation input is blocked by OS security.",
                 "suggestion": "Unlock the Windows desktop (Win+L screen) and retry. All mouse/keyboard actions are blocked while locked.",
             }
@@ -493,6 +494,41 @@ class WindowsAutomationHandler(BaseAutomationHandler):
 
         acquired = await asyncio.to_thread(_CLIPBOARD_LOCK.acquire)
         original = None
+        dispatch_started = False
+
+        def _failure(message: str) -> Dict[str, Any]:
+            if dispatch_started:
+                return {
+                    "success": False,
+                    "code": "ACTION_OUTCOME_UNKNOWN",
+                    "error": message,
+                    "suggestion": (
+                        "Reobserve the target before deciding whether to retry."
+                    ),
+                }
+            return {
+                "success": False,
+                "code": "ACTION_REJECTED",
+                "error": message,
+            }
+
+        def _paste_current_clipboard() -> Optional[Dict[str, Any]]:
+            nonlocal dispatch_started
+            dispatch_started = True
+            try:
+                self.keyboard.press(KBKey.ctrl)
+                self.keyboard.press("v")
+                self.keyboard.release("v")
+                self.keyboard.release(KBKey.ctrl)
+                return None
+            except Exception as exc:
+                for key in ("v", KBKey.ctrl):
+                    try:
+                        self.keyboard.release(key)
+                    except Exception:
+                        pass
+                return _failure(f"Clipboard paste failed: {exc}")
+
         try:
             try:
                 original = pyperclip.paste()
@@ -504,14 +540,10 @@ class WindowsAutomationHandler(BaseAutomationHandler):
                 try:
                     pyperclip.copy(text)
                 except Exception as e:
-                    return {"success": False, "error": f"Clipboard copy failed: {e}"}
-                try:
-                    self.keyboard.press(KBKey.ctrl)
-                    self.keyboard.press("v")
-                    self.keyboard.release("v")
-                    self.keyboard.release(KBKey.ctrl)
-                except Exception as e:
-                    return {"success": False, "error": f"Clipboard paste failed: {e}"}
+                    return _failure(f"Clipboard copy failed: {e}")
+                paste_error = _paste_current_clipboard()
+                if paste_error is not None:
+                    return paste_error
             else:
                 # Paste in chunks for streaming effect
                 for i in range(0, len(text), chunk_size):
@@ -519,14 +551,10 @@ class WindowsAutomationHandler(BaseAutomationHandler):
                     try:
                         pyperclip.copy(chunk)
                     except Exception as e:
-                        return {"success": False, "error": f"Clipboard copy failed: {e}"}
-                    try:
-                        self.keyboard.press(KBKey.ctrl)
-                        self.keyboard.press("v")
-                        self.keyboard.release("v")
-                        self.keyboard.release(KBKey.ctrl)
-                    except Exception as e:
-                        return {"success": False, "error": f"Clipboard paste failed: {e}"}
+                        return _failure(f"Clipboard copy failed: {e}")
+                    paste_error = _paste_current_clipboard()
+                    if paste_error is not None:
+                        return paste_error
                     await asyncio.sleep(0.08)
         finally:
             if original is not None:

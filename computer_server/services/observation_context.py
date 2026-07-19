@@ -1,4 +1,4 @@
-"""Per-server observation handles for window snapshots."""
+"""Per-server observation and screenshot bindings."""
 
 from __future__ import annotations
 
@@ -9,8 +9,8 @@ from typing import Any, Dict, Optional, Tuple
 
 
 @dataclass(frozen=True)
-class SnapshotContext:
-    snapshot_id: str
+class ObservationContext:
+    observation_id: str
     screenshot_id: str
     pid: int
     window_id: int
@@ -22,7 +22,7 @@ class SnapshotContext:
 @dataclass(frozen=True)
 class ScreenshotContext:
     screenshot_id: str
-    snapshot_id: str
+    observation_id: str
     pid: int
     window_id: int
     screen_width: int
@@ -36,9 +36,8 @@ class ScreenshotContext:
         return {
             "id": self.screenshot_id,
             "screenshot_id": self.screenshot_id,
-            "snapshot_id": self.snapshot_id,
-            "pid": self.pid,
-            "window_id": self.window_id,
+            "observation_id": self.observation_id,
+            "window": {"id": self.window_id, "pid": self.pid},
             "coordinate_space": "window_resized",
             "screen_width": self.screen_width,
             "screen_height": self.screen_height,
@@ -48,16 +47,16 @@ class ScreenshotContext:
 
 
 class ObservationContextRegistry:
-    """Stores snapshot handles owned by one MCP server instance."""
+    """Stores fresh observation handles owned by one MCP server instance."""
 
     def __init__(self, ttl_seconds: float = 600.0) -> None:
         self._ttl_seconds = ttl_seconds
-        self._snapshots: Dict[str, SnapshotContext] = {}
+        self._observations: Dict[str, ObservationContext] = {}
         self._screenshots: Dict[str, ScreenshotContext] = {}
         self._latest_by_window: Dict[Tuple[int, int], str] = {}
         self._latest_screenshot_by_window: Dict[Tuple[int, int], str] = {}
 
-    def create_snapshot(
+    def create_observation(
         self,
         pid: int,
         window_id: int,
@@ -67,13 +66,13 @@ class ObservationContextRegistry:
         screen_height: int = 0,
         capture_geometry: Optional[Dict[str, Any]] = None,
         capture_metadata: Optional[Dict[str, Any]] = None,
-    ) -> SnapshotContext:
+    ) -> ObservationContext:
         self._expire_old()
-        snapshot_id = f"snap-{uuid.uuid4().hex}"
+        observation_id = f"obs-{uuid.uuid4().hex}"
         screenshot_id = f"shot-{uuid.uuid4().hex}"
         created_at = time.monotonic()
-        ctx = SnapshotContext(
-            snapshot_id=snapshot_id,
+        ctx = ObservationContext(
+            observation_id=observation_id,
             screenshot_id=screenshot_id,
             pid=int(pid),
             window_id=int(window_id),
@@ -81,12 +80,12 @@ class ObservationContextRegistry:
             unfiltered_node_count=int(unfiltered_node_count),
             created_at=created_at,
         )
-        self._snapshots[snapshot_id] = ctx
-        self._latest_by_window[(ctx.pid, ctx.window_id)] = snapshot_id
+        self._observations[observation_id] = ctx
+        self._latest_by_window[(ctx.pid, ctx.window_id)] = observation_id
         self._store_screenshot(
             ScreenshotContext(
                 screenshot_id=screenshot_id,
-                snapshot_id=snapshot_id,
+                observation_id=observation_id,
                 pid=ctx.pid,
                 window_id=ctx.window_id,
                 screen_width=int(screen_width or 0),
@@ -101,7 +100,7 @@ class ObservationContextRegistry:
     def create_screenshot(
         self,
         *,
-        snapshot_id: str,
+        observation_id: str,
         pid: int,
         window_id: int,
         screen_width: int = 0,
@@ -113,7 +112,7 @@ class ObservationContextRegistry:
         self._expire_old()
         screenshot = ScreenshotContext(
             screenshot_id=f"shot-{uuid.uuid4().hex}",
-            snapshot_id=snapshot_id,
+            observation_id=observation_id,
             pid=int(pid),
             window_id=int(window_id),
             screen_width=int(screen_width or 0),
@@ -131,19 +130,25 @@ class ObservationContextRegistry:
             (screenshot.pid, screenshot.window_id)
         ] = screenshot.screenshot_id
 
-    def get_snapshot(self, snapshot_id: str) -> Optional[SnapshotContext]:
+    def get_observation(
+        self,
+        observation_id: str,
+    ) -> Optional[ObservationContext]:
         self._expire_old()
-        return self._snapshots.get(snapshot_id)
+        return self._observations.get(observation_id)
 
     def get_screenshot(self, screenshot_id: str) -> Optional[ScreenshotContext]:
         self._expire_old()
         return self._screenshots.get(screenshot_id)
 
-    def is_latest(self, snapshot_id: str) -> bool:
-        ctx = self.get_snapshot(snapshot_id)
+    def is_latest_observation(self, observation_id: str) -> bool:
+        ctx = self.get_observation(observation_id)
         if ctx is None:
             return False
-        return self._latest_by_window.get((ctx.pid, ctx.window_id)) == snapshot_id
+        return (
+            self._latest_by_window.get((ctx.pid, ctx.window_id))
+            == observation_id
+        )
 
     def is_latest_screenshot(self, screenshot_id: str) -> bool:
         ctx = self.get_screenshot(screenshot_id)
@@ -154,13 +159,17 @@ class ObservationContextRegistry:
     def _expire_old(self) -> None:
         now = time.monotonic()
         expired = [
-            snapshot_id
-            for snapshot_id, ctx in self._snapshots.items()
+            observation_id
+            for observation_id, ctx in self._observations.items()
             if now - ctx.created_at > self._ttl_seconds
         ]
-        for snapshot_id in expired:
-            ctx = self._snapshots.pop(snapshot_id, None)
-            if ctx is not None and self._latest_by_window.get((ctx.pid, ctx.window_id)) == snapshot_id:
+        for observation_id in expired:
+            ctx = self._observations.pop(observation_id, None)
+            if (
+                ctx is not None
+                and self._latest_by_window.get((ctx.pid, ctx.window_id))
+                == observation_id
+            ):
                 self._latest_by_window.pop((ctx.pid, ctx.window_id), None)
             if ctx is not None:
                 self._screenshots.pop(ctx.screenshot_id, None)

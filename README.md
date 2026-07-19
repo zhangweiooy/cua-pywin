@@ -87,7 +87,7 @@ cua-pywin/
 下载。普通 Windows 用户优先使用安装器：
 
 ```powershell
-.\cua-win-0.1.4-win64-setup.exe
+.\cua-win-0.2.0-win64-setup.exe
 cua-win doctor
 ```
 
@@ -99,7 +99,7 @@ wheel 也内置 OmniParser V2 YOLO、Florence-2 和 RapidOCR 模型，适合 Pyt
 环境或开发验证：
 
 ```powershell
-pip install .\cua_pywin-0.1.4-py3-none-any.whl
+pip install .\cua_pywin-0.2.0-py3-none-any.whl
 cua-win doctor
 ```
 
@@ -264,6 +264,35 @@ cua-win mcp-config --client claude
 
 **学习** — `computer_learn`
 
+### Protocol 0.2
+
+所有 25 个工具都返回固定 envelope；成功和可预期业务失败使用相同结构：
+
+```json
+{
+  "protocol_version": "0.2",
+  "success": true,
+  "data": {},
+  "artifacts": [],
+  "warnings": [],
+  "error": null,
+  "action": null
+}
+```
+
+工具专属结果只放在 `data`。图片只存在于 MCP image content，并由
+`artifacts[].content_index` 关联；结构化结果不再包含 base64 或调试输出路径。
+副作用调用返回临时 `action_id` 以及
+`completed/rejected/unknown` outcome。`unknown`、stale binding 和后置条件失败都
+要求重新观察，不应盲目重复输入。参数错误、目标拒绝和 provider 不可用属于正常
+MCP result，使用 `success=false` 和稳定的 `error.code`；未捕获异常或传输故障才使用
+MCP `isError`。
+
+daemon `/call` 返回
+`{protocol_version,result,content,transport_error}`。CLI 普通输出和 `--json`
+都直接打印 `result` envelope；使用 `cua-win call TOOL ... --output PATH`
+保存主图，或使用 `--output-dir DIR` 保存全部图片 artifact。
+
 ### 坐标系统
 
 | 空间 | 描述 |
@@ -284,9 +313,9 @@ cua-win mcp-config --client claude
 {"window":{"id":5678,"pid":1234}}
 ```
 
-`window.id` 与 `window.window_id` 都表示 HWND。旧的顶层
-`pid/window_id` 仍兼容，但与 `window` 同时传入时必须一致，否则工具会
-返回 validation error。`computer_list_windows`、`computer_list_apps`、
+Protocol 0.2 的公共窗口对象严格为 `{"id": HWND, "pid": PID}`，不接受
+`window_id`、`windowId`、额外窗口元数据或顶层目标 `pid/window_id`。
+`computer_list_windows`、`computer_list_apps`、
 `computer_get_window` 和 `computer_get_window_state` 都会返回可直接复用的
 `window` 对象。使用 `computer_get_window({"id":...,"app":...})` 可以在 stale
 handle、绑定丢失或上下文重置后重新获取当前窗口对象；使用
@@ -294,11 +323,10 @@ handle、绑定丢失或上下文重置后重新获取当前窗口对象；使�
 `window_ref` 仅用于 recording/replay 的内部窗口身份快照，不要求调用方构造。
 `computer_type` 和 `computer_press_key` 也支持 canonical `window`。传入目标
 窗口时，会先激活并验证前台窗口，再发送文本、热键、按键或 key-down；不传
-`window/window_id` 时继续作用于当前焦点。key-up 为保证能释放全局按键状态，
+`window` 时继续作用于当前焦点。key-up 为保证能释放全局按键状态，
 不会重新激活目标窗口。
 `computer_click`、`computer_drag` 和 `computer_scroll` 在显式传入 `window`
-时也会先激活并验证目标窗口；激活失败时不会发送鼠标输入。仅使用旧的顶层
-`pid/window_id` 时保留原行为，不隐式改变前台窗口。
+时也会先激活并验证目标窗口；激活失败时不会发送鼠标输入。
 动作结果的 `action_path` 会增量报告 `target_profile`、`delivery_risk` 和
 `delivery_note`，用于解释当前目标是否类似 Chromium、终端、WPF/WinUI、
 VCL/SAL 或通用窗口；这些字段只描述风险，不改变工具默认行为。
@@ -312,16 +340,21 @@ VCL/SAL 或通用窗口；这些字段只描述风险，不改变工具默认行
 统一走 `computer_recording({"action":"start|stop|status"})`；学习 start/stop/status
 统一走 `computer_learn({"action":"start|stop|status"})`；辅助树读取统一走
 `computer_get_window_state` 的 `tree_markdown` 和 `nodes`。
+录制 start 的 `output_dir` 必须是新目录或空目录；cua-win 不会覆盖已有
+recording，也不会把旧 turn 混入新的 0.2 trajectory。
 节点的主动作使用 `computer_click`；节点明确暴露的非主动作使用
 `computer_perform_secondary_action`。当前仅支持 MSAA dropdown/splitbutton 的
 `action="expand"`。窗口置前不属于 accessibility action，统一使用
 `computer_manage_window({"action":"activate",...})`。
 
-坐标链路推荐使用 `screenshot_id`。`computer_get_window_state` 同时返回
-`snapshot_id` 和 `screenshot_id`：`snapshot_id` 绑定观察/节点快照，
-`screenshot_id` 绑定该次截图的 crop origin、resize ratio 和 capture backend。
-当 `computer_click`、`computer_drag`、`computer_scroll` 或 `computer_zoom` 的坐标来自
-返回截图时，传入 `screenshot_id` 可以避免后续截图刷新覆盖全局几何状态。
+`computer_get_window_state` 要求 canonical `window`，并返回
+`data.observation_id`、`data.screenshot_id` 和对应图片 artifact。
+`element_index` 动作必须同时传入同一窗口最新的 `observation_id`；
+`window_resized/window_full_res` 坐标必须传入最新 `screenshot_id`；
+`computer_zoom` 也必须引用最新 `screenshot_id`，其返回的 `zoom_id` 是后续 zoom
+坐标动作的唯一绑定。同一窗口产生新 observation 后，旧 observation、
+screenshot 和 zoom 立即 stale。直接 screen 坐标、无目标低级 mouse、当前焦点
+type/key，以及明确 canonical window 的 type/key/manage 不要求 observation。
 返回的 `nodes` 使用 `nodes_coordinate_space="window_resized"`，其 `bbox`
 和中心坐标可直接与主截图对齐。默认只返回 100 个最高优先级节点，避免
 节点过多的应用一次性撑大 payload；可传 `max_nodes=0` 返回全部节点，或配合
@@ -335,11 +368,9 @@ VCL/SAL 或通用窗口；这些字段只描述风险，不改变工具默认行
 默认由 `agent_text_limit=500` 限制长度；只有摘要不足时才使用
 `show_full_text=true` 或提高 `agent_text_limit`，再进一步检查 `nodes` /
 `tree_markdown`。
-`computer_get_window_state` 还返回 `screenshots` 数组：第一项是
-`role="target", zIndex=0` 的主截图；当前可见的同应用关联菜单、弹层或对话框会
-作为 `role="transient"` 项返回。每项都有独立的 `window`、`screenshot_id`、
-屏幕原点和 `zIndex`，可直接用于后续窗口坐标动作。旧的顶层 `screenshot`
-与 `screenshot_id` 字段继续表示主截图。
+`data.screenshots` 保留目标与 transient capture 的结构化描述；实际图片位于
+MCP image content，对应 artifact 会给出 role、MIME、尺寸、字节数、
+`content_index`、`window`、`observation_id` 和 `screenshot_id`。
 
 ### 关键设计
 
@@ -474,7 +505,7 @@ Download releases from
 Windows users should use the installer:
 
 ```powershell
-.\cua-win-0.1.4-win64-setup.exe
+.\cua-win-0.2.0-win64-setup.exe
 cua-win doctor
 ```
 
@@ -489,7 +520,7 @@ RapidOCR models, and is intended for Python environments or developer
 validation:
 
 ```powershell
-pip install .\cua_pywin-0.1.4-py3-none-any.whl
+pip install .\cua_pywin-0.2.0-py3-none-any.whl
 cua-win doctor
 ```
 
@@ -676,6 +707,38 @@ workflow guidance in Codex with `$cua-win`.
 
 **Learning** — `computer_learn`
 
+### Protocol 0.2
+
+All 25 tools return one fixed envelope for success and expected business
+failures:
+
+```json
+{
+  "protocol_version": "0.2",
+  "success": true,
+  "data": {},
+  "artifacts": [],
+  "warnings": [],
+  "error": null,
+  "action": null
+}
+```
+
+Tool-specific results live only in `data`. Images live only in MCP image
+content and are bound through `artifacts[].content_index`; structured results
+do not contain base64 images or debug output paths. Side-effect calls return a
+transient `action_id` and a `completed/rejected/unknown` outcome. Unknown
+outcomes, stale bindings, and postcondition failures require re-observation,
+not blind retries. Argument errors, target rejection, and unavailable providers
+are normal MCP results with `success=false` and a stable `error.code`; only
+uncaught or transport failures use MCP `isError`.
+
+Daemon `/call` returns
+`{protocol_version,result,content,transport_error}`. Normal CLI output and
+`--json` both print the `result` envelope. Use
+`cua-win call TOOL ... --output PATH` for the primary image or
+`--output-dir DIR` for all image artifacts.
+
 ### Coordinate Systems
 
 | Space | Description |
@@ -697,9 +760,9 @@ action tools:
 {"window":{"id":5678,"pid":1234}}
 ```
 
-`window.id` and `window.window_id` both refer to the HWND. Top-level
-`pid/window_id` remains supported, but when both forms are provided they must
-match or the tool returns a validation error.
+Protocol 0.2 public windows are strictly `{"id": HWND, "pid": PID}`.
+`window_id`, `windowId`, additional window metadata, and top-level target
+`pid/window_id` are not accepted.
 `computer_list_windows`, `computer_list_apps`, `computer_get_window`, and
 `computer_get_window_state` return reusable `window` objects. Use
 `computer_get_window({"id":...,"app":...})` to rehydrate a current window after
@@ -709,13 +772,12 @@ stale handles, lost bindings, or context resets. Use
 hand-authored.
 `computer_type` and `computer_press_key` also accept canonical `window`.
 Targeted text, hotkey, key-press, and key-down calls activate and verify that
-window before sending input. Calls without `window/window_id` preserve
+window before sending input. Calls without `window` preserve
 current-focus behavior. Key-up skips activation so globally held input can
 always be released.
 `computer_click`, `computer_drag`, and `computer_scroll` also activate and
 verify the target when canonical `window` is explicitly supplied. Activation
-failure prevents mouse input. Legacy top-level `pid/window_id` calls preserve
-their prior foreground behavior.
+failure prevents mouse input.
 Action results add `action_path.target_profile`, `delivery_risk`, and
 `delivery_note` to explain Chromium, terminal, WPF/WinUI, VCL/SAL, or generic
 target risk. These fields are diagnostic only and do not change default input
@@ -731,19 +793,23 @@ start/stop/status uses `computer_recording({"action":"start|stop|status"})`;
 learning start/stop/status uses `computer_learn({"action":"start|stop|status"})`;
 accessibility-tree reads use `computer_get_window_state` `tree_markdown` and
 `nodes`.
+Recording start requires a new or empty `output_dir`; cua-win never overwrites
+an existing recording or mixes old turns into a new 0.2 trajectory.
 Use `computer_click` for a node's primary action and
 `computer_perform_secondary_action` for an explicitly exposed non-primary
 action. The current secondary action is `action="expand"` for MSAA
 dropdown/splitbutton nodes. Window activation remains
 `computer_manage_window({"action":"activate",...})`.
 
-Prefer `screenshot_id` for coordinate chains. `computer_get_window_state`
-returns both `snapshot_id` and `screenshot_id`: `snapshot_id` binds the
-observation/node snapshot, while `screenshot_id` binds that capture's crop
-origin, resize ratio, and backend. Pass `screenshot_id` to
-`computer_click`, `computer_drag`, `computer_scroll`, or `computer_zoom` when
-coordinates come from a returned screenshot, so later observations cannot
-overwrite the geometry used for coordinate conversion.
+`computer_get_window_state` requires a canonical `window` and returns
+`data.observation_id`, `data.screenshot_id`, and the matching image artifact.
+Element-index actions require the latest `observation_id` for that window.
+`window_resized/window_full_res` coordinates and `computer_zoom` require the
+latest `screenshot_id`; zoom-coordinate actions require the returned
+`zoom_id`. A new observation for the same window immediately stales its older
+observation, screenshot, and zoom bindings. Direct screen coordinates,
+untargeted low-level mouse calls, current-focus type/key calls, and explicit
+canonical-window type/key/manage calls do not require an observation.
 Returned `nodes` use `nodes_coordinate_space="window_resized"`, so their
 bounding boxes and centers align directly with the target screenshot. By
 default only the 100 highest-priority nodes are returned to keep large apps
@@ -761,12 +827,10 @@ with `query` or raise `max_nodes`.
 agent-facing observation summary. The text is capped by `agent_text_limit=500`
 by default; use `show_full_text=true` or raise `agent_text_limit` only when the
 compact state is insufficient, then inspect `nodes` / `tree_markdown` as needed.
-`computer_get_window_state` also returns a `screenshots` array. The first item
-is the target (`role="target", zIndex=0`); visible related menus, popovers, and
-dialogs are returned as `role="transient"` items. Each item has its own
-`window`, `screenshot_id`, screen origin, and `zIndex` for follow-up coordinate
-actions. The existing top-level `screenshot` and `screenshot_id` remain the
-primary target capture.
+`data.screenshots` keeps structured descriptors for target and transient
+captures. Actual images are MCP image content; each artifact identifies its
+role, MIME type, dimensions, byte count, `content_index`, `window`,
+`observation_id`, and `screenshot_id`.
 
 ### Key Design Decisions
 

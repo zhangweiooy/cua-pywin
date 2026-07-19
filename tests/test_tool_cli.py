@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import base64
 import io
 import json
 import os
@@ -20,6 +21,7 @@ from computer_server.tool_cli import (
     _check_interactive_desktop,
     _check_screenshot_capture,
     _check_window_enumeration,
+    _cmd_call,
     _daemon_start_args,
     _doctor_summary,
     _execute_batch,
@@ -39,6 +41,37 @@ from computer_server.tool_rpc import BATCH_HEADER
 class _BinaryStdin:
     def __init__(self, payload: bytes) -> None:
         self.buffer = io.BytesIO(payload)
+
+
+def _transport_result(
+    *,
+    success: bool,
+    data: dict | None = None,
+    message: str = "failed",
+) -> dict:
+    error = None
+    if not success:
+        error = {
+            "code": "ACTION_REJECTED",
+            "message": message,
+            "suggestion": None,
+            "retry_safety": "safe",
+            "details": {},
+        }
+    return {
+        "protocol_version": "0.2",
+        "result": {
+            "protocol_version": "0.2",
+            "success": success,
+            "data": data or {},
+            "artifacts": [],
+            "warnings": [],
+            "error": error,
+            "action": None,
+        },
+        "content": [],
+        "transport_error": None,
+    }
 
 
 def test_rewrite_implicit_call() -> None:
@@ -397,10 +430,7 @@ def test_execute_batch_mixes_waits_and_tool_calls(monkeypatch) -> None:
 
         def request(self, method, path, payload=None):
             self.calls.append((method, path, payload))
-            return {
-                "is_error": False,
-                "structured_content": {"success": True, "value": 1},
-            }
+            return _transport_result(success=True, data={"value": 1})
 
     client = Client()
     sleeps = []
@@ -439,14 +469,8 @@ def test_execute_batch_stops_and_releases_inputs_after_failure() -> None:
             tool = payload["name"]
             self.tools.append(tool)
             if tool == "computer_click":
-                return {
-                    "is_error": False,
-                    "structured_content": {"success": False, "error": "failed"},
-                }
-            return {
-                "is_error": False,
-                "structured_content": {"success": True},
-            }
+                return _transport_result(success=False)
+            return _transport_result(success=True)
 
     client = Client()
     result = _execute_batch(
@@ -1368,10 +1392,140 @@ def test_call_result_to_json() -> None:
         content = []
 
     assert _call_result_to_json(Result()) == {
-        "is_error": False,
-        "structured_content": {"success": True},
+        "protocol_version": "0.2",
+        "result": {"success": True},
         "content": [],
+        "transport_error": None,
     }
+
+
+def test_call_output_preserves_failure_envelope(
+    monkeypatch,
+    tmp_path,
+    capsys,
+) -> None:
+    async def fake_inprocess_call(_tool_name, _tool_args):
+        return _transport_result(
+            success=False,
+            message="WGC and fallback failed",
+        )
+
+    monkeypatch.setattr(
+        "computer_server.tool_cli._inprocess_call",
+        fake_inprocess_call,
+    )
+    output_path = tmp_path / "capture.png"
+    args = argparse.Namespace(
+        tool="computer_screenshot",
+        arguments="{}",
+        no_daemon=True,
+        start_timeout=30.0,
+        timeout=30.0,
+        output=str(output_path),
+        output_dir=None,
+        json=False,
+    )
+
+    exit_code = _cmd_call(args)
+    printed = json.loads(capsys.readouterr().out)
+
+    assert exit_code == 1
+    assert printed["success"] is False
+    assert printed["error"]["message"] == "WGC and fallback failed"
+    assert output_path.exists() is False
+
+
+def test_call_output_saves_failure_artifact_before_returning_failure(
+    monkeypatch,
+    tmp_path,
+    capsys,
+) -> None:
+    image_bytes = b"captured-after-action"
+    payload = _transport_result(
+        success=False,
+        message="postcondition failed",
+    )
+    payload["result"]["error"]["code"] = "POSTCONDITION_FAILED"
+    payload["result"]["error"]["retry_safety"] = "reobserve"
+    payload["result"]["artifacts"] = [
+        {
+            "id": "capture-after",
+            "type": "image",
+            "role": "capture_after",
+            "mime_type": "image/png",
+            "content_index": 0,
+        }
+    ]
+    payload["content"] = [
+        {
+            "type": "image",
+            "mimeType": "image/png",
+            "data": base64.b64encode(image_bytes).decode("ascii"),
+        }
+    ]
+
+    async def fake_inprocess_call(_tool_name, _tool_args):
+        return payload
+
+    monkeypatch.setattr(
+        "computer_server.tool_cli._inprocess_call",
+        fake_inprocess_call,
+    )
+    output_path = tmp_path / "capture.png"
+    args = argparse.Namespace(
+        tool="computer_click",
+        arguments="{}",
+        no_daemon=True,
+        start_timeout=30.0,
+        timeout=30.0,
+        output=str(output_path),
+        output_dir=None,
+        json=False,
+    )
+
+    exit_code = _cmd_call(args)
+    printed = json.loads(capsys.readouterr().out)
+
+    assert exit_code == 1
+    assert printed["success"] is False
+    assert output_path.read_bytes() == image_bytes
+
+
+def test_call_output_prints_result_when_local_artifact_write_fails(
+    monkeypatch,
+    capsys,
+) -> None:
+    async def fake_inprocess_call(_tool_name, _tool_args):
+        return _transport_result(success=True)
+
+    def fail_save(*_args, **_kwargs):
+        raise SystemExit("disk is read-only")
+
+    monkeypatch.setattr(
+        "computer_server.tool_cli._inprocess_call",
+        fake_inprocess_call,
+    )
+    monkeypatch.setattr(
+        "computer_server.tool_cli._save_call_images",
+        fail_save,
+    )
+    args = argparse.Namespace(
+        tool="computer_screenshot",
+        arguments="{}",
+        no_daemon=True,
+        start_timeout=30.0,
+        timeout=30.0,
+        output="capture.png",
+        output_dir=None,
+        json=False,
+    )
+
+    exit_code = _cmd_call(args)
+    captured = capsys.readouterr()
+
+    assert exit_code == 1
+    assert json.loads(captured.out)["success"] is True
+    assert "artifact save failed: disk is read-only" in captured.err
 
 
 def test_tool_to_json_exposes_stable_schema_fields() -> None:

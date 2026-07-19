@@ -45,8 +45,33 @@ TARGETS: dict[str, dict[str, Any]] = {
 
 
 def _structured(result: Any) -> dict[str, Any]:
-    content = getattr(result, "structured_content", None)
-    return content if isinstance(content, dict) else {}
+    envelope = getattr(result, "structured_content", None)
+    if not isinstance(envelope, dict):
+        return {
+            "success": False,
+            "error": "tool returned no structured protocol result",
+        }
+    if envelope.get("protocol_version") != "0.2":
+        return {
+            "success": False,
+            "error": "tool returned an unsupported protocol result",
+        }
+    if envelope.get("success") is True:
+        data = envelope.get("data")
+        return {
+            "success": True,
+            **(data if isinstance(data, dict) else {}),
+        }
+    error = envelope.get("error")
+    return {
+        "success": False,
+        "error": (
+            error.get("message")
+            if isinstance(error, dict)
+            else "tool call failed"
+        ),
+        "code": error.get("code") if isinstance(error, dict) else None,
+    }
 
 
 async def _call(mcp: Any, tool: str, args: dict[str, Any]) -> dict[str, Any]:
@@ -58,8 +83,6 @@ async def _first_window_by_query(mcp: Any, query: str) -> dict[str, Any] | None:
     for window_record in data.get("windows", []) or []:
         if isinstance(window_record.get("window"), dict):
             return window_record["window"]
-        if window_record.get("id") or window_record.get("window_id"):
-            return window_record
     return None
 
 

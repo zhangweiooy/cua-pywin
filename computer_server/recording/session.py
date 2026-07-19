@@ -42,6 +42,12 @@ RECORDABLE_TOOLS = frozenset(
 _WRITER_STOP = object()
 # Bounded queue capacity to prevent unbounded memory growth.
 _MAX_QUEUE_SIZE = 64
+RECORDING_PROTOCOL_VERSION = "0.2"
+RECORDING_MANIFEST_NAME = "recording.json"
+
+
+class RecordingDirectoryError(ValueError):
+    """Raised when a recording would mix with existing directory contents."""
 
 
 @dataclass(frozen=True)
@@ -95,6 +101,31 @@ class RecordingSession:
     def start(self) -> None:
         """Start recording session."""
         os.makedirs(self.output_dir, exist_ok=True)
+        if os.listdir(self.output_dir):
+            raise RecordingDirectoryError(
+                f"Recording output directory must be empty: {self.output_dir}"
+            )
+        manifest_path = os.path.join(
+            self.output_dir,
+            RECORDING_MANIFEST_NAME,
+        )
+        try:
+            handle = open(manifest_path, "x", encoding="utf-8")
+        except FileExistsError as exc:
+            raise RecordingDirectoryError(
+                f"Recording output directory must be empty: {self.output_dir}"
+            ) from exc
+        with handle:
+            json.dump(
+                {
+                    "format": "cua-win-recording",
+                    "protocol_version": RECORDING_PROTOCOL_VERSION,
+                    "created_at": time.time(),
+                },
+                handle,
+                indent=2,
+                ensure_ascii=False,
+            )
         self.active = True
         self.turn_counter = 0
         self._start_time = time.time()
@@ -359,8 +390,9 @@ class RecordingSession:
 
         # Write action.json
         action_data = {
+            "protocol_version": RECORDING_PROTOCOL_VERSION,
             "tool": tool_name,
-            "args": self._sanitize_for_json(args),
+            "args": self._canonical_recording_args(args),
             "result": self._sanitize_for_json(result),
             "timestamp": time.time(),
             "turn_number": turn_number,
@@ -400,6 +432,45 @@ class RecordingSession:
                     img.save(click_path, format="PNG")
                 except Exception as e:
                     logger.warning("Failed to create click image: %s", e)
+
+    @staticmethod
+    def _canonical_recording_args(data: Dict[str, Any]) -> Dict[str, Any]:
+        """Project recorded tool arguments onto the 0.2 public input shape."""
+        sanitized = RecordingSession._sanitize_for_json(data)
+        if not isinstance(sanitized, dict):
+            return {}
+        result = dict(sanitized)
+        raw_window = result.get("window")
+        window: Dict[str, int] = {}
+        if isinstance(raw_window, dict):
+            raw_id = raw_window.get("id")
+            raw_pid = raw_window.get("pid")
+            if isinstance(raw_id, int) and not isinstance(raw_id, bool):
+                window["id"] = raw_id
+            if isinstance(raw_pid, int) and not isinstance(raw_pid, bool):
+                window["pid"] = raw_pid
+        if not window:
+            raw_id = result.get("window_id")
+            raw_pid = result.get("pid")
+            if isinstance(raw_id, int) and not isinstance(raw_id, bool):
+                window["id"] = raw_id
+            if isinstance(raw_pid, int) and not isinstance(raw_pid, bool):
+                window["pid"] = raw_pid
+        if window:
+            result["window"] = window
+        else:
+            result.pop("window", None)
+        for key in (
+            "pid",
+            "window_id",
+            "windowId",
+            "snapshot_id",
+            "debug_image_out",
+            "screenshot_out_file",
+            "from_zoom",
+        ):
+            result.pop(key, None)
+        return result
 
     @staticmethod
     def _sanitize_for_json(data: Any) -> Any:

@@ -17,12 +17,6 @@ REPLAY_COORD_TOOLS = frozenset({
     "computer_scroll",
     "computer_mouse",
 })
-REPLAY_WINDOW_ID_ARG_TOOLS = frozenset({
-    "computer_click",
-    "computer_perform_secondary_action",
-    "computer_drag",
-    "computer_scroll",
-})
 REPLAY_WINDOW_TOOLS = frozenset({"computer_manage_window"})
 REPLAY_TARGET_WINDOW_TOOLS = frozenset({"computer_type", "computer_press_key"})
 REPLAY_ELEMENT_TOOLS = frozenset({
@@ -46,11 +40,28 @@ def resolve_replay_args(
     before the result is passed to the tool implementation.
     """
     resolved = dict(args)
+    legacy_pid = _coerce_int(resolved.pop("pid", None))
+    legacy_window_id = _coerce_int(resolved.pop("window_id", None))
+    raw_window = resolved.get("window")
+    if not isinstance(raw_window, dict):
+        raw_window = {}
+    window_pid = _coerce_int(raw_window.get("pid")) or legacy_pid
+    window_id = _coerce_int(raw_window.get("id")) or legacy_window_id
+    if window_id is not None:
+        resolved["window"] = {
+            "id": window_id,
+            **({"pid": window_pid} if window_pid is not None else {}),
+        }
 
     if window_ref and tool_name in REPLAY_COORD_TOOLS:
         resolved_hwnd = resolve_live_window(window_ref)
         if resolved_hwnd is not None:
             hwnd, rect = resolved_hwnd
+            from computer_server.services.window_identity_service import build_window
+
+            current_window = build_window(hwnd)
+            if current_window is not None and tool_name != "computer_mouse":
+                resolved["window"] = current_window
             ref_ox = window_ref.get("origin_x", 0)
             ref_oy = window_ref.get("origin_y", 0)
             if resolved.get("x") is not None and resolved.get("y") is not None:
@@ -67,15 +78,6 @@ def resolve_replay_args(
                 resolved["end_x"] = int(rect[0] + (resolved["end_x"] - ref_ox))
                 resolved["end_y"] = int(rect[1] + (resolved["end_y"] - ref_oy))
 
-            ref_wid = window_ref.get("window_id")
-            if ref_wid is not None and hwnd != int(ref_wid) and tool_name in REPLAY_WINDOW_ID_ARG_TOOLS:
-                resolved["window_id"] = str(hwnd)
-                logger.info(
-                    "Replay resolved stale window_id %s -> %s for %s",
-                    ref_wid,
-                    hwnd,
-                    tool_name,
-                )
         else:
             logger.warning(
                 "Replay: could not resolve window for %s (window_ref=%s)",
@@ -87,18 +89,14 @@ def resolve_replay_args(
         resolved_hwnd = resolve_live_window(window_ref)
         if resolved_hwnd is not None:
             hwnd, _rect = resolved_hwnd
-            resolved["window_id"] = hwnd
-            resolved.pop("window", None)
             try:
                 from computer_server.services.window_identity_service import build_window
 
                 public_window = build_window(hwnd)
-                if public_window is not None and public_window.get("pid") is not None:
-                    resolved["pid"] = public_window["pid"]
-                else:
-                    resolved.pop("pid", None)
+                if public_window is not None:
+                    resolved["window"] = public_window
             except Exception:
-                resolved.pop("pid", None)
+                pass
             logger.info(
                 "Replay resolved target window to %s for %s",
                 hwnd,
@@ -114,21 +112,45 @@ def resolve_replay_args(
     if element_ref and tool_name in REPLAY_ELEMENT_TOOLS:
         resolved = resolve_replay_element_args(tool_name, resolved, element_ref)
 
-    wid = resolved.get("window_id")
+    current_window = resolved.get("window")
+    wid = (
+        _coerce_int(current_window.get("id"))
+        if isinstance(current_window, dict)
+        else None
+    )
     if wid is not None and tool_name in REPLAY_WINDOW_TOOLS:
-        resolved_hwnd = resolve_live_window(resolved)
+        lookup_ref = dict(window_ref or {})
+        lookup_ref.setdefault("window_id", wid)
+        if isinstance(current_window, dict):
+            lookup_ref.setdefault("pid", current_window.get("pid"))
+        resolved_hwnd = resolve_live_window(lookup_ref)
         if resolved_hwnd is not None:
             hwnd, _rect = resolved_hwnd
             if hwnd != int(wid):
-                resolved["window_id"] = str(hwnd)
-                logger.info("Replay resolved stale window_id %s -> %s", wid, hwnd)
+                from computer_server.services.window_identity_service import build_window
+
+                public_window = build_window(hwnd)
+                if public_window is not None:
+                    resolved["window"] = public_window
+                logger.info("Replay resolved stale window %s -> %s", wid, hwnd)
         else:
             logger.warning(
                 "Replay: could not resolve window for %s (args=%s)",
                 tool_name,
-                {k: resolved.get(k) for k in ("window_id", "process_name", "window_title")},
+                {"window": resolved.get("window")},
             )
 
+    for key in (
+        "observation_id",
+        "screenshot_id",
+        "snapshot_id",
+        "zoom_id",
+        "from_zoom",
+    ):
+        resolved.pop(key, None)
+    if tool_name in {"computer_click", "computer_drag", "computer_scroll"}:
+        if resolved.get("element_index") is None:
+            resolved["coordinate_space"] = "screen"
     for key in REPLAY_META_KEYS:
         resolved.pop(key, None)
 
@@ -143,8 +165,13 @@ def resolve_replay_element_args(
     """Resolve recorded element metadata to a current cached element."""
     resolved = dict(args)
 
-    pid = _coerce_int(resolved.get("pid") or element_ref.get("pid"))
-    window_id = _coerce_int(resolved.get("window_id") or element_ref.get("window_id"))
+    window = resolved.get("window")
+    pid = _coerce_int(
+        (window or {}).get("pid") if isinstance(window, dict) else None
+    ) or _coerce_int(element_ref.get("pid"))
+    window_id = _coerce_int(
+        (window or {}).get("id") if isinstance(window, dict) else None
+    ) or _coerce_int(element_ref.get("window_id"))
     if pid is None or window_id is None:
         return resolved
 
@@ -163,8 +190,7 @@ def resolve_replay_element_args(
         )
         return resolved
 
-    resolved["pid"] = pid
-    resolved["window_id"] = window_id
+    resolved["window"] = {"id": window_id, "pid": pid}
     resolved["element_index"] = match.element_index
     if tool_name == "computer_click":
         resolved.pop("x", None)

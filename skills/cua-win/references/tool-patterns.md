@@ -45,6 +45,19 @@ Recording, replay, and learning:
 - `computer_replay_trajectory`
 - `computer_learn`
 
+## Protocol Envelope
+
+All tools return protocol `0.2` with fixed
+`success/data/artifacts/warnings/error/action` fields. Read tool data from
+`data`, errors from `error`, and side-effect certainty from `action`.
+Expected failures are normal MCP results. For MCP `isError`,
+`ACTION_OUTCOME_UNKNOWN`, or `action.outcome="unknown"`, re-observe before any
+retry.
+
+Images are MCP image content and are matched through
+`artifacts[].content_index`. CLI callers can save the primary image with
+`--output PATH` or all images with `--output-dir DIR`.
+
 ## Direct MCP Examples
 
 Get the current foreground window:
@@ -84,6 +97,16 @@ Click a screenshot coordinate:
   "coordinate_space": "window_resized",
   "x": 420,
   "y": 310
+}
+```
+
+Click an indexed element from the same observation:
+
+```json
+{
+  "window": {"id": 123456, "pid": 8888},
+  "observation_id": "obs-...",
+  "element_index": 7
 }
 ```
 
@@ -131,7 +154,8 @@ For normal app workflows:
 2. Capture state with `computer_get_window_state`.
 3. Choose one small state-changing action.
 4. Use `capture_after`, `verify_query`, or a fresh state capture.
-5. Continue only from the newest `window`, `snapshot_id`, and `screenshot_id`.
+5. Continue only from the newest `window`, `observation_id`, and
+   `screenshot_id`.
 
 Use this loop for navigation, dialogs, search, form entry, menus, tab changes,
 focus changes, and any workflow where the next action depends on the previous
@@ -290,6 +314,9 @@ Agent-perspective recording:
 ```json
 {"action": "start", "output_dir": "D:\\temp\\cua-recording"}
 ```
+
+`output_dir` must be new or empty. Recording start never overwrites existing
+contents, and replay rejects any turn whose `protocol_version` is not `0.2`.
 
 ```json
 {"action": "stop"}

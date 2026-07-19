@@ -134,8 +134,8 @@ def build_post_action_delta(
     after_window = (after.get("pid"), after.get("window_id"))
     return {
         "success": True,
-        "before_snapshot_id": before.get("snapshot_id"),
-        "after_snapshot_id": after.get("snapshot_id"),
+        "before_observation_id": before.get("observation_id"),
+        "after_observation_id": after.get("observation_id"),
         "before_screenshot_id": before.get("screenshot_id"),
         "after_screenshot_id": after.get("screenshot_id"),
         "window_changed": before_window != after_window,
