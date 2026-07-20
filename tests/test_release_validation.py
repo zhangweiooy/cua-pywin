@@ -83,6 +83,25 @@ def test_nuitka_sitecustomize_disables_bytecode_writes() -> None:
     assert "sys.dont_write_bytecode = True" in script
 
 
+def test_nuitka_uses_a_pruned_production_runtime_staging() -> None:
+    script = (
+        Path(__file__).resolve().parents[1] / "scripts" / "build_nuitka.ps1"
+    ).read_text(encoding="utf-8")
+
+    assert '"--no-default-groups"' in script
+    assert '"--no-emit-project"' in script
+    assert "New-ProductionRuntimeStaging" in script
+    assert '"rapidocr\\models"' in script
+    assert "New-Item -ItemType Directory -Path $rapidOcrModels" in script
+    assert '"opencv_videoio_ffmpeg*.dll"' in script
+    assert '"testing",' not in script
+    assert '"--include-package=unittest"' in script
+    assert '"--include-module=cProfile"' in script
+    assert '"--include-module=pydoc"' not in script
+    assert '"--include-module=pstats"' in script
+    assert '"--include-module=profile"' in script
+
+
 def test_validate_source_models_rejects_lfs_pointer(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,

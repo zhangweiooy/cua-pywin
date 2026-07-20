@@ -4,6 +4,29 @@ All notable changes to this project will be documented in this file.
 
 ## Unreleased
 
+## 0.2.2 - 2026-07-20
+
+### Fixed
+
+- Query UI Automation patterns into their concrete COM interfaces before
+  calling `Invoke` or `SetValue`, instead of treating a generic `IUnknown`
+  pointer as an actionable pattern.
+- Resolve the nearest actionable UIA ancestor when a text node does not expose
+  InvokePattern or ValuePattern itself.
+- Fall back to pixel click or focused keyboard input when a UIA pattern is
+  unavailable before dispatch, and return a stable unsupported-operation error
+  instead of leaking COM attribute exceptions.
+
+### Changed
+
+- Advanced package, server, SOM, workflow, and release metadata to `0.2.2`.
+- Kept the public protocol at `0.2` and the public MCP surface at 25 tools.
+- Build the hybrid standalone from a locked production-only staging
+  environment instead of copying the development environment wholesale.
+- Prune duplicate RapidOCR defaults, OpenCV's unused FFmpeg backend,
+  third-party tests/examples/docs, Polars, and the unused `pydoc`
+  standard-library module from the standalone.
+
 ## 0.2.1 - 2026-07-19
 
 ### Fixed

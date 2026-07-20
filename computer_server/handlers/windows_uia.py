@@ -13,7 +13,7 @@ import logging
 import sys
 import threading
 from dataclasses import dataclass, field
-from typing import Any, Dict, List, Optional, Set, Tuple
+from typing import Any, Callable, Dict, List, Optional, Set, Tuple
 
 from computer_server.handlers.control_types import CONTROL_TYPE_NAMES, uia_control_type_name
 
@@ -54,6 +54,10 @@ class UiaTreeResult:
     indexed_nodes: List[UiaNode] = field(default_factory=list)
     tree_quality: str = "empty"
     total_elements: int = 0
+
+
+class UIAPatternUnavailableError(RuntimeError):
+    """Raised when an element and its nearby ancestors lack a UIA pattern."""
 
 
 IS_WINDOWS = sys.platform == "win32"
@@ -204,6 +208,7 @@ else:
     UIA_SelectionItemPatternId = 10010
     UIA_TogglePatternId = 10015
     UIA_TextPatternId = 10014
+    UIA_WindowControlTypeId = 50032
 
     # Order matters — it determines the order of action names per node.
     PATTERN_CHECKS: List[Tuple[int, str]] = [
@@ -214,6 +219,14 @@ else:
         (UIA_TextPatternId, "text"),
         (UIA_ValuePatternId, "set_value"),
     ]
+    _PATTERN_INTERFACE_NAMES: Dict[int, str] = {
+        UIA_InvokePatternId: "IUIAutomationInvokePattern",
+        UIA_TogglePatternId: "IUIAutomationTogglePattern",
+        UIA_ExpandCollapsePatternId: "IUIAutomationExpandCollapsePattern",
+        UIA_SelectionItemPatternId: "IUIAutomationSelectionItemPattern",
+        UIA_TextPatternId: "IUIAutomationTextPattern",
+        UIA_ValuePatternId: "IUIAutomationValuePattern",
+    }
 
     # Property IDs
     UIA_NamePropertyId = 30005
@@ -303,6 +316,56 @@ else:
         except Exception:
             return (0, 0, 0, 0)
 
+    def _query_pattern_interface(pattern: Any, pattern_id: int) -> Any:
+        """Convert an IUnknown pattern pointer to its concrete UIA interface."""
+        if pattern is None:
+            return None
+        try:
+            if not bool(pattern):
+                return None
+        except Exception:
+            pass
+
+        interface_name = _PATTERN_INTERFACE_NAMES.get(pattern_id)
+        interface = getattr(UIA, interface_name, None) if UIA is not None else None
+        if interface is None:
+            return None
+        try:
+            typed_pattern = pattern.QueryInterface(interface)
+            if typed_pattern is None:
+                return None
+            try:
+                if not bool(typed_pattern):
+                    return None
+            except Exception:
+                pass
+            return typed_pattern
+        except (COMError, AttributeError, ValueError, TypeError):
+            return None
+        except Exception:
+            return None
+
+    def _get_typed_pattern(
+        element: Any,
+        pattern_id: int,
+        *,
+        include_cached: bool,
+    ) -> Any:
+        """Return a concrete pattern interface, or None when unsupported."""
+        if include_cached:
+            try:
+                pattern = element.GetCachedPattern(pattern_id)
+            except (COMError, AttributeError, ValueError, TypeError):
+                pattern = None
+            except Exception:
+                pattern = None
+            typed_pattern = _query_pattern_interface(pattern, pattern_id)
+            if typed_pattern is not None:
+                return typed_pattern
+
+        pattern = _com_call(lambda: element.GetCurrentPattern(pattern_id))
+        return _query_pattern_interface(pattern, pattern_id)
+
     def _detect_actions(element: Any) -> List[str]:
         """Return action names supported by the element via UIA patterns.
 
@@ -313,14 +376,11 @@ else:
         """
         actions: List[str] = []
         for pattern_id, action_name in PATTERN_CHECKS:
-            try:
-                pattern = element.GetCachedPattern(pattern_id)
-                if pattern is not None:
-                    actions.append(action_name)
-                    continue
-            except (COMError, AttributeError, ValueError, TypeError):
-                pass
-            pattern = _com_call(lambda pid=pattern_id: element.GetCurrentPattern(pid))
+            pattern = _get_typed_pattern(
+                element,
+                pattern_id,
+                include_cached=True,
+            )
             if pattern is not None:
                 actions.append(action_name)
         return actions
@@ -370,24 +430,99 @@ else:
         except Exception:
             return uia.ElementFromPoint((int(x), int(y)))
 
-    def invoke_at_point(x: int, y: int) -> None:
-        """Resolve a fresh UIA element at a point and invoke it."""
+    def _find_pattern_from_element_or_ancestor(
+        uia: Any,
+        element: Any,
+        pattern_id: int,
+        *,
+        max_ancestor_depth: int = 12,
+    ) -> Tuple[Any, int]:
+        """Find the nearest element exposing a concrete UIA pattern interface."""
+        try:
+            walker = uia.RawViewWalker
+        except Exception as exc:
+            raise UIAPatternUnavailableError(
+                "UIA tree walker is unavailable for pattern resolution"
+            ) from exc
+
+        current = element
+        for depth in range(max_ancestor_depth + 1):
+            pattern = _get_typed_pattern(
+                current,
+                pattern_id,
+                include_cached=False,
+            )
+            if pattern is not None:
+                return pattern, depth
+
+            try:
+                control_type = int(current.CurrentControlType)
+            except Exception:
+                control_type = 0
+            if control_type == UIA_WindowControlTypeId:
+                break
+
+            try:
+                parent = walker.GetParentElement(current)
+            except (COMError, AttributeError, ValueError, TypeError):
+                parent = None
+            except Exception:
+                parent = None
+            if parent is None:
+                break
+            try:
+                if not bool(parent):
+                    break
+            except Exception:
+                pass
+            current = parent
+
+        pattern_name = _PATTERN_INTERFACE_NAMES.get(pattern_id, str(pattern_id))
+        raise UIAPatternUnavailableError(
+            f"The target element and its ancestors do not support {pattern_name}"
+        )
+
+    def invoke_at_point(
+        x: int,
+        y: int,
+        *,
+        on_dispatch: Optional[Callable[[], None]] = None,
+    ) -> None:
+        """Resolve a fresh actionable UIA element at a point and invoke it."""
         initialized = _co_initialize_sta()
         try:
             uia = get_uia_instance()
             element = _uia_element_from_point(uia, x, y)
-            pattern = element.GetCurrentPattern(UIA_InvokePatternId)
+            pattern, _ancestor_depth = _find_pattern_from_element_or_ancestor(
+                uia,
+                element,
+                UIA_InvokePatternId,
+            )
+            if on_dispatch is not None:
+                on_dispatch()
             pattern.Invoke()
         finally:
             _co_uninitialize_if_needed(initialized)
 
-    def set_value_at_point(x: int, y: int, value: str) -> None:
-        """Resolve a fresh UIA element at a point and set ValuePattern."""
+    def set_value_at_point(
+        x: int,
+        y: int,
+        value: str,
+        *,
+        on_dispatch: Optional[Callable[[], None]] = None,
+    ) -> None:
+        """Resolve a fresh editable UIA element at a point and set its value."""
         initialized = _co_initialize_sta()
         try:
             uia = get_uia_instance()
             element = _uia_element_from_point(uia, x, y)
-            pattern = element.GetCurrentPattern(UIA_ValuePatternId)
+            pattern, _ancestor_depth = _find_pattern_from_element_or_ancestor(
+                uia,
+                element,
+                UIA_ValuePatternId,
+            )
+            if on_dispatch is not None:
+                on_dispatch()
             pattern.SetValue(value)
         finally:
             _co_uninitialize_if_needed(initialized)

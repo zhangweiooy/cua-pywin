@@ -1,4 +1,4 @@
-# cua-win 0.2.1 Beta Handoff
+# cua-win 0.2.2 Beta Handoff
 
 This is the short handoff for beta testing and small follow-up iterations.
 Start from the current implementation and real Windows evidence; do not reopen
@@ -8,7 +8,7 @@ settled architecture debates without new data.
 
 - Repository: `D:\Documents\Code\cua-pywin`
 - Branch: `master`
-- Package/server version: `0.2.1`
+- Package/server version: `0.2.2`
 - Public protocol: `0.2`
 - Public MCP surface: 25 tools
 - Repository visibility: private
@@ -16,8 +16,8 @@ settled architecture debates without new data.
 
 Expected release artifact locations:
 
-- Installer: `dist-installer\cua-win-0.2.1-win64-setup.exe`
-- Wheel: `dist\cua_pywin-0.2.1-py3-none-any.whl`
+- Installer: `dist-installer\cua-win-0.2.2-win64-setup.exe`
+- Wheel: `dist\cua_pywin-0.2.2-py3-none-any.whl`
 - Standalone: `dist-nuitka\cua-win.dist\cua-win.exe`
 
 Build artifacts are ignored and can be newer or older than this handoff. Treat
@@ -31,8 +31,16 @@ Current local validation:
 - Standalone `list-tools` reports 25 tools and `doctor --no-desktop --no-daemon`
   passes 27/27 checks.
 - Default standalone daemon start/call/stop succeeds with protocol `0.2`.
-- Standalone runtime remains at 15,126 files before and after execution, with
-  no generated `__pycache__/*.pyc`.
+- The pruned standalone is about 1,946 MiB and contains 14,616 files. Runtime
+  execution does not generate `__pycache__/*.pyc`.
+- Hybrid builds use a locked production-only staging environment. The runtime
+  omits duplicate RapidOCR default model files, OpenCV FFmpeg, Polars,
+  third-party tests/examples/docs, and `pydoc`.
+- A forced standalone SOM observation completes YOLO, bundled RapidOCR, and
+  Florence-2 inference with vision nodes returned.
+- UIA patterns are queried into concrete COM interfaces, text-node actions can
+  resolve to a nearby actionable ancestor, and unavailable patterns fall back
+  without exposing `IUnknown` attribute errors.
 - Read-only Notepad, Chrome, Windows Terminal, and WeChat observations complete
   with WGC capture; WeChat remains semantically degraded and is the main
   application-specific tuning target.
@@ -84,7 +92,7 @@ image and `--output-dir DIR` for all image artifacts.
 
 ```text
 Project: D:\Documents\Code\cua-pywin
-Current version: 0.2.1 beta
+Current version: 0.2.2 beta
 Current branch: master
 Goal: continue beta testing, real-app tuning, and small verified iterations.
 First read AGENTS.md, BETA_HANDOFF.md, README.md, and
@@ -109,7 +117,7 @@ python -m compileall -q computer_server som
 uv run python scripts/mcp_test_one.py --list
 '{"action":"status"}' | uv run python scripts/mcp_test_one.py computer_learn - --timeout 120
 uv run --no-sync python "C:\Users\vinfl\.codex\skills\.system\skill-creator\scripts\quick_validate.py" skills/cua-win
-uv run python scripts/validate_release.py --version 0.2.1
+uv run python scripts/validate_release.py --version 0.2.2
 ```
 
 Expected:
@@ -117,7 +125,7 @@ Expected:
 - Full pytest suite passes.
 - Ruff and compileall pass.
 - Tool list reports exactly 25 tools.
-- MCP initialize reports server version `0.2.1`.
+- MCP initialize reports server version `0.2.2`.
 - `computer_learn status` returns a valid protocol 0.2 envelope.
 - Skill and release validation pass.
 
@@ -126,8 +134,8 @@ Expected:
 On a clean Windows machine when possible:
 
 ```powershell
-Get-FileHash .\cua-win-0.2.1-win64-setup.exe -Algorithm SHA256
-.\cua-win-0.2.1-win64-setup.exe
+Get-FileHash .\cua-win-0.2.2-win64-setup.exe -Algorithm SHA256
+.\cua-win-0.2.2-win64-setup.exe
 where.exe cua-win
 cua-win doctor
 cua-win list-tools
@@ -208,9 +216,9 @@ Confirm:
 ## Build
 
 ```powershell
-./scripts/build_release.ps1 -Version 0.2.1
-./scripts/build_nuitka.ps1 -Version 0.2.1
-./scripts/build_installer.ps1 -Version 0.2.1
+./scripts/build_release.ps1 -Version 0.2.2
+./scripts/build_nuitka.ps1 -Version 0.2.2
+./scripts/build_installer.ps1 -Version 0.2.2
 ```
 
 Standalone smoke:

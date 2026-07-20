@@ -147,14 +147,14 @@ uv run python scripts/run_agent_smoke.py --dry-run --scenario fixture-basic
 uv run --no-sync python "C:\Users\vinfl\.codex\skills\.system\skill-creator\scripts\quick_validate.py" skills/cua-win
 
 # Build and validate a release candidate
-./scripts/build_release.ps1 -Version 0.2.1
+./scripts/build_release.ps1 -Version 0.2.2
 
 # Build a local Nuitka standalone executable directory
 ./scripts/build_nuitka.ps1
-./scripts/build_nuitka.ps1 -Version 0.2.1
+./scripts/build_nuitka.ps1 -Version 0.2.2
 
 # Build a Windows setup.exe from the standalone output
-./scripts/build_installer.ps1 -Version 0.2.1
+./scripts/build_installer.ps1 -Version 0.2.2
 
 # Fast local Nuitka iteration after dependencies are already synced
 ./scripts/build_nuitka.ps1 -SkipSync -SkipChecks
@@ -636,6 +636,16 @@ uv run cua-win stop
   The installer is the normal user-facing artifact; the wheel is mainly for
   Python environments and developer validation. Publish them through GitHub
   Releases, not normal PyPI.
+- Hybrid standalone builds export the locked production dependency set into an
+  isolated staging environment instead of copying the development
+  `site-packages`. Pruning removes duplicate RapidOCR default model files but
+  must retain the empty `rapidocr/models` directory because RapidOCR validates
+  that root before using CUA's explicit bundled model paths.
+- Keep Matplotlib, `unittest`, `torch.testing`,
+  `cProfile`/`profile`/`pstats`, SciPy, and SymPy in standalone builds. Current
+  Ultralytics, Torch, and Torchvision load them during the normal SOM path.
+  OpenCV FFmpeg and Polars are not used by the current image-only inference
+  path and remain excluded.
 - `scripts/build_release.ps1` performs the locked install, source/model
   validation, Ruff, tests, compile checks, wheel build, wheel-internal model
   validation, and SHA-256 generation.
@@ -669,7 +679,7 @@ uv run cua-win stop
 
 ### Current State
 
-- Protocol `0.2` and package version `0.2.1` are the active development line.
+- Protocol `0.2` and package version `0.2.2` are the active development line.
   It intentionally has no 0.1 public compatibility mode. The repository is
   still private.
 - Do not move an existing release tag for documentation-only cleanup. Move a

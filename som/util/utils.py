@@ -4,9 +4,6 @@ import time
 from contextlib import contextmanager
 from typing import Any, List, Optional, Sequence, Tuple, Union, cast
 
-import cv2
-import matplotlib.pyplot as plt
-import numpy as np
 from PIL import Image
 
 from som.ocr import OCRProcessor
@@ -67,7 +64,6 @@ def check_ocr_box(
     if image_source.mode == "RGBA":
         logger.info("Converting RGBA image to RGB")
         image_source = image_source.convert("RGB")
-    image_np = np.array(image_source)
     w, h = image_source.size
     logger.info(f"Image size: {w}x{h}")
 
@@ -100,6 +96,11 @@ def check_ocr_box(
 
     if display_img:
         logger.info("Creating visualization of OCR results...")
+        import cv2
+        import matplotlib.pyplot as plt
+        import numpy as np
+
+        image_np = np.array(image_source)
         opencv_img = cv2.cvtColor(image_np, cv2.COLOR_RGB2BGR)
         bb = []
         for item in coord:

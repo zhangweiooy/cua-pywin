@@ -421,18 +421,29 @@ def _get_window_ref(x: int, y: int, window_id: Optional[int] = None) -> Optional
     return get_window_ref_from_point(x, y)
 
 
-def _invoke_via_uia_point(screen_x: int, screen_y: int) -> None:
+def _invoke_via_uia_point(
+    screen_x: int,
+    screen_y: int,
+    *,
+    on_dispatch: Optional[Callable[[], None]] = None,
+) -> None:
     """Resolve the current UIA element at a point and invoke it."""
     from computer_server.handlers.windows_uia import invoke_at_point
 
-    invoke_at_point(screen_x, screen_y)
+    invoke_at_point(screen_x, screen_y, on_dispatch=on_dispatch)
 
 
-def _set_value_via_uia_point(screen_x: int, screen_y: int, value: str) -> None:
+def _set_value_via_uia_point(
+    screen_x: int,
+    screen_y: int,
+    value: str,
+    *,
+    on_dispatch: Optional[Callable[[], None]] = None,
+) -> None:
     """Resolve the current UIA element at a point and set ValuePattern."""
     from computer_server.handlers.windows_uia import set_value_at_point
 
-    set_value_at_point(screen_x, screen_y, value)
+    set_value_at_point(screen_x, screen_y, value, on_dispatch=on_dispatch)
 
 
 def _mouse_event_click(x: int, y: int, button: str, count: int = 1) -> None:
@@ -592,15 +603,19 @@ def create_mcp_server() -> FastMCP:
         action_context = current_action_context()
         dispatch_state = {"started": False}
 
+        def _mark_dispatch_started() -> None:
+            if dispatch_state["started"]:
+                return
+            dispatch_state["started"] = True
+            if action_context is not None:
+                action_context.mark_dispatch_started()
+
         def _wrapped() -> Tuple[bool, Optional[Dict[str, Any]]]:
             if pre_dispatch_check is not None:
                 binding_error = pre_dispatch_check()
                 if binding_error is not None:
                     return False, binding_error
-            dispatch_state["started"] = True
-            if action_context is not None:
-                action_context.mark_dispatch_started()
-            func()
+            func(_mark_dispatch_started)
             return True, None
 
         result, error = await run_window_operation_with_gate(
@@ -1561,9 +1576,10 @@ def create_mcp_server() -> FastMCP:
                     pid,
                     window_id,
                     "invoke",
-                    lambda: _invoke_via_uia_point(
+                    lambda mark_dispatch: _invoke_via_uia_point(
                         int(screen_pt[0]),
                         int(screen_pt[1]),
+                        on_dispatch=mark_dispatch,
                     ),
                     pre_dispatch_check=lambda: _revalidate_action_binding(
                         observation_id=observation_id,
@@ -1577,14 +1593,15 @@ def create_mcp_server() -> FastMCP:
             if binding_error is not None:
                 return binding_error
             if not invoked:
-                if invoke_error and " skipped;" not in invoke_error:
+                if (
+                    invoke_error
+                    and dispatch_started
+                    and " skipped;" not in invoke_error
+                ):
                     return {
                         "success": False,
                         "code": "ACTION_OUTCOME_UNKNOWN",
-                        "error": (
-                            "UIA Invoke may have been delivered, but its "
-                            f"result is unknown: {invoke_error}"
-                        ),
+                        "error": "UIA Invoke outcome is unknown after dispatch.",
                         "suggestion": (
                             "Reobserve the target before deciding whether "
                             "another action is needed."
@@ -3765,15 +3782,16 @@ def create_mcp_server() -> FastMCP:
                 )
                 if binding_error is not None:
                     return binding_error
-                value_set, value_error, binding_error, _dispatch_started = (
+                value_set, value_error, binding_error, dispatch_started = (
                     await _run_uia_action_with_timeout(
                         pid,
                         window_id,
                         "set_value",
-                        lambda: _set_value_via_uia_point(
+                        lambda mark_dispatch: _set_value_via_uia_point(
                             screen_cx,
                             screen_cy,
                             value,
+                            on_dispatch=mark_dispatch,
                         ),
                         pre_dispatch_check=lambda: _revalidate_action_binding(
                             observation_id=observation_id,
@@ -3800,14 +3818,15 @@ def create_mcp_server() -> FastMCP:
                         element_ref=recorded_element_ref,
                     ))
                     return result
-                if value_error and " skipped;" not in value_error:
+                if (
+                    value_error
+                    and dispatch_started
+                    and " skipped;" not in value_error
+                ):
                     return {
                         "success": False,
                         "code": "ACTION_OUTCOME_UNKNOWN",
-                        "error": (
-                            "UIA ValuePattern may have been delivered, but "
-                            f"its result is unknown: {value_error}"
-                        ),
+                        "error": "UIA ValuePattern outcome is unknown after dispatch.",
                         "suggestion": "Reobserve the element before retrying.",
                     }
                 logger.debug("UIA ValuePattern set skipped (will fall back): %s", value_error)
@@ -3884,6 +3903,7 @@ def create_mcp_server() -> FastMCP:
 
         return {
             "success": False,
+            "code": "UNSUPPORTED_OPERATION",
             "error": f"Cannot set value on element type '{el.control_type}'. Element has no text pattern and is not checkable.",
             "suggestion": "Try computer_click on the element first to focus it, then use computer_type to enter the value",
         }

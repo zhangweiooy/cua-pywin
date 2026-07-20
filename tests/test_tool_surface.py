@@ -2203,7 +2203,7 @@ async def test_uia_click_rechecks_freshness_inside_worker(monkeypatch):
     monkeypatch.setattr(
         mcp_module,
         "_invoke_via_uia_point",
-        lambda x, y: dispatches.append((x, y)),
+        lambda x, y, on_dispatch=None: dispatches.append((x, y)),
     )
     monkeypatch.setattr(
         window_state_service,
@@ -2270,6 +2270,260 @@ async def test_uia_click_rechecks_freshness_inside_worker(monkeypatch):
     assert result.structured_content["error"]["code"] == "STALE_OBSERVATION"
     assert result.structured_content["action"]["outcome"] == "rejected"
     assert dispatches == []
+
+
+@pytest.mark.asyncio
+async def test_uia_click_unsupported_before_dispatch_falls_back_to_pixel(
+    monkeypatch,
+):
+    import computer_server.mcp_server as mcp_module
+    import computer_server.services.window_state_service as window_state_service
+    from computer_server.handlers.windows_uia import UIAPatternUnavailableError
+
+    async def noop_animate(_x: int, _y: int) -> None:
+        return None
+
+    async def fake_get_window_state_snapshot(
+        _automation_handler,
+        _pid,
+        _window_id,
+        **_kwargs,
+    ):
+        return {
+            "success": True,
+            "node_count": 1,
+            "unfiltered_node_count": 1,
+            "nodes": [
+                {
+                    "element_index": 1,
+                    "source": "uia",
+                    "center_x": 5,
+                    "center_y": 6,
+                    "bbox": (0, 0, 10, 12),
+                    "control_type": "Text",
+                    "name": "Run",
+                    "actions": ["invoke"],
+                    "enabled": True,
+                }
+            ],
+            "tree_markdown": "",
+            "screen_width": 20,
+            "screen_height": 20,
+            "_capture_geometry": {
+                "compression_ratio": 1.0,
+                "window_origin_x": 10,
+                "window_origin_y": 20,
+                "crop_origin_screen_x": 10,
+                "crop_origin_screen_y": 20,
+            },
+        }
+
+    def unsupported_invoke(_x: int, _y: int, *, on_dispatch=None) -> None:
+        raise UIAPatternUnavailableError("InvokePattern is unsupported")
+
+    cache = get_element_cache()
+    cache.clear()
+    monkeypatch.setattr(cache, "_is_window_valid", lambda _window_id: True)
+    monkeypatch.setattr(mcp_module, "_animate_cursor_to", noop_animate)
+    monkeypatch.setattr(mcp_module, "_window_snapshot", lambda: (0, set()))
+    monkeypatch.setattr(
+        mcp_module,
+        "_invoke_via_uia_point",
+        unsupported_invoke,
+    )
+    monkeypatch.setattr(
+        window_state_service,
+        "get_window_state_snapshot",
+        fake_get_window_state_snapshot,
+    )
+    automation = _FakeAutomation()
+    monkeypatch.setattr(
+        mcp_module,
+        "_handlers",
+        SimpleNamespace(automation=automation, window=_FakeWindow()),
+    )
+
+    mcp = create_mcp_server()
+    observation = await mcp.call_tool(
+        "computer_get_window_state",
+        {"window": {"id": 456, "pid": 123}},
+    )
+    cache.set_window_origin(123, 456, 10, 20)
+    cache.update(
+        123,
+        456,
+        [
+            CachedElement(
+                element_index=1,
+                source="uia",
+                center_x=5,
+                center_y=6,
+                bbox=(0, 0, 10, 12),
+                control_type="Text",
+                name="Run",
+                actions=["invoke"],
+                enabled=True,
+            )
+        ],
+    )
+    result = await mcp.call_tool(
+        "computer_click",
+        {
+            "window": {"id": 456, "pid": 123},
+            "observation_id": _content(observation)["observation_id"],
+            "element_index": 1,
+        },
+    )
+
+    content = _content(result)
+    assert content["success"] is True, content
+    assert content["action_path"]["method"] == "element_center_pixel_click"
+
+
+@pytest.mark.asyncio
+async def test_set_value_unsupported_before_dispatch_falls_back_to_keyboard(
+    monkeypatch,
+):
+    import computer_server.mcp_server as mcp_module
+    import computer_server.services.window_state_service as window_state_service
+    from computer_server.handlers.windows_uia import UIAPatternUnavailableError
+
+    async def noop_animate(_x: int, _y: int) -> None:
+        return None
+
+    async def fake_get_window_state_snapshot(
+        _automation_handler,
+        _pid,
+        _window_id,
+        **_kwargs,
+    ):
+        return {
+            "success": True,
+            "node_count": 1,
+            "unfiltered_node_count": 1,
+            "nodes": [
+                {
+                    "element_index": 1,
+                    "source": "uia",
+                    "center_x": 5,
+                    "center_y": 6,
+                    "bbox": (0, 0, 10, 12),
+                    "control_type": "Text",
+                    "name": "Name",
+                    "actions": ["set_value"],
+                    "enabled": True,
+                }
+            ],
+            "tree_markdown": "",
+            "screen_width": 20,
+            "screen_height": 20,
+            "_capture_geometry": {
+                "compression_ratio": 1.0,
+                "window_origin_x": 10,
+                "window_origin_y": 20,
+                "crop_origin_screen_x": 10,
+                "crop_origin_screen_y": 20,
+            },
+        }
+
+    def unsupported_set_value(
+        _x: int,
+        _y: int,
+        _value: str,
+        *,
+        on_dispatch=None,
+    ) -> None:
+        raise UIAPatternUnavailableError("ValuePattern is unsupported")
+
+    cache = get_element_cache()
+    cache.clear()
+    monkeypatch.setattr(cache, "_is_window_valid", lambda _window_id: True)
+    monkeypatch.setattr(mcp_module, "_animate_cursor_to", noop_animate)
+    monkeypatch.setattr(
+        mcp_module,
+        "_set_value_via_uia_point",
+        unsupported_set_value,
+    )
+    monkeypatch.setattr(
+        window_state_service,
+        "get_window_state_snapshot",
+        fake_get_window_state_snapshot,
+    )
+    automation = _FakeAutomation()
+    monkeypatch.setattr(
+        mcp_module,
+        "_handlers",
+        SimpleNamespace(automation=automation, window=_FakeWindow()),
+    )
+
+    mcp = create_mcp_server()
+    observation = await mcp.call_tool(
+        "computer_get_window_state",
+        {"window": {"id": 456, "pid": 123}},
+    )
+    cache.set_window_origin(123, 456, 10, 20)
+    cache.update(
+        123,
+        456,
+        [
+            CachedElement(
+                element_index=1,
+                source="uia",
+                center_x=5,
+                center_y=6,
+                bbox=(0, 0, 10, 12),
+                control_type="Text",
+                name="Name",
+                actions=["set_value"],
+                enabled=True,
+            )
+        ],
+    )
+    result = await mcp.call_tool(
+        "computer_set_value",
+        {
+            "window": {"id": 456, "pid": 123},
+            "observation_id": _content(observation)["observation_id"],
+            "element_index": 1,
+            "value": "中文",
+        },
+    )
+
+    content = _content(result)
+    assert content["success"] is True, content
+    assert content["method"] == "click_type"
+    assert automation.key_events == [("hotkey", ["ctrl", "a"])]
+    assert automation.typed_text == ["中文"]
+
+    cache.update(
+        123,
+        456,
+        [
+            CachedElement(
+                element_index=2,
+                source="uia",
+                center_x=5,
+                center_y=6,
+                bbox=(0, 0, 10, 12),
+                control_type="Image",
+                name="Logo",
+                actions=[],
+                enabled=True,
+            )
+        ],
+    )
+    unsupported = await mcp.call_tool(
+        "computer_set_value",
+        {
+            "window": {"id": 456, "pid": 123},
+            "observation_id": _content(observation)["observation_id"],
+            "element_index": 2,
+            "value": "x",
+        },
+    )
+
+    assert _content(unsupported)["code"] == "UNSUPPORTED_OPERATION"
+    assert unsupported.structured_content["action"]["outcome"] == "rejected"
 
 
 @pytest.mark.asyncio
@@ -2522,7 +2776,15 @@ async def test_set_value_reports_unknown_when_uia_action_times_out(monkeypatch):
     async def noop_animate(_x: int, _y: int) -> None:
         return None
 
-    def slow_set_value(_x: int, _y: int, _value: str) -> None:
+    def slow_set_value(
+        _x: int,
+        _y: int,
+        _value: str,
+        *,
+        on_dispatch=None,
+    ) -> None:
+        if on_dispatch is not None:
+            on_dispatch()
         time.sleep(0.2)
 
     cache = get_element_cache()

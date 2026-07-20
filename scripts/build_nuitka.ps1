@@ -124,46 +124,87 @@ function Copy-CleanDirectory {
 function Copy-RuntimeSitePackages {
     param(
         [Parameter(Mandatory = $true)]
+        [string]$Source,
+
+        [Parameter(Mandatory = $true)]
         [string]$Destination
     )
 
-    $sitePackages = (& uv run python -c "import sysconfig; print(sysconfig.get_paths()['purelib'])")
-    if ($LASTEXITCODE -ne 0) {
-        throw "failed to locate site-packages"
-    }
-    $sitePackages = [string]$sitePackages
     $excludeDirs = @(
         "computer_server",
         "som",
         "cua_pywin-*.dist-info",
-        "nuitka",
-        "Nuitka-*.dist-info",
-        "ordered_set",
-        "ordered_set-*.dist-info",
-        "zstandard",
-        "zstandard-*.dist-info",
-        "pytest",
-        "pytest-*.dist-info",
         "playwright",
         "playwright-*.dist-info",
         "polars",
         "polars-*.dist-info",
         "_polars_runtime_*",
         "polars_runtime_*.dist-info",
-        "ruff",
-        "ruff-*.dist-info",
-        "black",
-        "black-*.dist-info",
-        "isort",
-        "isort-*.dist-info",
-        "mypy",
-        "mypy-*.dist-info",
         "test",
         "tests",
         "__pycache__"
     )
     $excludeArgs = @("/XD") + $excludeDirs + @("/XF", "*.pth", "*.pyc")
-    Invoke-Robocopy -Source $sitePackages -Destination $Destination -Arguments $excludeArgs
+    Invoke-Robocopy -Source $Source -Destination $Destination -Arguments $excludeArgs
+}
+
+function New-ProductionRuntimeStaging {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$Destination
+    )
+
+    if (Test-Path -LiteralPath $Destination) {
+        Remove-Item -LiteralPath $Destination -Recurse -Force
+    }
+    New-Item -ItemType Directory -Path $Destination -Force | Out-Null
+
+    $requirements = Join-Path $Destination "runtime-requirements.txt"
+    $venv = Join-Path $Destination "venv"
+    $buildPython = (& uv run --no-sync python -c "import sys; print(sys.executable)")
+    if ($LASTEXITCODE -ne 0 -or -not $buildPython) {
+        throw "failed to locate the locked build Python"
+    }
+    $buildPython = [string]$buildPython
+
+    Invoke-Checked -Command "uv" -Arguments @(
+        "--quiet",
+        "export",
+        "--locked",
+        "--no-dev",
+        "--no-default-groups",
+        "--no-emit-project",
+        "--format",
+        "requirements.txt",
+        "--output-file",
+        $requirements
+    ) | Out-Host
+    Invoke-Checked -Command "uv" -Arguments @(
+        "--quiet",
+        "venv",
+        "--clear",
+        "--python",
+        $buildPython,
+        $venv
+    ) | Out-Host
+
+    $stagePython = Join-Path $venv "Scripts\python.exe"
+    Invoke-Checked -Command "uv" -Arguments @(
+        "--quiet",
+        "pip",
+        "sync",
+        "--python",
+        $stagePython,
+        "--strict",
+        "--require-hashes",
+        $requirements
+    ) | Out-Host
+
+    $sitePackages = (& $stagePython -c "import sysconfig; print(sysconfig.get_paths()['purelib'])")
+    if ($LASTEXITCODE -ne 0 -or -not $sitePackages) {
+        throw "failed to locate production staging site-packages"
+    }
+    return [string]$sitePackages
 }
 
 function Copy-StdlibPackage {
@@ -281,6 +322,56 @@ function Remove-RuntimeBloat {
         Get-ChildItem -LiteralPath $Destination -Recurse -File -Filter $pattern -ErrorAction SilentlyContinue |
             Remove-Item -Force -ErrorAction SilentlyContinue
     }
+
+    $removeDirectoryNames = @(
+        "doc",
+        "docs",
+        "example",
+        "examples",
+        "test",
+        "tests"
+    )
+    Get-ChildItem -LiteralPath $Destination -Recurse -Directory -ErrorAction SilentlyContinue |
+        Where-Object { $removeDirectoryNames -contains $_.Name.ToLowerInvariant() } |
+        Sort-Object { $_.FullName.Length } -Descending |
+        ForEach-Object {
+            Remove-Item -LiteralPath $_.FullName -Recurse -Force -ErrorAction SilentlyContinue
+        }
+
+    $removeDirectories = @(
+        (Join-Path $Destination "pydoc_data")
+    )
+    foreach ($path in $removeDirectories) {
+        if (Test-Path -LiteralPath $path) {
+            Remove-Item -LiteralPath $path -Recurse -Force
+        }
+    }
+
+    $rapidOcrModels = Join-Path $Destination "rapidocr\models"
+    if (Test-Path -LiteralPath $rapidOcrModels) {
+        Get-ChildItem -LiteralPath $rapidOcrModels -Recurse -File -Force |
+            Remove-Item -Force
+        Get-ChildItem -LiteralPath $rapidOcrModels -Recurse -Directory -Force |
+            Sort-Object { $_.FullName.Length } -Descending |
+            Remove-Item -Force -ErrorAction SilentlyContinue
+    }
+    else {
+        New-Item -ItemType Directory -Path $rapidOcrModels -Force | Out-Null
+    }
+
+    $removeFiles = @(
+        "pydoc.py"
+    )
+    foreach ($name in $removeFiles) {
+        $path = Join-Path $Destination $name
+        if (Test-Path -LiteralPath $path) {
+            Remove-Item -LiteralPath $path -Force
+        }
+    }
+
+    Get-ChildItem -LiteralPath $Destination -Recurse -File `
+        -Filter "opencv_videoio_ffmpeg*.dll" -ErrorAction SilentlyContinue |
+        Remove-Item -Force
 }
 
 function Get-ProjectVersion {
@@ -413,10 +504,9 @@ try {
         "--include-package=unittest",
         "--include-package=xml",
         "--include-module=cProfile",
-        "--include-module=pydoc",
-        "--include-module=plistlib",
         "--include-module=pstats",
         "--include-module=profile",
+        "--include-module=plistlib",
         "--include-module=zoneinfo",
         "--include-module=_zoneinfo",
         "--nofollow-import-to=*.tests",
@@ -482,8 +572,20 @@ try {
     }
 
     if ($Profile -eq "hybrid") {
-        Invoke-TimedStep "copy runtime site-packages" {
-            Copy-RuntimeSitePackages -Destination $DistDir
+        $RuntimeStageRoot = Join-Path $ResolvedOutDir ".runtime-stage"
+        Invoke-TimedStep "stage and copy locked production runtime" {
+            try {
+                $RuntimeSitePackages = New-ProductionRuntimeStaging `
+                    -Destination $RuntimeStageRoot
+                Copy-RuntimeSitePackages `
+                    -Source $RuntimeSitePackages `
+                    -Destination $DistDir
+            }
+            finally {
+                if (Test-Path -LiteralPath $RuntimeStageRoot) {
+                    Remove-Item -LiteralPath $RuntimeStageRoot -Recurse -Force
+                }
+            }
         }
         Invoke-TimedStep "copy stdlib runtime data" {
             Copy-StdlibPackage -Name "ctypes" -Destination $DistDir
@@ -495,7 +597,6 @@ try {
             Copy-StdlibPackage -Name "xml" -Destination $DistDir
             Copy-StdlibPackage -Name "zoneinfo" -Destination $DistDir
             Copy-StdlibFile -Name "cProfile.py" -Destination $DistDir
-            Copy-StdlibFile -Name "pydoc.py" -Destination $DistDir
             Copy-StdlibFile -Name "plistlib.py" -Destination $DistDir
             Copy-StdlibFile -Name "profile.py" -Destination $DistDir
             Copy-StdlibFile -Name "pstats.py" -Destination $DistDir
