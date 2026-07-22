@@ -207,6 +207,77 @@ function New-ProductionRuntimeStaging {
     return [string]$sitePackages
 }
 
+function Initialize-ComtypesBindings {
+    $code = @'
+from __future__ import annotations
+
+import importlib
+from pathlib import Path
+
+import comtypes
+import comtypes.client
+import comtypes.gen
+
+gen_dir = Path(comtypes.__file__).resolve().parent / "gen"
+if not gen_dir.is_dir():
+    raise RuntimeError(f"comtypes gen directory is unavailable: {gen_dir}")
+
+# Force generation into the locked build environment. Never let a developer's
+# APPDATA cache decide which bindings Nuitka sees.
+comtypes.client.gen_dir = str(gen_dir)
+comtypes.gen.__path__ = [str(gen_dir)]
+
+for typelib in ("UIAutomationCore.dll", "oleacc.dll"):
+    comtypes.client.GetModule(typelib)
+
+required = (
+    "comtypes.gen.UIAutomationClient",
+    "comtypes.gen.Accessibility",
+    "comtypes.gen.stdole",
+)
+for module_name in required:
+    module = importlib.import_module(module_name)
+    module_path = Path(module.__file__).resolve()
+    if gen_dir not in module_path.parents:
+        raise RuntimeError(
+            f"{module_name} was loaded outside the build environment: {module_path}"
+        )
+
+print(f"prepared comtypes UIA bindings in {gen_dir}")
+'@
+    Invoke-Checked -Command "uv" -Arguments @(
+        "run",
+        "--no-sync",
+        "python",
+        "-c",
+        $code
+    ) | Out-Host
+}
+
+function Assert-NuitkaComtypesModules {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$ReportPath
+    )
+
+    $report = Get-Content -LiteralPath $ReportPath -Raw
+    $requiredModules = @(
+        "comtypes.stream",
+        "comtypes.gen.UIAutomationClient",
+        "comtypes.gen.Accessibility",
+        "comtypes.gen.stdole",
+        "comtypes.gen._944DE083_8FB8_45CF_BCB7_C477ACB2F897_0_1_0",
+        "comtypes.gen._1EA4DBF0_3C3B_11CF_810C_00AA00389B71_0_1_1",
+        "comtypes.gen._00020430_0000_0000_C000_000000000046_0_2_0"
+    )
+    foreach ($moduleName in $requiredModules) {
+        $needle = '<module name="' + $moduleName + '" '
+        if (-not $report.Contains($needle)) {
+            throw "Nuitka report is missing required module: $moduleName"
+        }
+    }
+}
+
 function Copy-StdlibPackage {
     param(
         [Parameter(Mandatory = $true)]
@@ -437,6 +508,10 @@ try {
     }
     New-Item -ItemType Directory -Path $ResolvedOutDir | Out-Null
 
+    Invoke-TimedStep "prepare comtypes UIA bindings" {
+        Initialize-ComtypesBindings
+    }
+
     $NofollowRuntimeImports = @(
         "PIL",
         "aiohttp",
@@ -496,6 +571,7 @@ try {
         "--output-filename=cua-win.exe",
         "--include-package=computer_server",
         "--include-package=som",
+        "--include-package=comtypes.gen",
         "--include-package=ctypes",
         "--include-package=email",
         "--include-package=html",
@@ -504,6 +580,7 @@ try {
         "--include-package=unittest",
         "--include-package=xml",
         "--include-module=cProfile",
+        "--include-module=comtypes.stream",
         "--include-module=pstats",
         "--include-module=profile",
         "--include-module=plistlib",
@@ -552,6 +629,7 @@ try {
     Invoke-TimedStep "nuitka compile ($Profile)" {
         Invoke-Checked -Command "uv" -Arguments $NuitkaArgs
     }
+    Assert-NuitkaComtypesModules -ReportPath (Join-Path $ResolvedOutDir "nuitka-report.xml")
 
     $DistDirs = @(Get-ChildItem -LiteralPath $ResolvedOutDir -Directory -Filter "*.dist")
     if ($DistDirs.Count -ne 1) {

@@ -641,6 +641,11 @@ uv run cua-win stop
   `site-packages`. Pruning removes duplicate RapidOCR default model files but
   must retain the empty `rapidocr/models` directory because RapidOCR validates
   that root before using CUA's explicit bundled model paths.
+- Standalone builds must generate UIAutomationCore and oleacc comtypes bindings
+  before Nuitka compilation, freeze `comtypes.stream` and the complete generated
+  UIAutomation/Accessibility/stdole module set, and assert their module
+  definitions in `nuitka-report.xml`. Never depend on build-machine or user
+  comtypes caches.
 - Keep Matplotlib, `unittest`, `torch.testing`,
   `cProfile`/`profile`/`pstats`, SciPy, and SymPy in standalone builds. Current
   Ultralytics, Torch, and Torchvision load them during the normal SOM path.

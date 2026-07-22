@@ -4,6 +4,22 @@ All notable changes to this project will be documented in this file.
 
 ## Unreleased
 
+## 0.2.3 - 2026-07-22
+
+### Fixed
+
+- Make standalone UI Automation independent of developer and user comtypes
+  caches by generating UIAutomationCore, Accessibility, and stdole bindings at
+  build time, freezing `comtypes.stream` plus the generated modules, and
+  validating their presence in the Nuitka report.
+- Give the learning UIA health probe a dedicated cold-start timeout while
+  retaining the shorter timeout for normal UIA calls.
+
+### Changed
+
+- Advanced package, server, SOM, workflow, and release metadata to `0.2.3`.
+- Kept the public protocol at `0.2` and the public MCP surface at 25 tools.
+
 ## 0.2.2 - 2026-07-20
 
 ### Fixed

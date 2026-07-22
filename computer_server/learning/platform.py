@@ -101,6 +101,7 @@ _APTTYPE_MTA = 1
 _APTTYPE_MAINSTA = 3
 _UIA_WORKER_START_TIMEOUT_SECONDS = 2.0
 _UIA_WORKER_CALL_TIMEOUT_SECONDS = 2.0
+_UIA_WORKER_HEALTH_TIMEOUT_SECONDS = 15.0
 _UIA_WORKER_STOP_TIMEOUT_SECONDS = 2.0
 _uiautomation_module: Any | None = None
 _uiautomation_import_lock = threading.Lock()
@@ -624,7 +625,12 @@ class UIAEnricher:
         try:
             if not self._worker.start():
                 return False
-            return bool(self._worker.call(self._health_check_on_sta))
+            return bool(
+                self._worker.call(
+                    self._health_check_on_sta,
+                    timeout=_UIA_WORKER_HEALTH_TIMEOUT_SECONDS,
+                )
+            )
         except Exception:
             logger.warning(
                 "UIA health check failed - element enrichment unavailable",

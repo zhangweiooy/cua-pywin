@@ -102,6 +102,29 @@ def test_nuitka_uses_a_pruned_production_runtime_staging() -> None:
     assert '"--include-module=profile"' in script
 
 
+def test_nuitka_bundles_clean_environment_comtypes_uia_bindings() -> None:
+    script = (
+        Path(__file__).resolve().parents[1] / "scripts" / "build_nuitka.ps1"
+    ).read_text(encoding="utf-8")
+
+    assert "Initialize-ComtypesBindings" in script
+    assert 'comtypes.client.GetModule(typelib)' in script
+    assert '("UIAutomationCore.dll", "oleacc.dll")' in script
+    assert '"--include-package=comtypes.gen"' in script
+    assert '"--include-module=comtypes.stream"' in script
+    assert "Assert-NuitkaComtypesModules" in script
+    for module_name in (
+        "comtypes.stream",
+        "comtypes.gen.UIAutomationClient",
+        "comtypes.gen.Accessibility",
+        "comtypes.gen.stdole",
+        "comtypes.gen._944DE083_8FB8_45CF_BCB7_C477ACB2F897_0_1_0",
+        "comtypes.gen._1EA4DBF0_3C3B_11CF_810C_00AA00389B71_0_1_1",
+        "comtypes.gen._00020430_0000_0000_C000_000000000046_0_2_0",
+    ):
+        assert module_name in script
+
+
 def test_validate_source_models_rejects_lfs_pointer(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,

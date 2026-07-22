@@ -119,6 +119,26 @@ def test_health_check_converts_worker_start_exception_to_unavailable(
     enricher.close()
 
 
+def test_health_check_uses_cold_start_timeout(monkeypatch) -> None:
+    observed_timeouts: list[float] = []
+    monkeypatch.setattr(platform, "IS_WINDOWS", True)
+    enricher = platform.UIAEnricher(uia_module=SimpleNamespace())
+    monkeypatch.setattr(enricher._worker, "start", lambda: True)
+
+    def call(_callback, timeout: float):
+        observed_timeouts.append(timeout)
+        return True
+
+    monkeypatch.setattr(enricher._worker, "call", call)
+
+    assert enricher.health_check() is True
+    assert observed_timeouts == [platform._UIA_WORKER_HEALTH_TIMEOUT_SECONDS]
+    assert platform._UIA_WORKER_HEALTH_TIMEOUT_SECONDS > (
+        platform._UIA_WORKER_CALL_TIMEOUT_SECONDS
+    )
+    enricher.close()
+
+
 def test_preload_uiautomation_matches_mta_and_restores_flags(monkeypatch) -> None:
     fake_uia = ModuleType("uiautomation")
     observed_flags: list[int] = []
