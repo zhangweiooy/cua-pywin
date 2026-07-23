@@ -13,6 +13,8 @@ from PIL import Image
 
 logger = logging.getLogger(__name__)
 
+DEFAULT_OCR_TIMEOUT_SECONDS = 20.0
+
 _CJK_RE = re.compile(r"[\u3400-\u9fff]")
 _FALSE_VALUES = {"0", "false", "no", "off"}
 _STRICT_VALUES = {"strict", "aggressive"}
@@ -147,7 +149,7 @@ class OCRProcessor:
         self,
         image: Image.Image,
         confidence_threshold: float = 0.5,
-        timeout_seconds: float = 5,
+        timeout_seconds: float = DEFAULT_OCR_TIMEOUT_SECONDS,
     ) -> List[Dict[str, Any]]:
         """Detect text in an image.
 

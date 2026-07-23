@@ -97,7 +97,8 @@ def test_nuitka_uses_a_pruned_production_runtime_staging() -> None:
     assert '"testing",' not in script
     assert '"--include-package=unittest"' in script
     assert '"--include-module=cProfile"' in script
-    assert '"--include-module=pydoc"' not in script
+    assert '"--include-module=pydoc"' in script
+    assert '"--include-package=pydoc_data"' in script
     assert '"--include-module=pstats"' in script
     assert '"--include-module=profile"' in script
 
@@ -110,9 +111,35 @@ def test_nuitka_bundles_clean_environment_comtypes_uia_bindings() -> None:
     assert "Initialize-ComtypesBindings" in script
     assert 'comtypes.client.GetModule(typelib)' in script
     assert '("UIAutomationCore.dll", "oleacc.dll")' in script
+    assert "normalized_checks < 3" in script
+    assert ".cua-build-backup" in script
+    assert "Install-StandaloneComtypesCheckerForCompilation" in script
+    assert "Restore-ComtypesBuildInputs" in script
+    assert "Patch-StandaloneComtypesVersionCheck" in script
+    assert "standalone_comtypes_tlib_version_checker.py" in script
+    assert "validate standalone Teaching lifecycle" in script
+    assert "validate_standalone_teaching.ps1" in script
+    assert "validate standalone SOM runtime" in script
+    assert "validate_standalone_som.ps1" in script
+    teaching_smoke = (
+        Path(__file__).resolve().parents[1]
+        / "scripts"
+        / "validate_standalone_teaching.ps1"
+    ).read_text(encoding="utf-8")
+    assert '$env:APPDATA = $privateAppData' in teaching_smoke
+    assert "generatedComtypesFiles.Count -ne 0" in teaching_smoke
+    som_smoke = (
+        Path(__file__).resolve().parents[1]
+        / "scripts"
+        / "validate_standalone_som.ps1"
+    ).read_text(encoding="utf-8")
+    assert '$env:CUA_OCR_TIMEOUT_SECONDS = $null' in som_smoke
+    assert "force_som = $true" in som_smoke
+    assert 'icon_semantic_status -ne "ready"' in som_smoke
+    assert "[int]$vision.num_text -lt 1" in som_smoke
     assert '"--include-package=comtypes.gen"' in script
     assert '"--include-module=comtypes.stream"' in script
-    assert "Assert-NuitkaComtypesModules" in script
+    assert "Assert-NuitkaRequiredModules" in script
     for module_name in (
         "comtypes.stream",
         "comtypes.gen.UIAutomationClient",
@@ -121,8 +148,38 @@ def test_nuitka_bundles_clean_environment_comtypes_uia_bindings() -> None:
         "comtypes.gen._944DE083_8FB8_45CF_BCB7_C477ACB2F897_0_1_0",
         "comtypes.gen._1EA4DBF0_3C3B_11CF_810C_00AA00389B71_0_1_1",
         "comtypes.gen._00020430_0000_0000_C000_000000000046_0_2_0",
+        "pydoc",
+        "pydoc_data",
+        "pydoc_data.topics",
     ):
         assert module_name in script
+
+
+def test_installer_build_requires_clean_environment_lifecycle() -> None:
+    root = Path(__file__).resolve().parents[1]
+    build_script = (root / "scripts" / "build_installer.ps1").read_text(
+        encoding="utf-8"
+    )
+    validator = (root / "scripts" / "validate_installer.ps1").read_text(
+        encoding="utf-8"
+    )
+
+    assert "validate installed package in a clean private environment" in build_script
+    assert "validate_installer.ps1" in build_script
+    assert "validate_standalone_teaching.ps1" in validator
+    assert "validate_standalone_som.ps1" in validator
+    assert "foreach ($pass in 1..2)" in validator
+    assert "foreach ($capturePass in 1..3)" in validator
+    assert '"computer_screenshot"' in validator
+    assert '"computer_get_window_state"' in validator
+    assert 'capture_backend -ne "wgc"' in validator
+    assert 'uia_quality -notin @("rich", "ok", "poor")' in validator
+    assert '"list-tools"' in validator
+    assert "@($tools.tools).Count -ne 25" in validator
+    assert "/MERGETASKS=!addtopath" in validator
+    assert "Refusing to replace an existing cua-win installation" in validator
+    assert "Uninstaller did not remove the installation directory" in validator
+    assert "changed the current user's PATH" in validator
 
 
 def test_validate_source_models_rejects_lfs_pointer(

@@ -1,4 +1,4 @@
-# cua-win 0.2.3 Beta Handoff
+# cua-win 0.2.4 Beta Handoff
 
 This is the short handoff for beta testing and small follow-up iterations.
 Start from the current implementation and real Windows evidence; do not reopen
@@ -8,7 +8,7 @@ settled architecture debates without new data.
 
 - Repository: `D:\Documents\Code\cua-pywin`
 - Branch: `master`
-- Package/server version: `0.2.3`
+- Package/server version: `0.2.4`
 - Public protocol: `0.2`
 - Public MCP surface: 25 tools
 - Repository visibility: private
@@ -16,8 +16,8 @@ settled architecture debates without new data.
 
 Expected release artifact locations:
 
-- Installer: `dist-installer\cua-win-0.2.3-win64-setup.exe`
-- Wheel: `dist\cua_pywin-0.2.3-py3-none-any.whl`
+- Installer: `dist-installer\cua-win-0.2.4-win64-setup.exe`
+- Wheel: `dist\cua_pywin-0.2.4-py3-none-any.whl`
 - Standalone: `dist-nuitka\cua-win.dist\cua-win.exe`
 
 Build artifacts are ignored and can be newer or older than this handoff. Treat
@@ -28,23 +28,31 @@ the generated `dist\SHA256SUMS.txt`,
 Current local validation:
 
 - Full pytest, Ruff, compileall, skill validation, and release validation pass.
-- Standalone `list-tools` reports 25 tools and `doctor --no-desktop --no-daemon`
-  passes 27/27 checks.
+- Standalone `list-tools` reports 25 tools and full `doctor` passes 31/31
+  checks.
 - Default standalone daemon start/call/stop succeeds with protocol `0.2`.
-- The pruned standalone is about 1,946 MiB and contains 14,616 files. Runtime
+- The pruned standalone is about 1,947 MiB and contains 14,620 files. Runtime
   execution does not generate `__pycache__/*.pyc`.
 - Hybrid builds use a locked production-only staging environment. The runtime
   omits duplicate RapidOCR default model files, OpenCV FFmpeg, Polars,
-  third-party tests/examples/docs, and `pydoc`.
-- A forced standalone SOM observation completes YOLO, bundled RapidOCR, and
-  Florence-2 inference with vision nodes returned.
+  and third-party tests/examples/docs. `pydoc`/`pydoc_data` are retained
+  because the normal Florence-2 path loads them through SciPy.
+- A forced standalone SOM observation must complete YOLO, bundled RapidOCR,
+  and Florence-2 inference with OCR text and icon captions returned. The
+  default OCR timeout is 20 seconds to accommodate cold CPU initialization.
 - UIA patterns are queried into concrete COM interfaces, text-node actions can
   resolve to a nearby actionable ancestor, and unavailable patterns fall back
   without exposing `IUnknown` attribute errors.
 - Standalone builds generate and freeze comtypes UIAutomationCore,
-  Accessibility, and stdole bindings plus `comtypes.stream`; first-run Teaching
-  UIA succeeds with an empty user comtypes cache and does not create cache
-  files.
+  Accessibility, and stdole bindings plus `comtypes.stream`, remove
+  build-machine typelib mtimes, and retain the code-generator version check.
+  Every build starts, observes, and stops Teaching against the produced
+  executable with private state and APPDATA directories, then verifies process,
+  temporary-directory, and comtypes-cache cleanup.
+- Installer builds perform a real silent install into a private directory,
+  validate full doctor, 25 tools, repeated screenshots, UIA/WGC observation,
+  two Teaching lifecycles, and the complete SOM path, then uninstall and reject
+  PATH, process, registry, installation-directory, or state residue.
 - Read-only Notepad, Chrome, Windows Terminal, and WeChat observations complete
   with WGC capture; WeChat remains semantically degraded and is the main
   application-specific tuning target.
@@ -96,7 +104,7 @@ image and `--output-dir DIR` for all image artifacts.
 
 ```text
 Project: D:\Documents\Code\cua-pywin
-Current version: 0.2.3 beta
+Current version: 0.2.4 beta
 Current branch: master
 Goal: continue beta testing, real-app tuning, and small verified iterations.
 First read AGENTS.md, BETA_HANDOFF.md, README.md, and
@@ -121,7 +129,7 @@ python -m compileall -q computer_server som
 uv run python scripts/mcp_test_one.py --list
 '{"action":"status"}' | uv run python scripts/mcp_test_one.py computer_learn - --timeout 120
 uv run --no-sync python "C:\Users\vinfl\.codex\skills\.system\skill-creator\scripts\quick_validate.py" skills/cua-win
-uv run python scripts/validate_release.py --version 0.2.3
+uv run python scripts/validate_release.py --version 0.2.4
 ```
 
 Expected:
@@ -129,7 +137,7 @@ Expected:
 - Full pytest suite passes.
 - Ruff and compileall pass.
 - Tool list reports exactly 25 tools.
-- MCP initialize reports server version `0.2.3`.
+- MCP initialize reports server version `0.2.4`.
 - `computer_learn status` returns a valid protocol 0.2 envelope.
 - Skill and release validation pass.
 
@@ -138,8 +146,8 @@ Expected:
 On a clean Windows machine when possible:
 
 ```powershell
-Get-FileHash .\cua-win-0.2.3-win64-setup.exe -Algorithm SHA256
-.\cua-win-0.2.3-win64-setup.exe
+Get-FileHash .\cua-win-0.2.4-win64-setup.exe -Algorithm SHA256
+.\cua-win-0.2.4-win64-setup.exe
 where.exe cua-win
 cua-win doctor
 cua-win list-tools
@@ -220,9 +228,9 @@ Confirm:
 ## Build
 
 ```powershell
-./scripts/build_release.ps1 -Version 0.2.3
-./scripts/build_nuitka.ps1 -Version 0.2.3
-./scripts/build_installer.ps1 -Version 0.2.3
+./scripts/build_release.ps1 -Version 0.2.4
+./scripts/build_nuitka.ps1 -Version 0.2.4
+./scripts/build_installer.ps1 -Version 0.2.4
 ```
 
 Standalone smoke:

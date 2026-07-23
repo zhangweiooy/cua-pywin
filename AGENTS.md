@@ -644,9 +644,17 @@ uv run cua-win stop
 - Standalone builds must generate UIAutomationCore and oleacc comtypes bindings
   before Nuitka compilation, freeze `comtypes.stream` and the complete generated
   UIAutomation/Accessibility/stdole module set, and assert their module
-  definitions in `nuitka-report.xml`. Never depend on build-machine or user
-  comtypes caches.
-- Keep Matplotlib, `unittest`, `torch.testing`,
+  definitions in `nuitka-report.xml`. Generated wrappers must not retain
+  build-machine typelib mtimes. The standalone checker skips only the
+  machine-specific mtime comparison and preserves the comtypes code-generator
+  version check. Never depend on build-machine or user comtypes caches.
+- Standalone release acceptance must run
+  `scripts/validate_standalone_teaching.ps1` against the produced executable
+  with private state and APPDATA directories. It must verify Teaching start,
+  recording status, stop, idle status, daemon exit, temporary-directory
+  cleanup, and zero generated comtypes cache files; `doctor` alone is not a
+  sufficient Teaching check.
+- Keep Matplotlib, `unittest`, `torch.testing`, `pydoc`/`pydoc_data`,
   `cProfile`/`profile`/`pstats`, SciPy, and SymPy in standalone builds. Current
   Ultralytics, Torch, and Torchvision load them during the normal SOM path.
   OpenCV FFmpeg and Polars are not used by the current image-only inference

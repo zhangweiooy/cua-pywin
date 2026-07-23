@@ -4,6 +4,28 @@ All notable changes to this project will be documented in this file.
 
 ## Unreleased
 
+## 0.2.4 - 2026-07-23
+
+### Fixed
+
+- Make frozen comtypes UIAutomation and Accessibility wrappers portable across
+  Windows servicing states by removing build-machine typelib mtimes and
+  disabling only the standalone mtime comparison while retaining the comtypes
+  code-generator version check.
+- Require standalone Teaching acceptance to start and stop a learning session
+  from a private state directory instead of relying on dependency-only doctor
+  checks.
+- Restore `pydoc` and `pydoc_data` because the packaged Florence-2 path loads
+  them through Transformers and SciPy, and raise the default RapidOCR timeout
+  to 20 seconds for cold CPU inference.
+
+### Changed
+
+- Advanced package, server, SOM, workflow, and release metadata to `0.2.4`.
+- Require installer-level clean-environment acceptance plus packaged
+  UIA/WGC, repeated screenshot, SOM/OCR/Florence-2, and cleanup checks.
+- Kept the public protocol at `0.2` and the public MCP surface at 25 tools.
+
 ## 0.2.3 - 2026-07-22
 
 ### Fixed
@@ -40,8 +62,9 @@ All notable changes to this project will be documented in this file.
 - Build the hybrid standalone from a locked production-only staging
   environment instead of copying the development environment wholesale.
 - Prune duplicate RapidOCR defaults, OpenCV's unused FFmpeg backend,
-  third-party tests/examples/docs, Polars, and the unused `pydoc`
-  standard-library module from the standalone.
+  third-party tests/examples/docs, Polars, and `pydoc` from the standalone.
+  (`pydoc` was restored in 0.2.4 after the packaged Florence-2 path proved it
+  was a runtime dependency.)
 
 ## 0.2.1 - 2026-07-19
 

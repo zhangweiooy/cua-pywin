@@ -7,12 +7,16 @@ import types
 import numpy as np
 from PIL import Image
 
-from som.ocr import OCRProcessor
+from som.ocr import DEFAULT_OCR_TIMEOUT_SECONDS, OCRProcessor
 
 
 def _reset_ocr_processor():
     OCRProcessor._shared_reader = None
     OCRProcessor._shared_key = None
+
+
+def test_default_ocr_timeout_allows_cold_cpu_initialization():
+    assert DEFAULT_OCR_TIMEOUT_SECONDS == 20.0
 
 
 def test_rapidocr_object_result_is_normalized(monkeypatch):

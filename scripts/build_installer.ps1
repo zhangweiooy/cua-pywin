@@ -161,6 +161,11 @@ try {
         throw "Installer was not produced: $SetupExe"
     }
 
+    Write-Host "==> validate installed package in a clean private environment"
+    & (Join-Path $ScriptRoot "validate_installer.ps1") `
+        -SetupExe $SetupExe `
+        -SourceDir $ResolvedSourceDir
+
     $Hash = Get-FileHash -LiteralPath $SetupExe -Algorithm SHA256
     $HashLine = "$($Hash.Hash.ToLowerInvariant())  $([System.IO.Path]::GetFileName($SetupExe))"
     $HashLine | Set-Content -LiteralPath (Join-Path $ResolvedOutDir "SHA256SUMS.txt") -Encoding ascii

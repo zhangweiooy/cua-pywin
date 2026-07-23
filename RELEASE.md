@@ -9,7 +9,7 @@ are distributed through GitHub Releases rather than PyPI.
 - A manual `Build and release` workflow run builds and validates a candidate.
   It uploads a one-day checksum candidate, but does not upload release binaries
   or create a GitHub Release.
-- Pushing a tag such as `v0.2.3` runs the same validation, builds the Windows
+- Pushing a tag such as `v0.2.4` runs the same validation, builds the Windows
   installer, and creates the GitHub Release.
 - The repository is currently private. Decide whether it should become public
   before announcing a user-facing release.
@@ -28,7 +28,7 @@ are distributed through GitHub Releases rather than PyPI.
 5. Build the candidate:
 
    ```powershell
-   ./scripts/build_release.ps1 -Version 0.2.3
+   ./scripts/build_release.ps1 -Version 0.2.4
    ```
 
 6. Install `dist/*.whl` in a clean Windows Python 3.12 environment.
@@ -50,8 +50,8 @@ are distributed through GitHub Releases rather than PyPI.
 2. Create an annotated tag:
 
    ```powershell
-   git tag -a v0.2.3 -m "cua-pywin 0.2.3"
-   git push origin v0.2.3
+   git tag -a v0.2.4 -m "cua-pywin 0.2.4"
+   git push origin v0.2.4
    ```
 
 3. Wait for the `Build and release` workflow to finish.
@@ -65,8 +65,8 @@ are distributed through GitHub Releases rather than PyPI.
 For the normal Windows installer path:
 
 ```powershell
-Get-FileHash .\cua-win-0.2.3-win64-setup.exe -Algorithm SHA256
-.\cua-win-0.2.3-win64-setup.exe
+Get-FileHash .\cua-win-0.2.4-win64-setup.exe -Algorithm SHA256
+.\cua-win-0.2.4-win64-setup.exe
 cua-win doctor
 cua-win list-tools
 cua-win start
@@ -78,7 +78,7 @@ cua-win stop
 For wheel validation in a clean Python 3.12 environment:
 
 ```powershell
-pip install .\cua_pywin-0.2.3-py3-none-any.whl
+pip install .\cua_pywin-0.2.4-py3-none-any.whl
 cua-win doctor
 cua-win list-tools
 ```
@@ -102,7 +102,7 @@ For local executable testing, build a standalone directory:
 
 ```powershell
 ./scripts/build_nuitka.ps1
-./scripts/build_nuitka.ps1 -Version 0.2.3
+./scripts/build_nuitka.ps1 -Version 0.2.4
 ```
 
 When `-Version` is omitted, the script reads the version from `pyproject.toml`.
@@ -131,12 +131,25 @@ bindings into the locked build environment. Nuitka must freeze
 `comtypes.stream`, `comtypes.gen.UIAutomationClient`,
 `comtypes.gen.Accessibility`, stdole, and their GUID wrapper modules. The build
 validates these as module definitions in `nuitka-report.xml`; do not rely on a
-developer or end-user comtypes cache.
+developer or end-user comtypes cache. Generated wrappers must not retain
+build-machine typelib mtimes because Windows servicing changes DLL timestamps
+without changing the typelib contract. The standalone runtime overlay skips
+only the machine-specific mtime comparison and keeps the comtypes
+code-generator version check.
 
-Do not remove Matplotlib, `unittest`, `torch.testing`,
+Every standalone build runs
+`scripts/validate_standalone_teaching.ps1` against the produced executable.
+The smoke uses private state, learning output, and APPDATA directories; it must
+start Teaching, observe recording status, stop, observe idle status, terminate
+the private daemon, remove its temporary directories, and avoid generating a
+comtypes cache. Dependency-only `doctor` checks are not sufficient.
+
+Do not remove Matplotlib, `unittest`, `torch.testing`, `pydoc`/`pydoc_data`,
 `cProfile`/`profile`/`pstats`, SciPy, or SymPy from the standalone. Current
 Ultralytics, Torch, and Torchvision import them on the normal SOM inference
-path.
+path. The release gate also forces a real SOM/OCR/Florence-2 observation from
+the packaged executable; a degraded overall observation does not hide an OCR
+timeout or icon-caption initialization failure.
 
 ## Windows Installer Build
 
@@ -145,20 +158,20 @@ Install Inno Setup 6 so `ISCC.exe` is available on PATH or in the default
 installer from the standalone output:
 
 ```powershell
-./scripts/build_nuitka.ps1 -Version 0.2.3
-./scripts/build_installer.ps1 -Version 0.2.3
+./scripts/build_nuitka.ps1 -Version 0.2.4
+./scripts/build_installer.ps1 -Version 0.2.4
 ```
 
 For a one-command local build:
 
 ```powershell
-./scripts/build_installer.ps1 -Version 0.2.3 -BuildNuitka -SkipSync -SkipChecks
+./scripts/build_installer.ps1 -Version 0.2.4 -BuildNuitka -SkipSync -SkipChecks
 ```
 
 The output is:
 
 ```text
-dist-installer/cua-win-0.2.3-win64-setup.exe
+dist-installer/cua-win-0.2.4-win64-setup.exe
 dist-installer/SHA256SUMS.txt
 ```
 
@@ -168,3 +181,13 @@ privileges. It creates Start Menu shortcuts and offers an optional current-user
 PATH entry. The full `cua-win.dist` directory is installed; do not build a
 Nuitka onefile executable because the bundled model payload is too large and
 would add slow extraction on startup.
+
+Every installer build runs `scripts/validate_installer.ps1` before writing the
+release checksum. The gate performs a silent installation into a private
+temporary directory without changing PATH or Start Menu entries, verifies the
+complete standalone payload and executable hash, runs full `doctor`, checks all
+25 public tools, exercises repeated screenshot capture plus a real active-window
+UIA/WGC observation through a private daemon, runs the empty-cache Teaching
+lifecycle twice, uninstalls the package, and rejects process, registry, PATH,
+installation-directory, or state-directory residue. It refuses to replace an
+existing per-user cua-win installation.

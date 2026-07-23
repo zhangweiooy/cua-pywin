@@ -212,6 +212,7 @@ function Initialize-ComtypesBindings {
 from __future__ import annotations
 
 import importlib
+import re
 from pathlib import Path
 
 import comtypes
@@ -243,7 +244,37 @@ for module_name in required:
             f"{module_name} was loaded outside the build environment: {module_path}"
         )
 
-print(f"prepared comtypes UIA bindings in {gen_dir}")
+# Typelib mtimes vary across Windows servicing states. Keep the comtypes code
+# generator version check, but do not freeze build-machine mtimes into wrappers.
+check_pattern = re.compile(
+    r"_check_version\((['\"][^'\"]+['\"]),\s*[^)\r\n]+\)"
+)
+normalized_checks = 0
+for wrapper_path in gen_dir.glob("_*.py"):
+    source = wrapper_path.read_text(encoding="mbcs")
+    updated, replacement_count = check_pattern.subn(
+        r"_check_version(\1)",
+        source,
+    )
+    if replacement_count:
+        backup_path = wrapper_path.with_name(
+            wrapper_path.name + ".cua-build-backup"
+        )
+        if backup_path.exists():
+            raise RuntimeError(f"stale comtypes build backup: {backup_path}")
+        backup_path.write_bytes(wrapper_path.read_bytes())
+        wrapper_path.write_text(updated, encoding="mbcs")
+        normalized_checks += replacement_count
+
+if normalized_checks < 3:
+    raise RuntimeError(
+        "expected UIAutomation, Accessibility, and stdole typelib checks"
+    )
+
+print(
+    f"prepared comtypes UIA bindings in {gen_dir}; "
+    f"normalized {normalized_checks} machine-specific mtime checks"
+)
 '@
     Invoke-Checked -Command "uv" -Arguments @(
         "run",
@@ -254,7 +285,88 @@ print(f"prepared comtypes UIA bindings in {gen_dir}")
     ) | Out-Host
 }
 
-function Assert-NuitkaComtypesModules {
+function Get-BuildComtypesDirectory {
+    $comtypesDir = (& uv run --no-sync python -c @'
+from pathlib import Path
+
+import comtypes
+
+print(Path(comtypes.__file__).resolve().parent)
+'@)
+    if ($LASTEXITCODE -ne 0 -or -not $comtypesDir) {
+        throw "failed to locate build comtypes package"
+    }
+    return [string]$comtypesDir
+}
+
+function Install-StandaloneComtypesCheckerForCompilation {
+    $comtypesDir = Get-BuildComtypesDirectory
+    $checker = Join-Path $comtypesDir "_tlib_version_checker.py"
+    $backup = $checker + ".cua-build-backup"
+    $overlay = Join-Path $ProjectRoot `
+        "scripts\standalone_comtypes_tlib_version_checker.py"
+    if (-not (Test-Path -LiteralPath $checker)) {
+        throw "Build comtypes checker is unavailable: $checker"
+    }
+    if (Test-Path -LiteralPath $backup) {
+        throw "Stale build comtypes checker backup: $backup"
+    }
+
+    Copy-Item -LiteralPath $checker -Destination $backup
+    Copy-Item -LiteralPath $overlay -Destination $checker -Force
+}
+
+function Restore-ComtypesBuildInputs {
+    $comtypesDir = Get-BuildComtypesDirectory
+    $backups = @(
+        Get-ChildItem `
+            -LiteralPath $comtypesDir `
+            -Recurse `
+            -File `
+            -Filter "*.cua-build-backup" `
+            -ErrorAction SilentlyContinue
+    )
+    foreach ($backup in $backups) {
+        $suffix = ".cua-build-backup"
+        $original = $backup.FullName.Substring(
+            0,
+            $backup.FullName.Length - $suffix.Length
+        )
+        Move-Item `
+            -LiteralPath $backup.FullName `
+            -Destination $original `
+            -Force
+    }
+}
+
+function Patch-StandaloneComtypesVersionCheck {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$SitePackages
+    )
+
+    $source = Join-Path $ProjectRoot `
+        "scripts\standalone_comtypes_tlib_version_checker.py"
+    $destination = Join-Path $SitePackages `
+        "comtypes\_tlib_version_checker.py"
+    if (-not (Test-Path -LiteralPath $source)) {
+        throw "Standalone comtypes checker overlay is unavailable: $source"
+    }
+    if (-not (Test-Path -LiteralPath $destination)) {
+        throw "Staged comtypes checker is unavailable: $destination"
+    }
+
+    Copy-Item -LiteralPath $source -Destination $destination -Force
+    $checker = Get-Content -LiteralPath $destination -Raw
+    if (
+        -not $checker.Contains('raise ImportError("Wrong version")') -or
+        $checker.Contains("Typelib different than module")
+    ) {
+        throw "Standalone comtypes checker overlay validation failed"
+    }
+}
+
+function Assert-NuitkaRequiredModules {
     param(
         [Parameter(Mandatory = $true)]
         [string]$ReportPath
@@ -268,7 +380,10 @@ function Assert-NuitkaComtypesModules {
         "comtypes.gen.stdole",
         "comtypes.gen._944DE083_8FB8_45CF_BCB7_C477ACB2F897_0_1_0",
         "comtypes.gen._1EA4DBF0_3C3B_11CF_810C_00AA00389B71_0_1_1",
-        "comtypes.gen._00020430_0000_0000_C000_000000000046_0_2_0"
+        "comtypes.gen._00020430_0000_0000_C000_000000000046_0_2_0",
+        "pydoc",
+        "pydoc_data",
+        "pydoc_data.topics"
     )
     foreach ($moduleName in $requiredModules) {
         $needle = '<module name="' + $moduleName + '" '
@@ -409,9 +524,7 @@ function Remove-RuntimeBloat {
             Remove-Item -LiteralPath $_.FullName -Recurse -Force -ErrorAction SilentlyContinue
         }
 
-    $removeDirectories = @(
-        (Join-Path $Destination "pydoc_data")
-    )
+    $removeDirectories = @()
     foreach ($path in $removeDirectories) {
         if (Test-Path -LiteralPath $path) {
             Remove-Item -LiteralPath $path -Recurse -Force
@@ -430,9 +543,7 @@ function Remove-RuntimeBloat {
         New-Item -ItemType Directory -Path $rapidOcrModels -Force | Out-Null
     }
 
-    $removeFiles = @(
-        "pydoc.py"
-    )
+    $removeFiles = @()
     foreach ($name in $removeFiles) {
         $path = Join-Path $Destination $name
         if (Test-Path -LiteralPath $path) {
@@ -510,6 +621,7 @@ try {
 
     Invoke-TimedStep "prepare comtypes UIA bindings" {
         Initialize-ComtypesBindings
+        Install-StandaloneComtypesCheckerForCompilation
     }
 
     $NofollowRuntimeImports = @(
@@ -577,10 +689,12 @@ try {
         "--include-package=html",
         "--include-package=http",
         "--include-package=logging",
+        "--include-package=pydoc_data",
         "--include-package=unittest",
         "--include-package=xml",
         "--include-module=cProfile",
         "--include-module=comtypes.stream",
+        "--include-module=pydoc",
         "--include-module=pstats",
         "--include-module=profile",
         "--include-module=plistlib",
@@ -629,7 +743,7 @@ try {
     Invoke-TimedStep "nuitka compile ($Profile)" {
         Invoke-Checked -Command "uv" -Arguments $NuitkaArgs
     }
-    Assert-NuitkaComtypesModules -ReportPath (Join-Path $ResolvedOutDir "nuitka-report.xml")
+    Assert-NuitkaRequiredModules -ReportPath (Join-Path $ResolvedOutDir "nuitka-report.xml")
 
     $DistDirs = @(Get-ChildItem -LiteralPath $ResolvedOutDir -Directory -Filter "*.dist")
     if ($DistDirs.Count -ne 1) {
@@ -655,6 +769,8 @@ try {
             try {
                 $RuntimeSitePackages = New-ProductionRuntimeStaging `
                     -Destination $RuntimeStageRoot
+                Patch-StandaloneComtypesVersionCheck `
+                    -SitePackages $RuntimeSitePackages
                 Copy-RuntimeSitePackages `
                     -Source $RuntimeSitePackages `
                     -Destination $DistDir
@@ -671,11 +787,13 @@ try {
             Copy-StdlibPackage -Name "html" -Destination $DistDir
             Copy-StdlibPackage -Name "http" -Destination $DistDir
             Copy-StdlibPackage -Name "logging" -Destination $DistDir
+            Copy-StdlibPackage -Name "pydoc_data" -Destination $DistDir
             Copy-StdlibPackage -Name "unittest" -Destination $DistDir
             Copy-StdlibPackage -Name "xml" -Destination $DistDir
             Copy-StdlibPackage -Name "zoneinfo" -Destination $DistDir
             Copy-StdlibFile -Name "cProfile.py" -Destination $DistDir
             Copy-StdlibFile -Name "plistlib.py" -Destination $DistDir
+            Copy-StdlibFile -Name "pydoc.py" -Destination $DistDir
             Copy-StdlibFile -Name "profile.py" -Destination $DistDir
             Copy-StdlibFile -Name "pstats.py" -Destination $DistDir
             Write-RuntimeBootstrap -Destination $DistDir
@@ -694,6 +812,14 @@ try {
     Invoke-TimedStep "prune runtime bloat" {
         Remove-RuntimeBloat -Destination $DistDir
     }
+    Invoke-TimedStep "validate standalone Teaching lifecycle" {
+        & (Join-Path $ProjectRoot "scripts\validate_standalone_teaching.ps1") `
+            -ExePath $ExePath
+    }
+    Invoke-TimedStep "validate standalone SOM runtime" {
+        & (Join-Path $ProjectRoot "scripts\validate_standalone_som.ps1") `
+            -ExePath $ExePath
+    }
 
     Invoke-TimedStep "hash output" {
         $Hash = (Get-FileHash -Algorithm SHA256 -LiteralPath $ExePath).Hash.ToLowerInvariant()
@@ -707,5 +833,6 @@ try {
     Write-Host ("Total build time: {0:n1}s" -f $totalTimer.Elapsed.TotalSeconds)
 }
 finally {
+    Restore-ComtypesBuildInputs
     Pop-Location
 }
