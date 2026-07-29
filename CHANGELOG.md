@@ -4,6 +4,23 @@ All notable changes to this project will be documented in this file.
 
 ## Unreleased
 
+## 0.2.5 - 2026-07-29
+
+### Fixed
+
+- Split coalesced Teaching input by source window and prevent UIA/OCR enrichment
+  from reading a different foreground window after focus changes.
+- Bind repeated Teaching stop results to their originating session.
+
+### Changed
+
+- Return strict DesktopAction timelines with stable sequence, epoch time, and
+  source-window identity plus a bounded stop summary for diagnostics.
+- Keep `computer_learn` at the existing public tool while adding session-bound
+  start/stop and incremental status arguments.
+- Advanced package, server, SOM, workflow, and release metadata to `0.2.5`.
+- Kept the public protocol at `0.2` and the public MCP surface at 25 tools.
+
 ## 0.2.4 - 2026-07-23
 
 ### Fixed

@@ -402,7 +402,7 @@ def test_transport_wrapper_has_fixed_shape():
 @pytest.mark.asyncio
 async def test_all_public_tools_use_protocol_boundary_and_reset_schema():
     mcp = create_mcp_server()
-    assert mcp.version == "0.2.4"
+    assert mcp.version == "0.2.5"
     tools = await mcp.list_tools()
     by_name = {tool.name: tool for tool in tools}
 
