@@ -1,6 +1,6 @@
 ---
 name: cua-win
-description: Windows desktop automation with cua-pywin / cua-win MCP tools and CLI. Use when Codex needs to inspect, launch, focus, screenshot, click, drag, scroll, type, press hotkeys, manage windows, use OCR/SOM vision, run batch UI actions, record/replay tool trajectories, or debug Windows app automation through the project's `computer_*` tools or `cua-win` daemon.
+description: Windows desktop automation with cua-pywin / cua-win MCP tools and CLI. Use when Codex needs to inspect, launch, focus, screenshot, click, drag, scroll, type, press hotkeys, manage windows, use OCR/SOM vision, run batch UI actions, record/replay tool trajectories, capture human Teaching demonstrations, or debug Windows app automation through the project's `computer_*` tools or `cua-win` daemon.
 ---
 
 # cua-win
@@ -49,6 +49,9 @@ cua-win mcp-config
 For MCP client setup, prefer `cua-win mcp-config`,
 `cua-win mcp-config --client claude`, or
 `cua-win mcp-config --client codex` instead of hand-writing shell-escaped JSON.
+Use `cua-win help TOOL` or `cua-win TOOL --help` for human-readable tool
+arguments, and `cua-win describe TOOL --no-daemon` for the machine-readable
+schema.
 
 If the daemon is already running, reuse it. Heavy vision models are warmed once
 per daemon process. Use `--no-daemon` only for lightweight schema/status checks
@@ -219,6 +222,21 @@ account changes, security/privacy settings, and irreversible document edits.
 Immediately before the final submit/send/delete action, verify the active
 window, target recipient/context, draft or pending action state, and expected
 control from the latest observation or targeted OCR.
+
+## Teaching
+
+Use `computer_learn` to capture a human demonstration for analysis. Do not
+confuse it with `computer_recording`, which records MCP tool calls for replay.
+Create one stable non-empty `session_id`, pass it to start and stop, and retain
+it until finalization completes. Do not pass `excluded_window_ids`; Teaching
+records the session timeline without that capability.
+
+Poll long sessions with `action="status"`, `after_sequence`, and
+`timeline_limit`. Advance from the returned `data.next_sequence`; do not infer
+the next cursor from list length. Stop returns `sessionId`, `cutoffSequence`,
+strict `actions`, and a bounded diagnostic `summary`. Repeated or concurrent
+stop calls must use the originating session id. Read
+`references/tool-patterns.md` for exact request and response shapes.
 
 ## Recovery
 

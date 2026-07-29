@@ -121,6 +121,8 @@ cua-win doctor
 cua-win start
 cua-win status
 cua-win list-tools
+cua-win help computer_learn
+cua-win computer_learn --help
 cua-win computer_get_screen_size
 @'
 {"window":{"id":5678,"pid":1234}}
@@ -252,6 +254,9 @@ Merged public entry points:
   `computer_manage_window`.
 - Recording start/stop/status uses `computer_recording`.
 - Learning start/stop/status uses `computer_learn`.
+- Learning start and stop require the same non-empty `session_id`; status
+  supports bounded incremental reads with `after_sequence` and
+  `timeline_limit`, and callers continue from `data.next_sequence`.
 - App/title/query window search uses `computer_list_windows`.
 - Accessibility-tree reads use `computer_get_window_state` `tree_markdown` and
   `nodes`.

@@ -345,13 +345,44 @@ Human demonstration learning:
 {"action": "start", "session_id": "teaching-session-1", "output_dir": "D:\\temp\\cua-learning", "task_description": "show how to export a file"}
 ```
 
+Keep the generated `session_id` until stop completes. Start and stop reject a
+missing or empty session id. There is no `excluded_window_ids` argument.
+
+For a bounded incremental status read:
+
+```json
+{"action": "status", "after_sequence": 0, "timeline_limit": 64}
+```
+
+Status returns strict actions whose sequence is greater than
+`after_sequence`. Continue from `data.next_sequence`, not from the number of
+returned actions. `timeline_limit` must be between 1 and 200. Status fields use
+snake_case.
+
 ```json
 {"action": "stop", "session_id": "teaching-session-1"}
 ```
 
-Stop returns strict actions plus a bounded `summary` containing duration,
-action count, observation count, and degraded-observation count. It does not
-return full observations, links, or internal metrics.
+Stop returns this session-bound shape:
+
+```json
+{
+  "sessionId": "teaching-session-1",
+  "cutoffSequence": 5,
+  "actions": [],
+  "summary": {
+    "durationSeconds": 12,
+    "actionCount": 5,
+    "observationCount": 5,
+    "degradedObservationCount": 1
+  }
+}
+```
+
+Stop output fields use camelCase. The bounded `summary` does not include full
+observations, links, or internal metrics. Repeated or concurrent stop calls
+must carry the originating session id and return that completed session rather
+than another session's result.
 
 Recording stores MCP tool turns for replay. Learning captures human input with
 UIA/OCR enrichment and is for analysis, not direct tool replay.

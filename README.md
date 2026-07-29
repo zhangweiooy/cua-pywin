@@ -349,6 +349,34 @@ VCL/SAL 或通用窗口；这些字段只描述风险，不改变工具默认行
 统一走 `computer_recording({"action":"start|stop|status"})`；学习 start/stop/status
 统一走 `computer_learn({"action":"start|stop|status"})`；辅助树读取统一走
 `computer_get_window_state` 的 `tree_markdown` 和 `nodes`。
+
+Teaching start/stop 必须绑定同一个非空 `session_id`。status 可通过
+`after_sequence` 和 `timeline_limit`（1–200，默认 64）增量读取严格动作时间线；
+status 返回的游标字段为 `data.next_sequence`。stop 返回
+`data.sessionId`、`data.cutoffSequence`、严格 `data.actions[]`，以及只包含
+`durationSeconds`、`actionCount`、`observationCount` 和
+`degradedObservationCount` 的低成本 `data.summary`。重复或并发 stop 必须携带
+原 session id，并返回绑定到该 session 的同一完成结果。`computer_learn` 不接受
+`excluded_window_ids`。
+
+```powershell
+$sessionId = "teaching-123"
+$OutputEncoding = [System.Text.UTF8Encoding]::new($false)
+@"
+{"action":"start","session_id":"$sessionId","task_description":"演示导出文件"}
+"@ | cua-win call computer_learn -
+
+cua-win computer_learn '{"action":"status","after_sequence":0,"timeline_limit":64}'
+
+@"
+{"action":"stop","session_id":"$sessionId"}
+"@ | cua-win call computer_learn -
+```
+
+使用 `cua-win help computer_learn` 或 `cua-win computer_learn --help` 查看
+工具专属参数；使用 `cua-win describe computer_learn --no-daemon` 获取机器可读
+schema。
+
 双击使用 `computer_click({"count":2,...})`，没有单独的 double-click 工具。
 录制 start 的 `output_dir` 必须是新目录或空目录；cua-win 不会覆盖已有
 recording，也不会把旧 turn 混入新的 0.2 trajectory。
@@ -813,6 +841,33 @@ start/stop/status uses `computer_recording({"action":"start|stop|status"})`;
 learning start/stop/status uses `computer_learn({"action":"start|stop|status"})`;
 accessibility-tree reads use `computer_get_window_state` `tree_markdown` and
 `nodes`.
+
+Teaching start and stop require the same non-empty `session_id`. Status supports
+incremental strict-timeline reads through `after_sequence` and `timeline_limit`
+(1–200, default 64), with the next cursor in `data.next_sequence`. Stop returns
+`data.sessionId`, `data.cutoffSequence`, strict `data.actions[]`, and a bounded
+`data.summary` containing only `durationSeconds`, `actionCount`,
+`observationCount`, and `degradedObservationCount`. Repeated or concurrent stop
+calls must carry the originating session id and return that session's same
+completed result. `computer_learn` does not accept `excluded_window_ids`.
+
+```powershell
+$sessionId = "teaching-123"
+@"
+{"action":"start","session_id":"$sessionId","task_description":"demonstrate file export"}
+"@ | cua-win call computer_learn -
+
+cua-win computer_learn '{"action":"status","after_sequence":0,"timeline_limit":64}'
+
+@"
+{"action":"stop","session_id":"$sessionId"}
+"@ | cua-win call computer_learn -
+```
+
+Use `cua-win help computer_learn` or `cua-win computer_learn --help` for
+tool-specific arguments. Use `cua-win describe computer_learn --no-daemon` for
+the machine-readable schema.
+
 Double-click with `computer_click({"count":2,...})`; there is no separate
 double-click tool.
 Recording start requires a new or empty `output_dir`; cua-win never overwrites

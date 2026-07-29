@@ -5205,16 +5205,18 @@ def create_mcp_server() -> FastMCP:
 
         Start records keyboard typing, mouse clicks, and scroll events enriched
         with UI Automation (UIA) element metadata and event-driven semantic
-        observations. Stop returns the strict DesktopStopResult contract.
-        Status returns listener health, counters, and bounded strict actions.
+        observations. Stop returns the strict DesktopStopResult contract:
+        sessionId, cutoffSequence, strict actions, and a bounded
+        duration/action/observation/degradation summary. Status returns
+        listener health, counters, and bounded strict actions.
 
         Args:
             action: start|stop|status.
             session_id: Stable owner session id. Required for start and stop.
             task_description: Description for action=start.
             output_dir: Directory for saved results on action=start.
-            after_sequence: Return actions with a higher sequence for status.
-            timeline_limit: Maximum actions returned by action=status.
+            after_sequence: Return actions with a higher sequence for status; must be non-negative.
+            timeline_limit: Maximum actions returned by action=status; must be 1-200.
         """
         from computer_server.services.validation_service import (
             error_result,

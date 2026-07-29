@@ -25,6 +25,7 @@ from computer_server.tool_cli import (
     _daemon_start_args,
     _doctor_summary,
     _execute_batch,
+    _format_tool_help,
     _format_mcp_config,
     _is_lightweight_inprocess_call,
     _mcp_import_mode,
@@ -83,6 +84,14 @@ def test_rewrite_implicit_call() -> None:
     assert _rewrite_implicit_call(["mcp"]) == ["mcp"]
     assert _rewrite_implicit_call(["mcp-config"]) == ["mcp-config"]
     assert _rewrite_implicit_call(["doctor"]) == ["doctor"]
+    assert _rewrite_implicit_call(["computer_learn", "--help"]) == [
+        "help",
+        "computer_learn",
+    ]
+    assert _rewrite_implicit_call(["computer_learn", "-h"]) == [
+        "help",
+        "computer_learn",
+    ]
 
 
 def test_frozen_cli_daemon_reuses_current_executable(monkeypatch, tmp_path) -> None:
@@ -312,6 +321,48 @@ def test_call_help_describes_utf8_argument_sources() -> None:
 
     assert "UTF-8 stdin" in help_text
     assert "'@path'" in help_text
+
+
+def test_tool_help_describes_schema_arguments_and_discovery_commands() -> None:
+    help_text = _format_tool_help(
+        {
+            "name": "computer_learn",
+            "description": "Manage human workflow learning.",
+            "inputSchema": {
+                "properties": {
+                    "action": {
+                        "type": "string",
+                        "description": "start|stop|status.",
+                    },
+                    "session_id": {
+                        "anyOf": [{"type": "string"}, {"type": "null"}],
+                        "default": None,
+                        "description": "Required for start and stop.",
+                    },
+                    "timeline_limit": {
+                        "type": "integer",
+                        "default": 64,
+                        "description": "Maximum status actions.",
+                    },
+                },
+                "required": ["action"],
+            },
+        }
+    )
+
+    assert "usage: cua-win computer_learn '<json>' [call options]" in help_text
+    assert "action (string, required)" in help_text
+    assert "session_id (string|null, default=null)" in help_text
+    assert "timeline_limit (integer, default=64)" in help_text
+    assert "cua-win call --help" in help_text
+    assert "cua-win describe computer_learn --no-daemon" in help_text
+
+
+def test_help_subcommand_accepts_optional_tool() -> None:
+    parser = build_parser()
+
+    assert parser.parse_args(["help"]).tool is None
+    assert parser.parse_args(["help", "computer_learn"]).tool == "computer_learn"
 
 
 def test_mcp_config_outputs_safe_client_shapes() -> None:

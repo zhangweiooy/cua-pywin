@@ -85,6 +85,7 @@ COMMANDS = {
     "mcp",
     "mcp-config",
     "list-tools",
+    "help",
     "describe",
     "call",
     "batch",
@@ -1964,6 +1965,72 @@ def _format_tools(payload: dict[str, Any], json_mode: bool) -> None:
     print(f"\n{payload.get('count', len(tools))} tools total")
 
 
+def _schema_type_label(schema: dict[str, Any]) -> str:
+    direct_type = schema.get("type")
+    if isinstance(direct_type, str):
+        return direct_type
+    variants = schema.get("anyOf") or schema.get("oneOf")
+    if not isinstance(variants, list):
+        return "any"
+    labels: list[str] = []
+    for variant in variants:
+        if not isinstance(variant, dict):
+            continue
+        label = _schema_type_label(variant)
+        if label not in labels:
+            labels.append(label)
+    return "|".join(labels) or "any"
+
+
+def _format_tool_help(tool: dict[str, Any]) -> str:
+    name = str(tool.get("name") or "<tool>")
+    description = str(tool.get("description") or "No description available.").strip()
+    input_schema = tool.get("inputSchema")
+    if not isinstance(input_schema, dict):
+        input_schema = {}
+    properties = input_schema.get("properties")
+    if not isinstance(properties, dict):
+        properties = {}
+    required_items = input_schema.get("required")
+    if not isinstance(required_items, list):
+        required_items = []
+    required = {
+        str(item)
+        for item in required_items
+        if isinstance(item, str)
+    }
+
+    lines = [
+        f"usage: {CLI_NAME} {name} '<json>' [call options]",
+        "",
+        description,
+        "",
+        "JSON arguments:",
+    ]
+    if not properties:
+        lines.append("  (none)")
+    for argument, raw_schema in properties.items():
+        schema = raw_schema if isinstance(raw_schema, dict) else {}
+        qualifiers = [_schema_type_label(schema)]
+        if argument in required:
+            qualifiers.append("required")
+        elif "default" in schema:
+            qualifiers.append(f"default={json.dumps(schema['default'], ensure_ascii=False)}")
+        lines.append(f"  {argument} ({', '.join(qualifiers)})")
+        argument_description = str(schema.get("description") or "").strip()
+        if argument_description:
+            lines.append(f"      {argument_description}")
+    lines.extend(
+        [
+            "",
+            "Pass arguments as inline JSON, '-' for UTF-8 stdin, or '@path' for a UTF-8 JSON file.",
+            f"Run '{CLI_NAME} call --help' for common call options.",
+            f"Run '{CLI_NAME} describe {name} --no-daemon' for the machine-readable schema.",
+        ]
+    )
+    return "\n".join(lines)
+
+
 def _format_call(payload: dict[str, Any], json_mode: bool) -> None:
     result = payload.get("result")
     if isinstance(result, dict):
@@ -2059,6 +2126,8 @@ async def _inprocess_call(tool_name: str, tool_args: dict[str, Any]) -> dict[str
 def _rewrite_implicit_call(argv: Sequence[str]) -> list[str]:
     args = list(argv)
     if args and not args[0].startswith("-") and args[0] not in COMMANDS:
+        if len(args) == 2 and args[1] in {"-h", "--help"}:
+            return ["help", args[0]]
         return ["call", *args]
     return args
 
@@ -2354,6 +2423,15 @@ def _cmd_list_tools(args: argparse.Namespace) -> int:
         info = _ensure_daemon(timeout=args.start_timeout)
         payload = _http_json(info, "GET", "/tools", timeout=args.timeout)
     _format_tools(payload, json_mode=args.json)
+    return 0
+
+
+def _cmd_help(args: argparse.Namespace) -> int:
+    if args.tool is None:
+        print(build_parser().format_help(), end="")
+        return 0
+    payload = asyncio.run(_inprocess_describe(args.tool))
+    print(_format_tool_help(payload["tool"]))
     return 0
 
 
@@ -2681,6 +2759,18 @@ def build_parser() -> argparse.ArgumentParser:
         help="Run once in-process instead of reusing the daemon.",
     )
     list_tools.set_defaults(func=_cmd_list_tools)
+
+    help_command = subparsers.add_parser(
+        "help",
+        help="show CLI help or one tool's arguments",
+        formatter_class=_HelpFormatter,
+    )
+    help_command.add_argument(
+        "tool",
+        nargs="?",
+        help="MCP tool name. Omit to show top-level CLI help.",
+    )
+    help_command.set_defaults(func=_cmd_help)
 
     describe = subparsers.add_parser(
         "describe",

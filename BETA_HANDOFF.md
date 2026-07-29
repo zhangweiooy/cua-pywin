@@ -127,6 +127,7 @@ uv run pytest -q
 uv run ruff check .
 python -m compileall -q computer_server som
 uv run python scripts/mcp_test_one.py --list
+uv run cua-win computer_learn --help
 '{"action":"status"}' | uv run python scripts/mcp_test_one.py computer_learn - --timeout 120
 uv run --no-sync python "C:\Users\vinfl\.codex\skills\.system\skill-creator\scripts\quick_validate.py" skills/cua-win
 uv run python scripts/validate_release.py --version 0.2.5
@@ -137,6 +138,8 @@ Expected:
 - Full pytest suite passes.
 - Ruff and compileall pass.
 - Tool list reports exactly 25 tools.
+- `computer_learn --help` reports the session and incremental timeline
+  arguments without starting the daemon.
 - MCP initialize reports server version `0.2.5`.
 - `computer_learn status` returns a valid protocol 0.2 envelope.
 - Skill and release validation pass.
