@@ -342,12 +342,16 @@ Replay:
 Human demonstration learning:
 
 ```json
-{"action": "start", "output_dir": "D:\\temp\\cua-learning", "task_description": "show how to export a file"}
+{"action": "start", "session_id": "teaching-session-1", "output_dir": "D:\\temp\\cua-learning", "task_description": "show how to export a file"}
 ```
 
 ```json
-{"action": "stop"}
+{"action": "stop", "session_id": "teaching-session-1"}
 ```
+
+Stop returns strict actions plus a bounded `summary` containing duration,
+action count, observation count, and degraded-observation count. It does not
+return full observations, links, or internal metrics.
 
 Recording stores MCP tool turns for replay. Learning captures human input with
 UIA/OCR enrichment and is for analysis, not direct tool replay.

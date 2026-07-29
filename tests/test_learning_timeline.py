@@ -23,6 +23,9 @@ class _FakeAppDetector:
     def current_app_info(self):
         return ("Notepad", "notepad.exe", "Untitled - Notepad")
 
+    def current_app_context(self):
+        return ("Notepad", "notepad.exe", "Untitled - Notepad", "1001")
+
 
 class _FakeUIA:
     def is_password_field_focused(self):
@@ -35,9 +38,27 @@ class _FakeUIA:
         return {"role": "button", "title": f"Button {int(x)},{int(y)}"}
 
 
+class _SwitchingAppDetector:
+    def __init__(self):
+        self.context = ("App A", "a.exe", "A", "1001")
+
+    def current_app_info(self):
+        return self.context[:3]
+
+    def current_app_context(self):
+        return self.context
+
+    def check_app_switch_with_info(self, *_args):
+        return False
+
+
 def _recorder_with_session() -> LearningRecorder:
     recorder = LearningRecorder()
-    recorder._session = LearningSession(task_description=None, start_time=time.time())
+    recorder._session = LearningSession(
+        session_id="session-1",
+        task_description=None,
+        start_time=time.time(),
+    )
     return recorder
 
 
@@ -60,6 +81,7 @@ def test_append_assigns_ids_and_queues_observation_job():
         timestamp=10,
         action_type=ObservedActionType.CLICK,
         app_name="Notepad",
+        source_window_id="1001",
         app_bundle_id="notepad.exe",
         window_title="Untitled - Notepad",
         x=10,
@@ -70,6 +92,8 @@ def test_append_assigns_ids_and_queues_observation_job():
 
     assert action.action_id
     assert action.correlation_id
+    assert action.sequence == 1
+    assert action.occurred_at_epoch_ms is not None
     assert recorder._session is not None
     assert recorder._session.actions == [action]
     assert recorder._session.metrics["action_count"] == 1
@@ -78,6 +102,39 @@ def test_append_assigns_ids_and_queues_observation_job():
     assert job.action_id == action.action_id
     assert job.correlation_id == action.correlation_id
     assert job.trigger == "click"
+
+
+def test_window_switch_does_not_enrich_old_keystrokes_from_new_focus():
+    from computer_server.learning.coalescer import KeystrokeBuncher
+
+    recorder = _recorder_with_session()
+    detector = _SwitchingAppDetector()
+    focused_values = iter(["A-before", "B-before", "B-before你"])
+
+    class UIA(_FakeUIA):
+        def read_focused_value(self):
+            return next(focused_values)
+
+    recorder._app_detector = detector
+    recorder._uia = UIA()
+    recorder._uia_gate.run_with_timeout = lambda func, timeout: func()
+    recorder._keystroke_buncher = KeystrokeBuncher(
+        recorder._on_keystroke_flush
+    )
+
+    recorder._on_key_down(65, "a", [], False)
+    detector.context = ("App B", "b.exe", "B", "9001")
+    recorder._on_key_down(66, "b", [], False)
+    recorder._keystroke_buncher.flush()
+
+    assert recorder._session is not None
+    assert [
+        (action.text, action.source_window_id)
+        for action in recorder._session.actions
+    ] == [
+        ("a", "1001"),
+        ("你", "9001"),
+    ]
 
 
 def test_complete_observation_links_action_and_updates_metrics():
@@ -184,6 +241,68 @@ def test_status_dict_reports_additive_timeline_metrics():
     assert data["target_profile_counts"] == {}
     assert data["current_app"] == "Notepad"
     assert data["listener_healthy"] is True
+    assert data["actions"] == []
+    assert data["session_id"] == "session-1"
+    assert data["next_sequence"] == 0
+    assert data["timeline_truncated"] is False
+
+
+def test_status_dict_returns_bounded_incremental_timeline():
+    recorder = _recorder_with_session()
+    assert recorder._session is not None
+    recorder._session.actions.extend([
+        ObservedAction(
+            action_id=f"action_{index}",
+            action_type=ObservedActionType.CLICK,
+            app_name="Notepad",
+            timestamp=index,
+            sequence=index + 1,
+            occurred_at_epoch_ms=1_725_000_000_000 + index,
+            source_window_id="1001",
+            x=index,
+            y=index,
+        )
+        for index in range(3)
+    ])
+    first = recorder.status_dict(timeline_limit=2)
+
+    assert [item["eventId"] for item in first["actions"]] == [
+        "action_0",
+        "action_1",
+    ]
+    assert first["next_sequence"] == 2
+    assert first["timeline_truncated"] is True
+
+    second = recorder.status_dict(
+        after_sequence=first["next_sequence"],
+        timeline_limit=2,
+    )
+
+    assert [item["eventId"] for item in second["actions"]] == ["action_2"]
+    assert second["next_sequence"] == 3
+    assert second["timeline_truncated"] is False
+
+
+def test_append_rejects_missing_source_window_and_post_cutoff_action():
+    recorder = _recorder_with_session()
+    assert recorder._session is not None
+    missing_source = ObservedAction(
+        timestamp=1,
+        action_type=ObservedActionType.CLICK,
+        app_name="Unknown",
+        source_window_id="",
+    )
+    late = ObservedAction(
+        timestamp=2,
+        action_type=ObservedActionType.CLICK,
+        app_name="Notepad",
+        source_window_id="1001",
+    )
+
+    assert recorder._append(missing_source) is False
+    recorder._stopping = True
+    assert recorder._append(late) is False
+    assert recorder._session.actions == []
 
 
 def test_observation_skip_and_error_counters_are_non_fatal():
@@ -224,11 +343,12 @@ def test_observation_skip_and_error_counters_are_non_fatal():
 def test_repeated_stop_returns_same_completed_session(monkeypatch):
     recorder = _recorder_with_session()
     assert recorder._session is not None
-    recorder._session.actions.append(
+    assert recorder._append(
         ObservedAction(
             timestamp=10,
             action_type=ObservedActionType.CLICK,
             app_name="Notepad",
+            source_window_id="1001",
         )
     )
     monkeypatch.setattr(recorder, "_enrich_vision", lambda actions: None)
@@ -240,6 +360,17 @@ def test_repeated_stop_returns_same_completed_session(monkeypatch):
     assert second == first
     assert recorder.is_recording is False
     assert first[1][0].end_time is not None
+
+
+def test_repeated_stop_rejects_a_different_session_id(monkeypatch):
+    recorder = _recorder_with_session()
+    monkeypatch.setattr(recorder, "_enrich_vision", lambda actions: None)
+
+    first = recorder.stop("session-1")
+    mismatched = recorder.stop("session-2")
+
+    assert first[0] is True
+    assert mismatched == (False, LearningError.SESSION_MISMATCH)
 
 
 def test_concurrent_stop_waits_for_same_completed_session(monkeypatch):
@@ -269,7 +400,9 @@ def test_concurrent_stop_waits_for_same_completed_session(monkeypatch):
     second.start()
 
     assert waiter_started.wait(timeout=2)
-    assert recorder.start() is LearningError.ALREADY_RECORDING
+    assert recorder.start(
+        session_id="session-2",
+    ) is LearningError.ALREADY_RECORDING
 
     release_stop.set()
     first.join(timeout=2)

@@ -888,8 +888,8 @@ class AppDetector:
                 import psutil
                 self._psutil = psutil
 
-    def current_app_info(self) -> tuple[str, str, str]:
-        """Return (app_name, process_name, window_title) for the foreground window.
+    def current_app_context(self) -> tuple[str, str, str, str]:
+        """Return app metadata and the exact foreground native window identity.
 
         Multi-pass name resolution (mirrors Swift AppLauncher three-pass):
           1. VERSIONINFO FileDescription from the exe (richest, locale-aware)
@@ -897,12 +897,12 @@ class AppDetector:
           3. Window title prefix (e.g. first segment before " - ")
         """
         if not IS_WINDOWS:
-            return ("Unknown", "", "")
+            return ("Unknown", "", "", "")
         try:
             self._lazy_import()
             hwnd = self._win32gui.GetForegroundWindow()
             if not hwnd:
-                return ("Unknown", "", "")
+                return ("Unknown", "", "", "")
             title = self._win32gui.GetWindowText(hwnd) or ""
             _, pid = self._win32process.GetWindowThreadProcessId(hwnd)
             try:
@@ -931,12 +931,17 @@ class AppDetector:
                     if title_name:
                         name = title_name
 
-            return (name or "Unknown", exe, title or "")
+            return (name or "Unknown", exe, title or "", str(int(hwnd)))
         except ImportError:
-            return ("Unknown", "", "")
+            return ("Unknown", "", "", "")
         except Exception:
-            logger.debug("current_app_info failed", exc_info=True)
-            return ("Unknown", "", "")
+            logger.debug("current_app_context failed", exc_info=True)
+            return ("Unknown", "", "", "")
+
+    def current_app_info(self) -> tuple[str, str, str]:
+        """Return app metadata without dropping the shared HWND lookup path."""
+        name, process_name, window_title, _window_id = self.current_app_context()
+        return (name, process_name, window_title)
 
     @staticmethod
     def _read_file_description(exe_path: str) -> str:
@@ -1003,15 +1008,27 @@ class AppDetector:
 
     def check_app_switch(self, recorder) -> bool:
         """Check if the foreground app changed. If so, record an appSwitch action."""
-        name, exe, _title = self.current_app_info()
-        return self._check_switch(name, exe, recorder)
+        name, exe, _title, window_id = self.current_app_context()
+        return self._check_switch(name, exe, window_id, recorder)
 
-    def check_app_switch_with_info(self, name: str, exe: str, recorder) -> bool:
+    def check_app_switch_with_info(
+        self,
+        name: str,
+        exe: str,
+        source_window_id: str,
+        recorder,
+    ) -> bool:
         """Same as check_app_switch but uses caller-provided app info to
         avoid a redundant GetForegroundWindow + psutil.Process round-trip."""
-        return self._check_switch(name, exe, recorder)
+        return self._check_switch(name, exe, source_window_id, recorder)
 
-    def _check_switch(self, name: str, exe: str, recorder) -> bool:
+    def _check_switch(
+        self,
+        name: str,
+        exe: str,
+        source_window_id: str,
+        recorder,
+    ) -> bool:
         if not self._last_app_name:
             self._last_app_name = name
             return False
@@ -1024,7 +1041,10 @@ class AppDetector:
 
         if recorder:
             recorder._on_app_switch(
-                to_app=name, to_bundle_id=exe, from_app=previous_app,
+                to_app=name,
+                to_bundle_id=exe,
+                from_app=previous_app,
+                source_window_id=source_window_id,
             )
 
         logger.debug("App switch: %s -> %s", previous_app, name)

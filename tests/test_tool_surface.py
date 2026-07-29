@@ -478,7 +478,11 @@ async def test_public_tool_descriptions_match_protocol_02():
 
     assert "targetable top-level windows" in by_name["computer_list_apps"].description
     assert "sampled turns" in by_name["computer_recording"].description
-    assert "observations, links, and" in by_name["computer_learn"].description
+    assert "strict DesktopStopResult" in by_name["computer_learn"].description
+    assert (
+        "excluded_window_ids"
+        not in by_name["computer_learn"].parameters["properties"]
+    )
     assert "latest screenshot identified by screenshot_id" in (
         by_name["computer_zoom"].description
     )
@@ -1364,6 +1368,9 @@ async def test_learn_status_uses_merged_tool():
 
     assert _content(result)["success"] is True
     data = _content(result)
+    assert data["teaching_contract"] == "desktop-action.v1"
+    assert data["stop_barrier"] == "cutoff-sequence.v1"
+    assert "source_window_exclusion" not in data
     assert data["recording"] is False
     assert data["mode"] == "off"
     assert data["action_count"] == 0
@@ -1373,6 +1380,26 @@ async def test_learn_status_uses_merged_tool():
     assert data["degraded_observations"] == 0
     assert data["capture_warning_count"] == 0
     assert data["target_profile_counts"] == {}
+    assert data["actions"] == []
+    assert data["session_id"] is None
+    assert data["next_sequence"] == 0
+    assert data["timeline_truncated"] is False
+
+
+@pytest.mark.asyncio
+async def test_learn_status_validates_incremental_timeline_arguments():
+    result = await create_mcp_server().call_tool(
+        "computer_learn",
+        {
+            "action": "status",
+            "after_sequence": -1,
+            "timeline_limit": 201,
+        },
+    )
+
+    content = _content(result)
+    assert content["success"] is False
+    assert "after_sequence must be between" in content["error"]
 
 
 @pytest.mark.asyncio

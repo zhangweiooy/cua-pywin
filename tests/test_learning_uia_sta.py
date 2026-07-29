@@ -215,7 +215,9 @@ def test_learning_start_cleans_up_when_uia_health_check_raises(monkeypatch) -> N
         lambda self: None,
     )
 
-    assert recorder.start() is LearningError.UIA_UNAVAILABLE
+    assert recorder.start(
+        session_id="session-1",
+    ) is LearningError.UIA_UNAVAILABLE
     assert recorder.is_recording is False
     assert len(created) == 1
     assert created[0].closed is True

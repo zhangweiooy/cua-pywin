@@ -208,12 +208,15 @@ The UIA learning runtime owns a dedicated STA worker and must work from an MTA
 caller:
 
 ```powershell
-@'
-{"action":"start","task_description":"0.2 teaching smoke"}
-'@ | cua-win call computer_learn -
+$sessionId = "cua-teaching-smoke"
+@"
+{"action":"start","session_id":"$sessionId","task_description":"0.2 teaching smoke"}
+"@ | cua-win call computer_learn -
 
 cua-win call computer_learn '{action:status}'
-cua-win call computer_learn '{action:stop}'
+@"
+{"action":"stop","session_id":"$sessionId"}
+"@ | cua-win call computer_learn -
 ```
 
 Confirm:
@@ -221,7 +224,8 @@ Confirm:
 - start returns `data.status="recording"`;
 - status returns `data.recording=true`;
 - a real click increases action/event data;
-- stop returns non-empty learning output;
+- stop returns strict actions plus the bounded duration/action/observation/
+  degraded-observation summary;
 - concurrent or repeated stop/finalize is idempotent;
 - start failure leaves no active hook, worker, or half-started session.
 

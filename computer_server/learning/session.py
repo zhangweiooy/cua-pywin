@@ -3,8 +3,9 @@
 These types are the OUTPUT of recording. They are NOT recipes — the agent
 (Claude Code) converts these into parameterized workflow JSON.
 
-Serialization format is compatible with Ghost OS Swift
-LearningDispatch.serializeAction().
+The public action serialization is the strict DesktopAction protocol consumed
+by the Oryx Desktop adapter. Internal observation data remains separate from
+that protocol.
 """
 
 from __future__ import annotations
@@ -14,12 +15,19 @@ from enum import Enum
 from typing import Any, Optional
 
 
+TEACHING_CONTRACT = "desktop-action.v1"
+TEACHING_STOP_BARRIER = "cutoff-sequence.v1"
+
+
 class LearningError(Enum):
     """Errors specific to learning mode operations."""
 
     INPUT_MONITORING_NOT_GRANTED = "Input Monitoring permission not granted"
-    ALREADY_RECORDING = "Learning is already in progress. Call computer_learn(action='stop') first."
-    NOT_RECORDING = "No learning session is active. Call computer_learn(action='start') first."
+    ALREADY_RECORDING = (
+        "Learning is already in progress. Stop it with its active session_id first."
+    )
+    NOT_RECORDING = "No learning session is active."
+    SESSION_MISMATCH = "session_id does not match the learning session"
     HOOK_CREATION_FAILED = "Failed to create Windows hook. Permissions may be stale."
     NO_ACTIONS_RECORDED = "No actions were recorded during the learning session."
     UIA_UNAVAILABLE = "UI Automation COM service is not available."
@@ -30,10 +38,13 @@ class LearningError(Enum):
                 "On Windows, ensure the application has standard user privileges. "
                 "Low-level hooks (WH_KEYBOARD_LL) do not require admin.",
             LearningError.ALREADY_RECORDING:
-                "Call computer_learn(action='stop') to end the current session, "
-                "or computer_learn(action='status') to check.",
+                "Call computer_learn(action='status') to inspect the active session, "
+                "then stop it with the returned session_id.",
             LearningError.NOT_RECORDING:
-                "Call computer_learn(action='start') to begin recording.",
+                "Call computer_learn(action='start') with a session_id to begin "
+                "recording.",
+            LearningError.SESSION_MISMATCH:
+                "Use the same session_id that started the learning session.",
             LearningError.HOOK_CREATION_FAILED:
                 "Try restarting the application. If the issue persists, check that "
                 "no other application is blocking global hooks.",
@@ -94,6 +105,9 @@ class ObservedAction:
     timestamp: int  # time.perf_counter_ns()
     action_type: ObservedActionType
     app_name: str
+    sequence: int | None = None
+    occurred_at_epoch_ms: int | None = None
+    source_window_id: str | None = None
     app_bundle_id: str | None = None  # Windows: process name
     window_title: str | None = None
     url: str | None = None
@@ -126,76 +140,96 @@ class ObservedAction:
     ocr_window_y: int | None = None
 
     def to_dict(self) -> dict:
-        """Serialize to JSON-compatible dict matching Swift LearningDispatch format."""
-        d: dict = {
-            "timestamp": self.timestamp,
-            "action_type": self.action_type.value,
+        """Serialize one strict DesktopAction.
+
+        Sequence, wall-clock time, and native window identity are assigned at
+        the recorder ingestion boundary. Emitting a partial action is a
+        protocol error rather than an invitation for consumers to guess.
+        """
+        if self.action_id is None:
+            raise ValueError("DesktopAction.eventId is required")
+        if not isinstance(self.sequence, int) or self.sequence <= 0:
+            raise ValueError("DesktopAction.sequence must be a positive integer")
+        if (
+            not isinstance(self.occurred_at_epoch_ms, int)
+            or self.occurred_at_epoch_ms <= 0
+        ):
+            raise ValueError(
+                "DesktopAction.occurredAtEpochMs must be a positive Epoch millisecond"
+            )
+        if not isinstance(self.source_window_id, str) or not self.source_window_id:
+            raise ValueError("DesktopAction.sourceWindowId is required")
+
+        payload: dict[str, Any] = {
             "app": self.app_name,
-            "bundle_id": self.app_bundle_id,
+            "processName": self.app_bundle_id,
+            "windowTitle": self.window_title,
+            "url": self.url,
+            "element": (
+                self.element_context.to_dict()
+                if self.element_context
+                else None
+            ),
         }
-        d["window"] = self.window_title
-        d["url"] = self.url
-        d["element"] = self.element_context.to_dict() if self.element_context else None
-        if self.action_id is not None:
-            d["action_id"] = self.action_id
-        if self.correlation_id is not None:
-            d["correlation_id"] = self.correlation_id
-        if self.before_observation_id is not None:
-            d["before_observation_id"] = self.before_observation_id
-        if self.after_observation_id is not None:
-            d["after_observation_id"] = self.after_observation_id
 
         if self.action_type == ObservedActionType.CLICK:
             if self.x is not None:
-                d["x"] = self.x
+                payload["x"] = self.x
             if self.y is not None:
-                d["y"] = self.y
+                payload["y"] = self.y
             if self.button is not None:
-                d["button"] = self.button
+                payload["button"] = self.button
             if self.count is not None:
-                d["count"] = self.count
+                payload["count"] = self.count
         elif self.action_type == ObservedActionType.TYPE_TEXT:
             if self.text is not None:
-                d["text"] = self.text
+                payload["text"] = self.text
             if self.ocr_text is not None:
-                d["ocr_text"] = self.ocr_text
+                payload["ocrText"] = self.ocr_text
             if self.ocr_image is not None:
-                d["ocr_image"] = self.ocr_image
+                payload["ocrImage"] = self.ocr_image
             if self.ocr_ref_x is not None:
-                d["ocr_ref_x"] = self.ocr_ref_x
+                payload["ocrRefX"] = self.ocr_ref_x
             if self.ocr_ref_y is not None:
-                d["ocr_ref_y"] = self.ocr_ref_y
+                payload["ocrRefY"] = self.ocr_ref_y
         elif self.action_type == ObservedActionType.KEY_PRESS:
             if self.key_code is not None:
-                d["key_code"] = self.key_code
+                payload["keyCode"] = self.key_code
             if self.key_name is not None:
-                d["key_name"] = self.key_name
+                payload["keyName"] = self.key_name
             if self.modifiers:
-                d["modifiers"] = self.modifiers
+                payload["modifiers"] = self.modifiers
         elif self.action_type == ObservedActionType.HOTKEY:
             if self.modifiers:
-                d["modifiers"] = self.modifiers
+                payload["modifiers"] = self.modifiers
             if self.key_name is not None:
-                d["key_name"] = self.key_name
+                payload["keyName"] = self.key_name
         elif self.action_type == ObservedActionType.APP_SWITCH:
             if self.to_app is not None:
-                d["to_app"] = self.to_app
+                payload["toApp"] = self.to_app
             if self.to_bundle_id is not None:
-                d["to_bundle_id"] = self.to_bundle_id
+                payload["toProcessName"] = self.to_bundle_id
         elif self.action_type == ObservedActionType.SCROLL:
             if self.delta_x is not None:
-                d["delta_x"] = self.delta_x
+                payload["deltaX"] = self.delta_x
             if self.delta_y is not None:
-                d["delta_y"] = self.delta_y
+                payload["deltaY"] = self.delta_y
             if self.x is not None:
-                d["x"] = self.x
+                payload["x"] = self.x
             if self.y is not None:
-                d["y"] = self.y
+                payload["y"] = self.y
         elif self.action_type == ObservedActionType.SECURE_FIELD:
-            d["reason"] = "sensitive_field"
-            d["redacted"] = True
+            payload["reason"] = "sensitive_field"
+            payload["redacted"] = True
 
-        return d
+        return {
+            "eventId": self.action_id,
+            "sequence": self.sequence,
+            "occurredAtEpochMs": self.occurred_at_epoch_ms,
+            "sourceWindowId": self.source_window_id,
+            "actionType": self.action_type.value,
+            "payload": payload,
+        }
 
 
 @dataclass
@@ -302,8 +336,11 @@ def default_learning_metrics() -> dict[str, Any]:
 class LearningSession:
     """State of an active learning session. Held by LearningRecorder."""
 
+    session_id: str
     task_description: str | None
     start_time: float
+    next_sequence: int = 1
+    cutoff_sequence: int | None = None
     end_time: float | None = None
     actions: list[ObservedAction] = field(default_factory=list)
     observations: list[LearningObservation] = field(default_factory=list)

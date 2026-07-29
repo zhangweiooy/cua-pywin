@@ -494,7 +494,13 @@ async def test_learning_uia_preflight_failure_is_rejected(monkeypatch, tmp_path)
     from computer_server.learning.session import LearningError
 
     class UnavailableRecorder:
-        def start(self, task_description=None, output_dir=""):
+        def start(
+            self,
+            *,
+            session_id,
+            task_description=None,
+            output_dir="",
+        ):
             return LearningError.UIA_UNAVAILABLE
 
     monkeypatch.setattr(recorder_module, "LearningRecorder", UnavailableRecorder)
@@ -503,6 +509,7 @@ async def test_learning_uia_preflight_failure_is_rejected(monkeypatch, tmp_path)
         "computer_learn",
         {
             "action": "start",
+            "session_id": "strict-preflight-session",
             "output_dir": str(tmp_path),
         },
     )
@@ -512,6 +519,85 @@ async def test_learning_uia_preflight_failure_is_rejected(monkeypatch, tmp_path)
     assert envelope["error"]["code"] == "PROVIDER_UNAVAILABLE"
     assert envelope["action"]["outcome"] == "rejected"
     assert envelope["action"]["retry_safety"] == "reobserve"
+
+
+@pytest.mark.asyncio
+async def test_learning_lifecycle_runs_blocking_recorder_calls_off_event_loop(
+    monkeypatch,
+    tmp_path,
+):
+    import computer_server.learning.recorder as recorder_module
+    import computer_server.mcp_server as mcp_server_module
+
+    calls = []
+
+    async def tracked_to_thread(function, *args, **kwargs):
+        calls.append(function.__name__)
+        return function(*args, **kwargs)
+
+    class Recorder:
+        def start(
+            self,
+            *,
+            session_id,
+            task_description=None,
+            output_dir="",
+        ):
+            self.session_id = session_id
+            return None
+
+        def status_dict(self):
+            return {
+                "recording": True,
+                "session_id": self.session_id,
+            }
+
+        def stop(self, session_id):
+            assert session_id == self.session_id
+            session = SimpleNamespace(
+                session_id=self.session_id,
+                cutoff_sequence=0,
+                start_time=100.0,
+                end_time=112.9,
+                observations=[object()] * 5,
+                metrics={"degraded_observations": 1},
+            )
+            return True, (session, [])
+
+    monkeypatch.setattr(mcp_server_module.asyncio, "to_thread", tracked_to_thread)
+    monkeypatch.setattr(recorder_module, "LearningRecorder", Recorder)
+
+    server = create_mcp_server()
+    session_id = "off-event-loop-session"
+    started = await server.call_tool(
+        "computer_learn",
+            {
+                "action": "start",
+                "session_id": session_id,
+                "output_dir": str(tmp_path),
+            },
+    )
+    stopped = await server.call_tool(
+        "computer_learn",
+        {
+            "action": "stop",
+            "session_id": session_id,
+        },
+    )
+
+    assert started.structured_content["success"] is True
+    assert stopped.structured_content["data"] == {
+        "sessionId": session_id,
+        "cutoffSequence": 0,
+        "actions": [],
+        "summary": {
+            "durationSeconds": 12,
+            "actionCount": 0,
+            "observationCount": 5,
+            "degradedObservationCount": 1,
+        },
+    }
+    assert calls == ["start", "stop"]
 
 
 @pytest.mark.asyncio

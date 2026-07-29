@@ -77,11 +77,13 @@ try {
     $env:APPDATA = $privateAppData
 
     $learningOutput = Join-Path $stateRoot "learning"
+    $sessionId = "standalone-teaching-smoke"
     $startArgsPath = Join-Path $stateRoot "learn-start.json"
     $statusArgsPath = Join-Path $stateRoot "learn-status.json"
     $stopArgsPath = Join-Path $stateRoot "learn-stop.json"
     @{
         action = "start"
+        session_id = $sessionId
         output_dir = $learningOutput
     } | ConvertTo-Json -Depth 10 | Set-Content `
         -LiteralPath $startArgsPath `
@@ -93,6 +95,7 @@ try {
         -Encoding utf8
     @{
         action = "stop"
+        session_id = $sessionId
     } | ConvertTo-Json -Depth 10 | Set-Content `
         -LiteralPath $stopArgsPath `
         -Encoding utf8
@@ -133,7 +136,8 @@ try {
     )
     if (
         -not $recording.Payload.success -or
-        -not $recording.Payload.data.recording
+        -not $recording.Payload.data.recording -or
+        $recording.Payload.data.session_id -ne $sessionId
     ) {
         throw "Teaching status did not confirm recording"
     }
@@ -147,13 +151,19 @@ try {
             "--timeout",
             [string]$TimeoutSeconds
         ) `
-        -AllowedExitCodes @(0, 1)
-    $expectedEmptyStop = (
-        -not $stop.Payload.success -and
-        $stop.Payload.error.code -eq "ACTION_OUTCOME_UNKNOWN"
-    )
-    if (-not $stop.Payload.success -and -not $expectedEmptyStop) {
-        throw "Teaching stop returned an unexpected failure"
+        -AllowedExitCodes @(0)
+    if (
+        -not $stop.Payload.success -or
+        $stop.Payload.data.sessionId -ne $sessionId -or
+        $null -eq $stop.Payload.data.cutoffSequence -or
+        $null -eq $stop.Payload.data.actions -or
+        $null -eq $stop.Payload.data.summary -or
+        $null -eq $stop.Payload.data.summary.durationSeconds -or
+        $null -eq $stop.Payload.data.summary.actionCount -or
+        $null -eq $stop.Payload.data.summary.observationCount -or
+        $null -eq $stop.Payload.data.summary.degradedObservationCount
+    ) {
+        throw "Teaching stop did not return the strict DesktopStopResult contract"
     }
 
     $idle = Invoke-CuaJson -Arguments @(

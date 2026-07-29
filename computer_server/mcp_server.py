@@ -5195,34 +5195,64 @@ def create_mcp_server() -> FastMCP:
     @_protocol_tool(annotations={"readOnlyHint": False, "destructiveHint": True, "idempotentHint": False, "openWorldHint": True})
     async def computer_learn(
         action: str,
+        session_id: Optional[str] = None,
         task_description: Optional[str] = None,
         output_dir: Optional[str] = None,
+        after_sequence: int = 0,
+        timeline_limit: int = 64,
     ) -> Any:
         """Manage human workflow learning: start, stop, or status.
 
         Start records keyboard typing, mouse clicks, and scroll events enriched
         with UI Automation (UIA) element metadata and event-driven semantic
-        observations. Stop returns the session actions, observations, links, and
-        metrics. Status returns listener health and timeline counters.
+        observations. Stop returns the strict DesktopStopResult contract.
+        Status returns listener health, counters, and bounded strict actions.
 
         Args:
             action: start|stop|status.
+            session_id: Stable owner session id. Required for start and stop.
             task_description: Description for action=start.
             output_dir: Directory for saved results on action=start.
+            after_sequence: Return actions with a higher sequence for status.
+            timeline_limit: Maximum actions returned by action=status.
         """
-        from computer_server.services.validation_service import error_result, validate_choice
+        from computer_server.services.validation_service import (
+            error_result,
+            validate_choice,
+            validate_int_range,
+        )
 
         try:
             normalized_action = validate_choice("action", action, {"start", "stop", "status"})
+            if normalized_action == "status":
+                after_sequence = validate_int_range(
+                    "after_sequence",
+                    after_sequence,
+                    0,
+                    2_147_483_647,
+                )
+                timeline_limit = validate_int_range(
+                    "timeline_limit",
+                    timeline_limit,
+                    1,
+                    200,
+                )
         except ValueError as e:
             return error_result(e)
 
         if normalized_action == "status":
             recorder = context.learning_recorder
             if recorder is None:
+                from computer_server.learning.session import (
+                    TEACHING_CONTRACT,
+                    TEACHING_STOP_BARRIER,
+                )
+
                 return {
                     "success": True,
                     "data": {
+                        "teaching_contract": TEACHING_CONTRACT,
+                        "stop_barrier": TEACHING_STOP_BARRIER,
                         "recording": False,
                         "mode": "off",
                         "action_count": 0,
@@ -5237,13 +5267,22 @@ def create_mcp_server() -> FastMCP:
                         "last_event_at": None,
                         "last_observation_at": None,
                         "duration_seconds": 0,
+                        "actions": [],
+                        "session_id": None,
+                        "next_sequence": 0,
+                        "timeline_truncated": False,
                     },
                 }
 
-            data = recorder.status_dict()
+            data = recorder.status_dict(
+                after_sequence=after_sequence,
+                timeline_limit=timeline_limit,
+            )
             return {"success": True, "data": data}
 
         if normalized_action == "start":
+            if not isinstance(session_id, str) or not session_id.strip():
+                return error_result(ValueError("session_id is required for action=start"))
             try:
                 from computer_server.learning.recorder import LearningRecorder
             except ImportError as e:
@@ -5268,7 +5307,12 @@ def create_mcp_server() -> FastMCP:
             else:
                 output_dir = os.path.expanduser(output_dir)
 
-            error = recorder.start(task_description=task_description, output_dir=output_dir)
+            error = await asyncio.to_thread(
+                recorder.start,
+                session_id=session_id,
+                task_description=task_description,
+                output_dir=output_dir,
+            )
             if error is not None:
                 return {
                     "success": False,
@@ -5282,7 +5326,8 @@ def create_mcp_server() -> FastMCP:
                     "status": "recording",
                     "output_dir": output_dir,
                     "message": "Recording started. The user can now perform the task. "
-                               "Call computer_learn(action='stop') when done.",
+                               f"Call computer_learn(action='stop', "
+                               f"session_id={session_id!r}) when done.",
                 },
             }
 
@@ -5294,8 +5339,11 @@ def create_mcp_server() -> FastMCP:
                 "suggestion": "Call computer_learn(action='start') first to begin recording.",
             }
 
+        if not isinstance(session_id, str) or not session_id.strip():
+            return error_result(ValueError("session_id is required for action=stop"))
+
         mark_action_dispatch_started()
-        success, result = recorder.stop()
+        success, result = await asyncio.to_thread(recorder.stop, session_id)
 
         if not success:
             from computer_server.learning.session import LearningError
@@ -5306,13 +5354,27 @@ def create_mcp_server() -> FastMCP:
                 "suggestion": err.suggestion(),
             }
 
-        import time
         session, actions = result
-        duration = (session.end_time or time.time()) - session.start_time
+        duration_seconds = max(
+            0,
+            int((session.end_time or session.start_time) - session.start_time),
+        )
 
         return {
             "success": True,
-            "data": session.to_dict(duration_seconds=int(duration), actions=actions),
+            "data": {
+                "sessionId": session.session_id,
+                "cutoffSequence": session.cutoff_sequence or 0,
+                "actions": [action.to_dict() for action in actions],
+                "summary": {
+                    "durationSeconds": duration_seconds,
+                    "actionCount": len(actions),
+                    "observationCount": len(session.observations),
+                    "degradedObservationCount": int(
+                        session.metrics.get("degraded_observations", 0) or 0
+                    ),
+                },
+            },
         }
 
     # Pre-warm SOM OmniParser in background so first get_window_state is fast.

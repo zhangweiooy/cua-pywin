@@ -38,6 +38,8 @@ from .session import (
     LearningSession,
     ObservedAction,
     ObservedActionType,
+    TEACHING_CONTRACT,
+    TEACHING_STOP_BARRIER,
 )
 from computer_server.services.target_profile_service import (
     assess_delivery_risk,
@@ -48,6 +50,8 @@ logger = logging.getLogger(__name__)
 
 OBSERVATION_QUEUE_MAXSIZE = 128
 OBSERVATION_STOP_TIMEOUT_SECONDS = 2.0
+LEARNING_STATUS_TIMELINE_DEFAULT_LIMIT = 64
+LEARNING_STATUS_TIMELINE_MAX_LIMIT = 200
 
 
 @dataclass
@@ -94,6 +98,7 @@ class LearningRecorder:
 
         # Prevent concurrent stop() from timer + user call
         self._stopping = False
+        self._allow_pre_cutoff_flush = False
         self._last_stop_result: tuple | None = None
         self._agent_input_suppression_count = 0
         self._agent_input_suppressed_until = 0.0
@@ -124,8 +129,13 @@ class LearningRecorder:
         with self._lock:
             return self._session is not None
 
-    def start(self, task_description: Optional[str] = None,
-              output_dir: str = "") -> Optional[LearningError]:
+    def start(
+        self,
+        *,
+        session_id: str,
+        task_description: Optional[str] = None,
+        output_dir: str = "",
+    ) -> Optional[LearningError]:
         """Start recording user input.
 
         Returns None on success, or a LearningError.
@@ -133,6 +143,8 @@ class LearningRecorder:
         with self._lock:
             if self._session is not None or self._stopping:
                 return LearningError.ALREADY_RECORDING
+            if not isinstance(session_id, str) or not session_id.strip():
+                raise ValueError("session_id is required")
 
             self._stopping = False
             self._last_stop_result = None
@@ -148,6 +160,7 @@ class LearningRecorder:
                 pass
 
             self._session = LearningSession(
+                session_id=session_id.strip(),
                 task_description=task_description,
                 start_time=time.time(),
             )
@@ -203,7 +216,7 @@ class LearningRecorder:
             logger.info("Learning: recording started (%s)", task_description or "no description")
             return None
 
-    def stop(self) -> tuple:
+    def stop(self, session_id: str | None = None) -> tuple:
         """Stop recording and return (is_success, result_or_error).
 
         Returns:
@@ -215,8 +228,19 @@ class LearningRecorder:
                 self._stop_condition.wait()
             if self._session is None:
                 if self._last_stop_result is not None:
+                    if (
+                        session_id is not None
+                        and self._last_stop_result[0]
+                        and self._last_stop_result[1][0].session_id != session_id
+                    ):
+                        return (False, LearningError.SESSION_MISMATCH)
                     return self._last_stop_result
                 return (False, LearningError.NOT_RECORDING)
+            if (
+                session_id is not None
+                and self._session.session_id != session_id
+            ):
+                return (False, LearningError.SESSION_MISMATCH)
             self._stopping = True
 
         return self._complete_stop()
@@ -248,18 +272,40 @@ class LearningRecorder:
             healthy = self._input.is_healthy() if self._input else None
             return (True, count, duration, app, healthy)
 
-    def status_dict(self) -> dict[str, Any]:
-        """Return additive learning status details for MCP/CLI callers."""
+    def status_dict(
+        self,
+        *,
+        after_sequence: int = 0,
+        timeline_limit: int = LEARNING_STATUS_TIMELINE_DEFAULT_LIMIT,
+    ) -> dict[str, Any]:
+        """Return counters plus strict actions newer than ``after_sequence``."""
         with self._lock:
             if self._session is None:
                 return self._inactive_status_dict()
 
+            limit = min(
+                max(1, timeline_limit),
+                LEARNING_STATUS_TIMELINE_MAX_LIMIT,
+            )
+            available = [
+                action
+                for action in self._session.actions
+                if action.sequence is not None and action.sequence > after_sequence
+            ]
+            actions = available[:limit]
+            next_sequence = (
+                actions[-1].sequence
+                if actions
+                else after_sequence
+            )
             duration = time.time() - self._session.start_time
             app = self._app_detector.current_app_info()[0] if self._app_detector else None
             healthy = self._input.is_healthy() if self._input else None
             metrics = self._session_metrics_snapshot()
             mode = "full" if healthy is True and self._observation_thread_alive() else "reduced"
             data: dict[str, Any] = {
+                "teaching_contract": TEACHING_CONTRACT,
+                "stop_barrier": TEACHING_STOP_BARRIER,
                 "recording": True,
                 "mode": mode,
                 "action_count": len(self._session.actions),
@@ -274,6 +320,10 @@ class LearningRecorder:
                 "last_event_at": metrics["last_event_at"],
                 "last_observation_at": metrics["last_observation_at"],
                 "duration_seconds": int(duration),
+                "actions": [action.to_dict() for action in actions],
+                "session_id": self._session.session_id,
+                "next_sequence": next_sequence,
+                "timeline_truncated": len(available) > len(actions),
             }
             if app:
                 data["current_app"] = app
@@ -323,6 +373,8 @@ class LearningRecorder:
     @staticmethod
     def _inactive_status_dict() -> dict[str, Any]:
         return {
+            "teaching_contract": TEACHING_CONTRACT,
+            "stop_barrier": TEACHING_STOP_BARRIER,
             "recording": False,
             "mode": "off",
             "action_count": 0,
@@ -337,6 +389,10 @@ class LearningRecorder:
             "last_event_at": None,
             "last_observation_at": None,
             "duration_seconds": 0,
+            "actions": [],
+            "session_id": None,
+            "next_sequence": 0,
+            "timeline_truncated": False,
         }
 
     def _session_metrics_snapshot(self) -> dict[str, Any]:
@@ -488,30 +544,6 @@ class LearningRecorder:
                 element_context=action.element_context,
                 x=action.x,
                 y=action.y,
-            )
-        )
-
-    def _queue_manual_stop_observation(self) -> None:
-        with self._lock:
-            if self._session is None or not self._session.actions:
-                return
-            app_detector = self._app_detector
-        app_name = None
-        app_bundle_id = None
-        window_title = None
-        if app_detector is not None:
-            try:
-                app_name, app_bundle_id, window_title = app_detector.current_app_info()
-            except Exception:
-                logger.debug("Failed to read app info for stop observation", exc_info=True)
-        self._queue_observation(
-            _ObservationJob(
-                trigger="manual_stop_flush",
-                timestamp=time.perf_counter_ns(),
-                correlation_id=self._new_id("corr"),
-                app_name=app_name,
-                app_bundle_id=app_bundle_id,
-                window_title=window_title,
             )
         )
 
@@ -820,14 +852,21 @@ class LearningRecorder:
         if app_detector is None:
             return
 
-        name, exe, title = app_detector.current_app_info()
+        name, exe, title, source_window_id = app_detector.current_app_context()
+        if not source_window_id:
+            return
 
         # Check restricted process
         if exe in RESTRICTED_PROCESSES:
             return
 
         # Check app switch (may call back to _on_app_switch -> _append)
-        app_detector.check_app_switch_with_info(name, exe, self)
+        app_detector.check_app_switch_with_info(
+            name,
+            exe,
+            source_window_id,
+            self,
+        )
 
         # Check password field (guarded by timeout to avoid hung UIA provider)
         is_secure = self._uia_gate.run_with_timeout(
@@ -840,6 +879,7 @@ class LearningRecorder:
                 timestamp=time.perf_counter_ns(),
                 action_type=ObservedActionType.SECURE_FIELD,
                 app_name=name,
+                source_window_id=source_window_id,
                 app_bundle_id=exe,
                 window_title=title,
             ))
@@ -855,6 +895,7 @@ class LearningRecorder:
                 timestamp=time.perf_counter_ns(),
                 action_type=action_type,
                 app_name=name,
+                source_window_id=source_window_id,
                 app_bundle_id=exe,
                 window_title=title,
                 key_code=vk_code,
@@ -864,6 +905,9 @@ class LearningRecorder:
         else:
             # Character key without modifiers — coalesce into typeText
             if char and self._keystroke_buncher:
+                self._keystroke_buncher.flush_if_source_changed(
+                    source_window_id
+                )
                 ec = None
                 url = None
                 if self._keystroke_buncher.is_empty():
@@ -886,6 +930,7 @@ class LearningRecorder:
                     app_name=name,
                     bundle_id=exe,
                     window_title=title,
+                    source_window_id=source_window_id,
                     url=url,
                     element_context=ec,
                 )
@@ -910,7 +955,9 @@ class LearningRecorder:
         if self._scroll_buncher:
             self._scroll_buncher.flush()
 
-        name, exe, title = app_detector.current_app_info()
+        name, exe, title, source_window_id = app_detector.current_app_context()
+        if not source_window_id:
+            return
 
         # Track last click position for IME OCR focus region
         self._last_click_x = x
@@ -921,7 +968,12 @@ class LearningRecorder:
             return
 
         # Check app switch
-        app_detector.check_app_switch_with_info(name, exe, self)
+        app_detector.check_app_switch_with_info(
+            name,
+            exe,
+            source_window_id,
+            self,
+        )
 
         # UIA enrich in real-time (~1ms)
         ec = None
@@ -941,6 +993,7 @@ class LearningRecorder:
             timestamp=time.perf_counter_ns(),
             action_type=ObservedActionType.CLICK,
             app_name=name,
+            source_window_id=source_window_id,
             app_bundle_id=exe,
             window_title=title,
             url=url,
@@ -984,16 +1037,25 @@ class LearningRecorder:
         if self._keystroke_buncher:
             self._keystroke_buncher.flush()
 
-        name, exe, _ = app_detector.current_app_info()
+        name, exe, _title, source_window_id = app_detector.current_app_context()
+        if not source_window_id:
+            return
         if exe in RESTRICTED_PROCESSES:
             return
 
-        app_detector.check_app_switch_with_info(name, exe, self)
+        app_detector.check_app_switch_with_info(
+            name,
+            exe,
+            source_window_id,
+            self,
+        )
 
         if self._scroll_buncher:
             self._scroll_buncher.append(
                 dx=dx, dy=dy, x=x, y=y,
-                app_name=name, bundle_id=exe,
+                app_name=name,
+                bundle_id=exe,
+                source_window_id=source_window_id,
             )
 
     # ================================================================
@@ -1001,7 +1063,7 @@ class LearningRecorder:
     # ================================================================
 
     def _on_keystroke_flush(self, text: str, app_name: str, bundle_id: str,
-                             window_title: str, url: str,
+                             window_title: str, source_window_id: str, url: str,
                              element_context) -> None:
         # Probe UIA for the real text content (pynput raw keystrokes miss IME chars).
         # Diff against the value at bunch start to extract only newly typed text.
@@ -1009,10 +1071,13 @@ class LearningRecorder:
             uia = self._uia
             prev = self._last_uia_value or ""
             self._last_uia_value = None
-        if uia is not None:
+        source_is_current = self._is_source_window_current(source_window_id)
+        if source_is_current and uia is not None:
             current = self._uia_gate.run_with_timeout(
                 lambda: uia.read_focused_value(), timeout=0.5,
             )
+            if not self._is_source_window_current(source_window_id):
+                current = None
             if current and current.strip():
                 if current.startswith(prev) and len(current) > len(prev):
                     text = current[len(prev):]
@@ -1023,6 +1088,7 @@ class LearningRecorder:
             timestamp=time.perf_counter_ns(),
             action_type=ObservedActionType.TYPE_TEXT,
             app_name=app_name,
+            source_window_id=source_window_id,
             app_bundle_id=bundle_id,
             window_title=window_title,
             url=url,
@@ -1035,7 +1101,8 @@ class LearningRecorder:
         # Re-check sensitive context before capturing — if the focused
         # field is a password field (or element_context matches sensitive
         # patterns), skip the full-window OCR screenshot.
-        if text.isascii() \
+        if source_is_current and text.isascii() \
+                and self._is_source_window_current(source_window_id) \
                 and not self._is_sensitive_context(self._uia, element_context):
             try:
                 from .platform import Screenshotter
@@ -1051,12 +1118,31 @@ class LearningRecorder:
 
         self._append(action, observation_trigger="typing_pause")
 
+    def _is_source_window_current(self, source_window_id: str) -> bool:
+        with self._lock:
+            app_detector = self._app_detector
+        if app_detector is None:
+            return False
+        try:
+            return (
+                app_detector.current_app_context()[3]
+                == source_window_id
+            )
+        except Exception:
+            logger.debug(
+                "Failed to verify learning source window",
+                exc_info=True,
+            )
+            return False
+
     def _on_scroll_flush(self, dx: int, dy: int, x: float, y: float,
-                         app_name: str, bundle_id: str) -> None:
+                         app_name: str, bundle_id: str,
+                         source_window_id: str) -> None:
         self._append(ObservedAction(
             timestamp=time.perf_counter_ns(),
             action_type=ObservedActionType.SCROLL,
             app_name=app_name,
+            source_window_id=source_window_id,
             app_bundle_id=bundle_id,
             x=x, y=y,
             delta_x=dx, delta_y=dy,
@@ -1067,12 +1153,13 @@ class LearningRecorder:
     # ================================================================
 
     def _on_app_switch(self, to_app: str, to_bundle_id: str,
-                       from_app: str) -> None:
+                       from_app: str, source_window_id: str) -> None:
         """Called by AppDetector when the foreground app changes."""
         self._append(ObservedAction(
             timestamp=time.perf_counter_ns(),
             action_type=ObservedActionType.APP_SWITCH,
             app_name=from_app,
+            source_window_id=source_window_id,
             app_bundle_id=None,
             to_app=to_app,
             to_bundle_id=to_bundle_id,
@@ -1087,18 +1174,25 @@ class LearningRecorder:
         action: ObservedAction,
         observation_trigger: str | None = None,
     ) -> bool:
-        """Append an action to the session. Acquires lock internally."""
+        """Append one pre-cutoff action at the recorder ingestion boundary."""
         accepted = False
         with self._lock:
             if self._session is None:
+                return False
+            if self._stopping and not self._allow_pre_cutoff_flush:
+                return False
+            if not action.source_window_id:
                 return False
             if action.action_id is None:
                 action.action_id = self._new_id("act")
             if action.correlation_id is None:
                 action.correlation_id = self._new_id("corr")
+            action.sequence = self._session.next_sequence
+            self._session.next_sequence += 1
+            action.occurred_at_epoch_ms = time.time_ns() // 1_000_000
             self._session.actions.append(action)
             self._session.metrics["action_count"] = len(self._session.actions)
-            self._session.metrics["last_event_at"] = action.timestamp
+            self._session.metrics["last_event_at"] = action.occurred_at_epoch_ms
             if action.app_name:
                 self._session.apps.add(action.app_name)
             if action.url:
@@ -1181,12 +1275,17 @@ class LearningRecorder:
         if self._input:
             self._input.stop()
 
-        if self._keystroke_buncher:
-            self._keystroke_buncher.flush()
-        if self._scroll_buncher:
-            self._scroll_buncher.flush()
+        with self._lock:
+            self._allow_pre_cutoff_flush = True
+        try:
+            if self._keystroke_buncher:
+                self._keystroke_buncher.flush()
+            if self._scroll_buncher:
+                self._scroll_buncher.flush()
+        finally:
+            with self._lock:
+                self._allow_pre_cutoff_flush = False
 
-        self._queue_manual_stop_observation()
         observations_flushed = self._wait_for_observation_idle(
             OBSERVATION_STOP_TIMEOUT_SECONDS,
         )
@@ -1199,14 +1298,11 @@ class LearningRecorder:
                 return (False, LearningError.NOT_RECORDING)
 
             session = self._session
+            session.cutoff_sequence = session.next_sequence - 1
             self._session = None
 
         session.end_time = time.time()
         actions = session.actions
-
-        if not actions:
-            self._cleanup()
-            return (False, LearningError.NO_ACTIONS_RECORDED)
 
         # Batch YOLO+OCR vision enrichment for click actions.
         # Runs on a daemon thread with a generous timeout — enrichment
