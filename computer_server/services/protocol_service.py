@@ -773,6 +773,7 @@ def _append_existing_image_artifact(
     height = _optional_int(metadata.get("height"))
     if width is None or height is None:
         width, height = _image_dimensions(raw)
+    window = canonical_window(metadata.get("window"))
     artifacts.append(
         _artifact(
             artifact_id=str(
@@ -780,7 +781,11 @@ def _append_existing_image_artifact(
                 or metadata.get("zoom_id")
                 or f"artifact-{uuid.uuid4().hex}"
             ),
-            role="screen" if tool_name == "computer_screenshot" else "target",
+            role=(
+                "screen"
+                if tool_name == "computer_screenshot" and window is None
+                else "target"
+            ),
             mime_type=mime_type,
             content_index=content_index,
             width=width,

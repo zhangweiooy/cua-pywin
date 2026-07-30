@@ -66,7 +66,22 @@ Get the current foreground window:
 {"active": true}
 ```
 
-Capture a window:
+Capture only target-window pixels:
+
+```json
+{
+  "window": {"id": 123456, "pid": 8888},
+  "format": "png",
+  "max_image_dimension": 1280
+}
+```
+
+Use this with `computer_screenshot`. It uses WGC first and a screen-crop
+fallback without UIA/MSAA/SOM. The image artifact includes the canonical
+window, but this lightweight call does not create `observation_id` or
+`screenshot_id`.
+
+Observe a window with actionable semantic and screenshot bindings:
 
 ```json
 {

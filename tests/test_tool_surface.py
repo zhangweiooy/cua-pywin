@@ -258,6 +258,101 @@ async def test_screenshot_returns_image_and_structured_metadata(monkeypatch):
     ]
 
 
+@pytest.mark.asyncio
+async def test_screenshot_accepts_canonical_window_without_semantic_observation(
+    monkeypatch,
+):
+    import base64
+
+    from PIL import Image as PILImage
+
+    import computer_server.mcp_server as mcp_module
+    import computer_server.services.window_state_service as window_state_service
+    from computer_server.handlers.element_cache import get_element_cache
+    from computer_server.services.window_state_service import WindowSnapshotGeometry
+
+    async def fake_capture_window_snapshot_image(
+        _automation_handler,
+        pid,
+        window_id,
+        *,
+        max_image_dimension,
+    ):
+        assert pid == 123
+        assert window_id == 456
+        assert max_image_dimension == 640
+        return {
+            "success": True,
+            "image": PILImage.new("RGB", (80, 40), "white"),
+            "geometry": WindowSnapshotGeometry(
+                full_width=80,
+                full_height=40,
+                screenshot_origin_x=10,
+                screenshot_origin_y=20,
+                window_origin_x=10,
+                window_origin_y=20,
+                crop_origin_screen_x=10,
+                crop_origin_screen_y=20,
+                crop_origin_window_x=0,
+                crop_origin_window_y=0,
+                original_width=80,
+                original_height=40,
+                screen_width=80,
+                screen_height=40,
+                compression_ratio=1.0,
+            ),
+            "capture_metadata": {
+                "capture_backend": "wgc",
+                "target": "window",
+                "warnings": [],
+            },
+            "window_capture_state": {},
+        }
+
+    cache = get_element_cache()
+    cache.clear()
+    monkeypatch.setattr(cache, "_is_window_valid", lambda _window_id: True)
+    monkeypatch.setattr(
+        window_state_service,
+        "capture_window_snapshot_image",
+        fake_capture_window_snapshot_image,
+    )
+    monkeypatch.setattr(
+        mcp_module,
+        "_handlers",
+        SimpleNamespace(automation=_FakeAutomation()),
+    )
+
+    result = await create_mcp_server().call_tool(
+        "computer_screenshot",
+        {
+            "format": "png",
+            "window": {"id": 456, "pid": 123},
+            "max_image_dimension": 640,
+        },
+    )
+
+    assert len(result.content) == 1
+    assert result.content[0].type == "image"
+    assert result.content[0].mimeType == "image/png"
+    envelope = result.structured_content
+    assert envelope["success"] is True
+    assert envelope["data"] == {}
+    assert envelope["artifacts"] == [
+        {
+            "id": envelope["artifacts"][0]["id"],
+            "type": "image",
+            "role": "target",
+            "mime_type": "image/png",
+            "content_index": 0,
+            "width": 80,
+            "height": 40,
+            "byte_count": len(base64.b64decode(result.content[0].data)),
+            "window": {"id": 456, "pid": 123},
+        }
+    ]
+
+
 class _FakeWindow:
     def __init__(self):
         self.activations = []
@@ -465,6 +560,11 @@ async def test_agent_native_tools_are_not_exposed():
     assert "computer_double_click" not in window_state.description
     assert "computer_click (use count=2 for double-click)" in window_state.description
     assert set(secondary.parameters["required"]) == {"element_index", "action"}
+    screenshot = next(tool for tool in tools if tool.name == "computer_screenshot")
+    assert "window" in screenshot.parameters["properties"]
+    assert "max_image_dimension" in screenshot.parameters["properties"]
+    assert "window_id" not in screenshot.parameters["properties"]
+    assert "UIA/MSAA" in screenshot.description
 
 
 @pytest.mark.asyncio
@@ -2405,6 +2505,113 @@ async def test_uia_click_unsupported_before_dispatch_falls_back_to_pixel(
     content = _content(result)
     assert content["success"] is True, content
     assert content["action_path"]["method"] == "element_center_pixel_click"
+
+
+@pytest.mark.asyncio
+async def test_uia_click_stays_completed_when_window_change_telemetry_fails(
+    monkeypatch,
+):
+    import win32process
+
+    import computer_server.mcp_server as mcp_module
+    import computer_server.services.window_state_service as window_state_service
+
+    dispatches = []
+
+    async def noop_animate(_x: int, _y: int) -> None:
+        return None
+
+    async def fake_get_window_state_snapshot(
+        _automation_handler,
+        _pid,
+        _window_id,
+        **_kwargs,
+    ):
+        return {
+            "success": True,
+            "node_count": 1,
+            "unfiltered_node_count": 1,
+            "nodes": [],
+            "tree_markdown": "",
+            "screen_width": 20,
+            "screen_height": 20,
+            "capture_metadata": {"capture_backend": "wgc"},
+            "_capture_geometry": {
+                "compression_ratio": 1.0,
+                "window_origin_x": 10,
+                "window_origin_y": 20,
+                "crop_origin_screen_x": 10,
+                "crop_origin_screen_y": 20,
+            },
+        }
+
+    def successful_invoke(x: int, y: int, *, on_dispatch=None) -> None:
+        if on_dispatch is not None:
+            on_dispatch()
+        dispatches.append((x, y))
+
+    def unavailable_process_id(_hwnd):
+        raise RuntimeError("window disappeared")
+
+    cache = get_element_cache()
+    cache.clear()
+    monkeypatch.setattr(cache, "_is_window_valid", lambda _window_id: True)
+    monkeypatch.setattr(mcp_module, "_animate_cursor_to", noop_animate)
+    monkeypatch.setattr(mcp_module, "_window_snapshot", lambda: (100, frozenset({100})))
+    monkeypatch.setattr(mcp_module, "_invoke_via_uia_point", successful_invoke)
+    monkeypatch.setattr(
+        win32process,
+        "GetWindowThreadProcessId",
+        unavailable_process_id,
+    )
+    monkeypatch.setattr(
+        window_state_service,
+        "get_window_state_snapshot",
+        fake_get_window_state_snapshot,
+    )
+    monkeypatch.setattr(
+        mcp_module,
+        "_handlers",
+        SimpleNamespace(automation=_FakeAutomation(), window=_FakeWindow()),
+    )
+
+    mcp = create_mcp_server()
+    observation = await mcp.call_tool(
+        "computer_get_window_state",
+        {"window": {"id": 456, "pid": 123}},
+    )
+    cache.set_window_origin(123, 456, 10, 20)
+    cache.update(
+        123,
+        456,
+        [
+            CachedElement(
+                element_index=1,
+                source="uia",
+                center_x=5,
+                center_y=6,
+                bbox=(0, 0, 10, 12),
+                control_type="Button",
+                name="Run",
+                actions=["invoke"],
+                enabled=True,
+            )
+        ],
+    )
+
+    result = await mcp.call_tool(
+        "computer_click",
+        {
+            "window": {"id": 456, "pid": 123},
+            "observation_id": _content(observation)["observation_id"],
+            "element_index": 1,
+        },
+    )
+
+    assert result.structured_content["success"] is True
+    assert result.structured_content["action"]["outcome"] == "completed"
+    assert result.structured_content["data"]["method"] == "uia_invoke"
+    assert dispatches == [(15, 26)]
 
 
 @pytest.mark.asyncio

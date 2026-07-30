@@ -154,6 +154,9 @@ cua-win status
 cua-win list-tools
 cua-win computer_get_screen_size
 @'
+{"window":{"id":5678,"pid":1234},"format":"png","max_image_dimension":1280}
+'@ | cua-win call computer_screenshot - --output window.png
+@'
 {"window":{"id":5678,"pid":1234}}
 '@ | cua-win call computer_get_window_state -
 cua-win computer_press_key '{\"key\":\"Control_L+s\"}'
@@ -412,7 +415,7 @@ type/key，以及明确 canonical window 的 type/key/manage 不要求 observati
 
 ### 关键设计
 
-**Per-window 截图** — Windows `PrintWindow` 对硬件加速窗口失效。`get_window_state` 优先使用 Windows.Graphics.Capture 捕获目标窗口自身的 DWM 合成帧，避免被前景遮挡窗口污染；失败时回退到 `ImageGrab.grab()` + `GetWindowRect` + PIL `crop()`。`computer_zoom` 会沿用上一次 observation 的 capture backend：WGC capture 使用 WGC 做原生 zoom crop，失败才退回 screen crop。多显示器负坐标 + 部分屏外通过 `WindowSnapshotGeometry` 显式区分「真实窗口原点」与「可见裁剪原点」。`capture_metadata.stage_timings` 报告窗口边界、WGC 尝试、回退激活、全屏捕获、解码、裁剪缩放和 capture 总耗时；WGC 成功时还包含 item、D3D、session setup、frame wait 和 texture readback 分段。`capture_metadata.capture_reliability`、`degraded_reason` 和 `provider_errors` 会说明 WGC 回退、最小化窗口、screen-crop 遮挡风险或 provider 失败。
+**Per-window 截图** — Windows `PrintWindow` 对硬件加速窗口失效。`computer_screenshot({"window":{"id":...,"pid":...}})` 和 `get_window_state` 共享 Windows.Graphics.Capture 优先、`ImageGrab.grab()` + `GetWindowRect` + PIL `crop()` 回退的像素捕获链路。前者只返回窗口图片，不运行 UIA/MSAA/SOM，也不创建 `observation_id` / `screenshot_id`；后续需要节点或窗口相对坐标绑定时必须使用 `get_window_state`。`computer_zoom` 会沿用上一次 observation 的 capture backend：WGC capture 使用 WGC 做原生 zoom crop，失败才退回 screen crop。多显示器负坐标 + 部分屏外通过 `WindowSnapshotGeometry` 显式区分「真实窗口原点」与「可见裁剪原点」。`capture_metadata.stage_timings` 报告窗口边界、WGC 尝试、回退激活、全屏捕获、解码、裁剪缩放和 capture 总耗时；WGC 成功时还包含 item、D3D、session setup、frame wait 和 texture readback 分段。`capture_metadata.capture_reliability`、`degraded_reason` 和 `provider_errors` 会说明 WGC 回退、最小化窗口、screen-crop 遮挡风险或 provider 失败。
 
 **UIA/MSAA 集成 + Gate** — 直接在 STA 线程内调用 COM（不再 per-property 提交到全局线程池——那会在 UIA provider 挂死时永久泄漏线程）。`UIAWalkGate` / `MSAAWalkGate` / `UIAActionGate`（挂在 `ServerContext`）提供窗口级超时边界：`wait_for + shield + done_callback`，超时时 gate 保持占用并标记不健康冷却，后续请求走 SOM、跳过 MSAA 或回退 pixel/HID，不再叠加 doomed calls。
 
@@ -615,6 +618,9 @@ cua-win doctor
 cua-win status
 cua-win list-tools
 cua-win computer_get_screen_size
+@'
+{"window":{"id":5678,"pid":1234},"format":"png","max_image_dimension":1280}
+'@ | cua-win call computer_screenshot - --output window.png
 @'
 {"window":{"id":5678,"pid":1234}}
 '@ | cua-win call computer_get_window_state -
@@ -911,7 +917,7 @@ role, MIME type, dimensions, byte count, `content_index`, `window`,
 
 ### Key Design Decisions
 
-**Per-window screenshot capture** — `PrintWindow` fails on hardware-accelerated windows. `get_window_state` now prefers Windows.Graphics.Capture for the target window's own DWM-composited frame, avoiding overlapping foreground-window pollution. If WGC fails, it falls back to `ImageGrab.grab()` + `GetWindowRect` + PIL `crop()`. `computer_zoom` follows the last observation's capture backend: WGC captures use WGC for native zoom crops and fall back to screen crop only when WGC fails. Multi-monitor negative coordinates and partially-offscreen windows are handled by `WindowSnapshotGeometry`, which explicitly separates the real window origin from the visible crop origin. `capture_metadata.stage_timings` reports window-bounds, WGC attempt, fallback activation, screen capture, decode, crop/resize, and total capture latency. Successful WGC captures additionally expose item, D3D, session setup, frame wait, and texture readback timings. `capture_metadata.capture_reliability`, `degraded_reason`, and `provider_errors` explain WGC fallback, minimized windows, screen-crop occlusion risk, or provider failures.
+**Per-window screenshot capture** — `PrintWindow` fails on hardware-accelerated windows. `computer_screenshot({"window":{"id":...,"pid":...}})` and `get_window_state` share the Windows.Graphics.Capture-first pixel path with an `ImageGrab.grab()` + `GetWindowRect` + PIL `crop()` fallback. The former returns only target-window pixels without UIA/MSAA/SOM and does not create `observation_id` / `screenshot_id`; use `get_window_state` when follow-up node or window-relative coordinate actions need fresh bindings. `computer_zoom` follows the last observation's capture backend: WGC captures use WGC for native zoom crops and fall back to screen crop only when WGC fails. Multi-monitor negative coordinates and partially-offscreen windows are handled by `WindowSnapshotGeometry`, which explicitly separates the real window origin from the visible crop origin. `capture_metadata.stage_timings` reports window-bounds, WGC attempt, fallback activation, screen capture, decode, crop/resize, and total capture latency. Successful WGC captures additionally expose item, D3D, session setup, frame wait, and texture readback timings. `capture_metadata.capture_reliability`, `degraded_reason`, and `provider_errors` explain WGC fallback, minimized windows, screen-crop occlusion risk, or provider failures.
 
 **UIA/MSAA integration + gates** — COM is called directly inside its STA thread (the previous design submitted each property call to a shared executor and leaked threads when the UIA provider hung). `UIAWalkGate` / `MSAAWalkGate` / `UIAActionGate` (owned by `ServerContext`) provide per-window timeout boundaries with `wait_for + shield + done_callback`. On timeout the gate stays held and the key is marked unhealthy, so fresh requests fall through to SOM, skip MSAA, or use pixel/HID fallback instead of stacking more doomed calls.
 

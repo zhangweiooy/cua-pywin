@@ -4,6 +4,20 @@ All notable changes to this project will be documented in this file.
 
 ## Unreleased
 
+### Added
+
+- Allow `computer_screenshot` to capture an optional canonical target window
+  through the WGC-first, screen-crop-fallback pixel path without running
+  UIA/MSAA/SOM or adding a new public MCP tool.
+- Add `cua-win help TOOL` and route `cua-win TOOL --help` to human-readable
+  schema-derived tool argument help.
+
+### Fixed
+
+- Query window process IDs through `win32process` after UIA Invoke and keep
+  best-effort window-change telemetry failures from changing a completed click
+  into `ACTION_OUTCOME_UNKNOWN`.
+
 ## 0.2.5 - 2026-07-29
 
 ### Fixed

@@ -1752,6 +1752,155 @@ def build_wgc_window_capture_metadata(
     })
 
 
+async def capture_window_snapshot_image(
+    automation_handler: Any,
+    pid: int,
+    window_id: int,
+    *,
+    max_image_dimension: int = 1280,
+) -> Dict[str, Any]:
+    """Capture target-window pixels without walking accessibility or running SOM."""
+    from PIL import Image as PILImage
+
+    capture_started = time.monotonic()
+    capture_stage_timings = {
+        "window_bounds_latency": 0.0,
+        "window_state_latency": 0.0,
+        "wgc_latency": 0.0,
+        "fallback_activation_latency": 0.0,
+        "screen_capture_latency": 0.0,
+        "image_decode_latency": 0.0,
+        "crop_resize_latency": 0.0,
+        "capture_total_latency": 0.0,
+    }
+    try:
+        stage_started = time.monotonic()
+        bounds = await automation_handler.get_window_bounds(pid, window_id)
+        capture_stage_timings["window_bounds_latency"] = (
+            time.monotonic() - stage_started
+        )
+        stage_started = time.monotonic()
+        window_capture_state = inspect_window_capture_state(pid, window_id, bounds)
+        capture_stage_timings["window_state_latency"] = (
+            time.monotonic() - stage_started
+        )
+        wgc_failure_reason: Optional[str] = None
+
+        try:
+            stage_started = time.monotonic()
+            from computer_server.handlers.windows_wgc import capture_window_with_wgc
+
+            wgc_capture = await capture_window_with_wgc(int(window_id))
+            capture_stage_timings["wgc_latency"] = time.monotonic() - stage_started
+            stage_started = time.monotonic()
+            image, geometry = prepare_direct_window_snapshot_image(
+                wgc_capture.image,
+                bounds or window_capture_state.get("raw_bounds"),
+                max_image_dimension,
+            )
+            capture_stage_timings["crop_resize_latency"] = (
+                time.monotonic() - stage_started
+            )
+            capture_stage_timings["capture_total_latency"] = (
+                time.monotonic() - capture_started
+            )
+            capture_metadata = build_wgc_window_capture_metadata(
+                pid=pid,
+                window_id=window_id,
+                bounds=bounds,
+                geometry=geometry,
+                window_state=window_capture_state,
+                wgc_metadata=wgc_capture.metadata,
+                stage_timings=capture_stage_timings,
+            )
+        except Exception as wgc_error:
+            if capture_stage_timings["wgc_latency"] == 0.0:
+                capture_stage_timings["wgc_latency"] = (
+                    time.monotonic() - stage_started
+                )
+            wgc_failure_reason = str(wgc_error)
+            logger.debug(
+                "WGC capture unavailable; falling back to screen crop: %s",
+                wgc_error,
+            )
+
+            import sys
+
+            if sys.platform == "win32":
+                stage_started = time.monotonic()
+                try:
+                    import win32gui as _wg
+
+                    _wg.SetForegroundWindow(int(window_id))
+                    await asyncio.sleep(0.05)
+                except Exception:
+                    pass
+                capture_stage_timings["fallback_activation_latency"] = (
+                    time.monotonic() - stage_started
+                )
+
+            stage_started = time.monotonic()
+            screenshot_result = await automation_handler.screenshot(
+                format="jpeg",
+                quality=85,
+            )
+            capture_stage_timings["screen_capture_latency"] = (
+                time.monotonic() - stage_started
+            )
+            if not screenshot_result.get("success"):
+                return {
+                    "success": False,
+                    "error": "Screenshot failed: "
+                    + screenshot_result.get("error", "unknown"),
+                }
+
+            stage_started = time.monotonic()
+            image_bytes = base64.b64decode(screenshot_result["image_data"])
+            full_image = PILImage.open(BytesIO(image_bytes))
+            full_image.load()
+            capture_stage_timings["image_decode_latency"] = (
+                time.monotonic() - stage_started
+            )
+            screenshot_origin = screenshot_result.get("origin") or {}
+            screenshot_origin_x = int(screenshot_origin.get("x", 0) or 0)
+            screenshot_origin_y = int(screenshot_origin.get("y", 0) or 0)
+            stage_started = time.monotonic()
+            image, geometry = prepare_window_snapshot_image(
+                full_image,
+                bounds,
+                (screenshot_origin_x, screenshot_origin_y),
+                max_image_dimension,
+            )
+            capture_stage_timings["crop_resize_latency"] = (
+                time.monotonic() - stage_started
+            )
+            capture_stage_timings["capture_total_latency"] = (
+                time.monotonic() - capture_started
+            )
+            capture_metadata = build_window_capture_metadata(
+                pid=pid,
+                window_id=window_id,
+                screenshot_result=screenshot_result,
+                bounds=bounds,
+                geometry=geometry,
+                window_state=window_capture_state,
+                fallback_reason=wgc_failure_reason,
+                fallback_backend="wgc",
+                stage_timings=capture_stage_timings,
+            )
+
+        return {
+            "success": True,
+            "image": image,
+            "geometry": geometry,
+            "capture_metadata": capture_metadata,
+            "window_capture_state": window_capture_state,
+        }
+    except Exception as exc:
+        logger.exception("capture_window_snapshot_image failed")
+        return {"success": False, "error": str(exc)}
+
+
 def save_window_state_screenshot(
     img,
     pid: int,
@@ -1794,8 +1943,6 @@ async def get_window_state_snapshot(
     owning ``ServerContext``.  When both are omitted (e.g. single-call tests
     that don't care about cross-call dedup), fresh instances are created.
     """
-    from PIL import Image as PILImage
-
     from computer_server.handlers.element_cache import get_element_cache
 
     if walk_gate is None:
@@ -1806,107 +1953,18 @@ async def get_window_state_snapshot(
         seen_popovers = {}
 
     try:
-        capture_started = time.monotonic()
-        capture_stage_timings = {
-            "window_bounds_latency": 0.0,
-            "window_state_latency": 0.0,
-            "wgc_latency": 0.0,
-            "fallback_activation_latency": 0.0,
-            "screen_capture_latency": 0.0,
-            "image_decode_latency": 0.0,
-            "crop_resize_latency": 0.0,
-            "capture_total_latency": 0.0,
-        }
-        stage_started = time.monotonic()
-        bounds = await automation_handler.get_window_bounds(pid, window_id)
-        capture_stage_timings["window_bounds_latency"] = time.monotonic() - stage_started
-        stage_started = time.monotonic()
-        window_capture_state = inspect_window_capture_state(pid, window_id, bounds)
-        capture_stage_timings["window_state_latency"] = time.monotonic() - stage_started
-        wgc_failure_reason: Optional[str] = None
-        result: Dict[str, Any] = {}
-
-        try:
-            stage_started = time.monotonic()
-            from computer_server.handlers.windows_wgc import capture_window_with_wgc
-
-            wgc_capture = await capture_window_with_wgc(int(window_id))
-            capture_stage_timings["wgc_latency"] = time.monotonic() - stage_started
-            stage_started = time.monotonic()
-            img, geometry = prepare_direct_window_snapshot_image(
-                wgc_capture.image,
-                bounds or window_capture_state.get("raw_bounds"),
-                max_image_dimension,
-            )
-            capture_stage_timings["crop_resize_latency"] = time.monotonic() - stage_started
-            capture_stage_timings["capture_total_latency"] = time.monotonic() - capture_started
-            capture_metadata = build_wgc_window_capture_metadata(
-                pid=pid,
-                window_id=window_id,
-                bounds=bounds,
-                geometry=geometry,
-                window_state=window_capture_state,
-                wgc_metadata=wgc_capture.metadata,
-                stage_timings=capture_stage_timings,
-            )
-        except Exception as wgc_error:
-            if capture_stage_timings["wgc_latency"] == 0.0:
-                capture_stage_timings["wgc_latency"] = time.monotonic() - stage_started
-            wgc_failure_reason = str(wgc_error)
-            logger.debug("WGC capture unavailable; falling back to screen crop: %s", wgc_error)
-
-            import sys
-
-            if sys.platform == "win32":
-                stage_started = time.monotonic()
-                try:
-                    import win32gui as _wg
-
-                    _wg.SetForegroundWindow(int(window_id))
-                    await asyncio.sleep(0.05)
-                except Exception:
-                    pass
-                capture_stage_timings["fallback_activation_latency"] = (
-                    time.monotonic() - stage_started
-                )
-
-            stage_started = time.monotonic()
-            result = await automation_handler.screenshot(format="jpeg", quality=85)
-            capture_stage_timings["screen_capture_latency"] = time.monotonic() - stage_started
-            if not result.get("success"):
-                return {
-                    "success": False,
-                    "error": "Screenshot failed: " + result.get("error", "unknown"),
-                }
-
-            stage_started = time.monotonic()
-            img_bytes = base64.b64decode(result["image_data"])
-            img = PILImage.open(BytesIO(img_bytes))
-            img.load()
-            capture_stage_timings["image_decode_latency"] = time.monotonic() - stage_started
-            screenshot_origin = result.get("origin") or {}
-            screenshot_origin_x = int(screenshot_origin.get("x", 0) or 0)
-            screenshot_origin_y = int(screenshot_origin.get("y", 0) or 0)
-            stage_started = time.monotonic()
-            img, geometry = prepare_window_snapshot_image(
-                img,
-                bounds,
-                (screenshot_origin_x, screenshot_origin_y),
-                max_image_dimension,
-            )
-            capture_stage_timings["crop_resize_latency"] = time.monotonic() - stage_started
-            capture_stage_timings["capture_total_latency"] = time.monotonic() - capture_started
-            capture_metadata = build_window_capture_metadata(
-                pid=pid,
-                window_id=window_id,
-                screenshot_result=result,
-                bounds=bounds,
-                geometry=geometry,
-                window_state=window_capture_state,
-                fallback_reason=wgc_failure_reason,
-                fallback_backend="wgc",
-                stage_timings=capture_stage_timings,
-            )
+        capture_result = await capture_window_snapshot_image(
+            automation_handler,
+            pid,
+            window_id,
+            max_image_dimension=max_image_dimension,
+        )
+        if not capture_result.get("success"):
+            return capture_result
+        img = capture_result["image"]
+        geometry = capture_result["geometry"]
+        capture_metadata = capture_result["capture_metadata"]
+        window_capture_state = capture_result["window_capture_state"]
 
         zoom_metadata = zoom_metadata if zoom_metadata is not None else {}
         zoom_entry = geometry.to_zoom_metadata()

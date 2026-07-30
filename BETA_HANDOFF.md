@@ -128,6 +128,7 @@ uv run ruff check .
 python -m compileall -q computer_server som
 uv run python scripts/mcp_test_one.py --list
 uv run cua-win computer_learn --help
+uv run cua-win computer_screenshot --help
 '{"action":"status"}' | uv run python scripts/mcp_test_one.py computer_learn - --timeout 120
 uv run --no-sync python "C:\Users\vinfl\.codex\skills\.system\skill-creator\scripts\quick_validate.py" skills/cua-win
 uv run python scripts/validate_release.py --version 0.2.5
@@ -140,6 +141,8 @@ Expected:
 - Tool list reports exactly 25 tools.
 - `computer_learn --help` reports the session and incremental timeline
   arguments without starting the daemon.
+- `computer_screenshot --help` reports optional canonical `window` capture
+  without adding another public tool.
 - MCP initialize reports server version `0.2.5`.
 - `computer_learn status` returns a valid protocol 0.2 envelope.
 - Skill and release validation pass.

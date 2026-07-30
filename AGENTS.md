@@ -125,6 +125,9 @@ cua-win help computer_learn
 cua-win computer_learn --help
 cua-win computer_get_screen_size
 @'
+{"window":{"id":5678,"pid":1234},"format":"png","max_image_dimension":1280}
+'@ | cua-win call computer_screenshot - --output window.png
+@'
 {"window":{"id":5678,"pid":1234}}
 '@ | cua-win call computer_get_window_state -
 cua-win computer_press_key '{\"key\":\"Control_L+s\"}'
@@ -371,6 +374,10 @@ is internal replay metadata.
   MCP content bound through envelope `artifacts[]`. Each artifact identifies
   its `role`, canonical `window`, `observation_id`, `screenshot_id`, dimensions,
   byte count, and `content_index`; structured `data` has no screenshots array.
+- `computer_screenshot` accepts an optional canonical `window` for lightweight
+  target-window pixels. It reuses the WGC-first/screen-crop-fallback path
+  without UIA/MSAA/SOM and does not create observation/screenshot freshness
+  bindings; use `computer_get_window_state` when follow-up actions need them.
 - `computer_perform_secondary_action` is the narrow entry point for
   non-primary node actions. It currently supports only the observable MSAA
   dropdown/splitbutton `expand` path and activates the target before input.

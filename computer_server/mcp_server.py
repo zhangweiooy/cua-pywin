@@ -368,37 +368,45 @@ def _window_detect_changes(
     Mirrors Swift ``WindowChangeDetector.detectChanges()``.
     """
     import win32gui
+    import win32process
 
-    fg_now, hwnds_now = _window_snapshot()
-    changes: Dict[str, Any] = {}
-    old_pid = None
-    if snap_fg_hwnd:
-        _, old_pid = win32gui.GetWindowThreadProcessId(snap_fg_hwnd)
+    try:
+        fg_now, hwnds_now = _window_snapshot()
+        changes: Dict[str, Any] = {}
+        old_pid = None
+        if snap_fg_hwnd:
+            _, old_pid = win32process.GetWindowThreadProcessId(snap_fg_hwnd)
 
-    # New windows since snapshot
-    appeared = hwnds_now - snap_hwnds
-    if appeared:
-        new_list: list = []
-        for hwnd in appeared:
-            title = win32gui.GetWindowText(hwnd) or ""
-            _, pid = win32gui.GetWindowThreadProcessId(hwnd)
-            new_list.append({
-                "hwnd": hwnd, "pid": pid, "title": title,
-                "cross_app": old_pid is not None and pid != old_pid,
-            })
-        changes["new_windows"] = new_list
+        # New windows since snapshot
+        appeared = hwnds_now - snap_hwnds
+        if appeared:
+            new_list: list = []
+            for hwnd in appeared:
+                title = win32gui.GetWindowText(hwnd) or ""
+                _, pid = win32process.GetWindowThreadProcessId(hwnd)
+                new_list.append({
+                    "hwnd": hwnd, "pid": pid, "title": title,
+                    "cross_app": old_pid is not None and pid != old_pid,
+                })
+            changes["new_windows"] = new_list
 
-    # Focus change: report if foreground moved to a different PID
-    if snap_fg_hwnd and fg_now and fg_now != snap_fg_hwnd:
-        _, new_pid = win32gui.GetWindowThreadProcessId(fg_now)
-        if new_pid != old_pid:
-            changes["focus_stolen"] = {
-                "from_hwnd": snap_fg_hwnd, "to_hwnd": fg_now,
-                "to_pid": new_pid,
-                "to_title": win32gui.GetWindowText(fg_now) or "",
-            }
+        # Focus change: report if foreground moved to a different PID
+        if snap_fg_hwnd and fg_now and fg_now != snap_fg_hwnd:
+            _, new_pid = win32process.GetWindowThreadProcessId(fg_now)
+            if new_pid != old_pid:
+                changes["focus_stolen"] = {
+                    "from_hwnd": snap_fg_hwnd, "to_hwnd": fg_now,
+                    "to_pid": new_pid,
+                    "to_title": win32gui.GetWindowText(fg_now) or "",
+                }
 
-    return changes or None
+        return changes or None
+    except Exception:
+        # This is post-action telemetry only. A provider/window can disappear
+        # between Invoke and enumeration, so telemetry failure must not turn a
+        # successfully dispatched click into ACTION_OUTCOME_UNKNOWN.
+        logger.debug("Window change detection failed after UIA Invoke", exc_info=True)
+        return None
 
 
 # ---------------------------------------------------------------------------
@@ -1423,16 +1431,22 @@ def create_mcp_server() -> FastMCP:
     async def computer_screenshot(
         format: str = "jpeg",
         quality: int = 85,
+        window: Optional[CanonicalWindow] = None,
+        max_image_dimension: int = 1280,
     ) -> Any:
         """
-        Capture a screenshot of the entire screen.
+        Capture the entire screen or one canonical target window.
 
-        Images larger than 1280px in either dimension are automatically
-        downscaled to fit within a 1280px bounding box.
+        Window capture reuses the lightweight pixel path from
+        computer_get_window_state: WGC first, then a screen-crop fallback. It
+        does not walk UIA/MSAA or run SOM. Images are downscaled to fit within
+        max_image_dimension.
 
         Args:
             format: 'jpeg' (smaller, default) or 'png' (lossless).
             quality: JPEG quality 1-95, ignored for PNG. Default 85.
+            window: Optional canonical window object. Omit for the entire screen.
+            max_image_dimension: Maximum output image dimension. Default 1280.
         """
         from PIL import Image as PILImage
 
@@ -1442,38 +1456,79 @@ def create_mcp_server() -> FastMCP:
         )
         from computer_server.services.validation_service import (
             error_result,
+            validate_max_image_dimension,
             validate_screenshot_request,
         )
 
         try:
             fmt, quality = validate_screenshot_request(format, quality)
+            max_image_dimension = validate_max_image_dimension(max_image_dimension)
         except ValueError as e:
             return error_result(e)
 
         automation_handler = _get_handlers().automation
-        result = await automation_handler.screenshot(format=fmt, quality=quality)
-        if not result.get("success"):
-            return {"success": False, "error": "Screenshot failed: " + result.get("error", "unknown")}
-        image_data = base64.b64decode(result["image_data"])
-        from io import BytesIO
-        img = PILImage.open(BytesIO(image_data))
+        metadata: Dict[str, Any] = {"success": True}
+        if window is not None:
+            pid, window_id, ref_error = _resolve_window_arg(window, None, None)
+            if ref_error is not None:
+                return ref_error
+            if pid is None or window_id is None:
+                return {
+                    "success": False,
+                    "code": "TARGET_REQUIRED",
+                    "error": "window with id and pid is required",
+                }
+            from computer_server.services.window_state_service import (
+                capture_window_snapshot_image,
+            )
 
-        # If target resolution is set, resize to that
-        if _target_width and _target_height and (_scale_x != 1.0 or _scale_y != 1.0):
-            img = img.resize((_target_width, _target_height), PILImage.Resampling.LANCZOS)
+            capture_result = await capture_window_snapshot_image(
+                automation_handler,
+                pid,
+                window_id,
+                max_image_dimension=max_image_dimension,
+            )
+            if not capture_result.get("success"):
+                return capture_result
+            img = capture_result["image"]
+            metadata.update(
+                {
+                    "window": _build_public_window(pid, window_id),
+                    "capture_metadata": capture_result["capture_metadata"],
+                    "target": "window",
+                }
+            )
         else:
-            # Resize large images to keep under 1MB limit
-            max_dimension = 1280
-            img, resized = resize_to_max_dimension(img, max_dimension)
+            result = await automation_handler.screenshot(format=fmt, quality=quality)
+            if not result.get("success"):
+                return {
+                    "success": False,
+                    "error": "Screenshot failed: " + result.get("error", "unknown"),
+                }
+            image_data = base64.b64decode(result["image_data"])
+            from io import BytesIO
+
+            img = PILImage.open(BytesIO(image_data))
+
+            # If target resolution is set, resize to that
+            if (
+                _target_width
+                and _target_height
+                and (_scale_x != 1.0 or _scale_y != 1.0)
+            ):
+                img = img.resize(
+                    (_target_width, _target_height),
+                    PILImage.Resampling.LANCZOS,
+                )
+                resized = True
+            else:
+                img, resized = resize_to_max_dimension(img, max_image_dimension)
             if resized and not _target_width:
                 _configure_scaling(target_width=img.width, target_height=img.height)
 
         image_data = encode_for_mcp_image(img, fmt, quality)
-
-        return ToolResult(
-            content=[Image(data=image_data, format=fmt)],
-            structured_content={
-                "success": True,
+        metadata.update(
+            {
                 "format": fmt,
                 "mime_type": f"image/{fmt}",
                 "mimeType": f"image/{fmt}",
@@ -1481,7 +1536,12 @@ def create_mcp_server() -> FastMCP:
                 "height": img.height,
                 "byte_count": len(image_data),
                 "imageBytes": len(image_data),
-            },
+            }
+        )
+
+        return ToolResult(
+            content=[Image(data=image_data, format=fmt)],
+            structured_content=metadata,
         )
 
     @_protocol_tool(annotations={"readOnlyHint": True, "destructiveHint": False, "idempotentHint": True, "openWorldHint": True})

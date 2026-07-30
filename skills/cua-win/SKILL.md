@@ -125,6 +125,13 @@ recording/replay metadata.
 - OmniParser V2 YOLO + Florence-2 icon captions.
 - RapidOCR/PaddleOCR ONNX text nodes.
 
+When only target-window pixels are needed, use
+`computer_screenshot({"window": window})`. It shares the WGC-first,
+screen-crop-fallback capture path but skips UIA/MSAA/SOM and does not create an
+observation or actionable `screenshot_id`. Use `computer_get_window_state`
+instead when subsequent element or window-relative coordinate actions need
+fresh bindings.
+
 Read `result.data.agent_state.text` or `result.data.state_text` first. It is the
 compact default state summary for planning; inspect `result.data.nodes`,
 `result.artifacts`, the corresponding MCP image content, and
