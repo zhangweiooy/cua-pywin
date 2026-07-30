@@ -4,6 +4,8 @@ All notable changes to this project will be documented in this file.
 
 ## Unreleased
 
+## 0.2.6 - 2026-07-30
+
 ### Added
 
 - Allow `computer_screenshot` to capture an optional canonical target window
@@ -25,6 +27,9 @@ All notable changes to this project will be documented in this file.
   `state_text` as the single summary text, keep canonical node counts, and
   expose capture diagnostics only under `capture.capture_metadata`. Empty
   diagnostic fields are omitted.
+- Advanced package, server, workflow, documentation, skill, and release
+  metadata to `0.2.6`.
+- Kept the public protocol at `0.2` and the public MCP surface at 25 tools.
 
 ### Fixed
 

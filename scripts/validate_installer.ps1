@@ -323,16 +323,17 @@ try {
         "--timeout",
         [string]$TimeoutSeconds
     )
+    $captureMetadata = $windowState.data.capture.capture_metadata
     if (
         -not $windowState.success -or
         @($windowState.artifacts).Count -lt 1 -or
-        $windowState.data.capture_metadata.capture_backend -ne "wgc" -or
+        $captureMetadata.capture_backend -ne "wgc" -or
         $windowState.data.uia_quality -notin @("rich", "ok", "poor") -or
         [int]$windowState.data.uia_node_count -lt 1
     ) {
         throw (
             "Installed UIA/WGC window-state smoke failed: " +
-            "backend=$($windowState.data.capture_metadata.capture_backend), " +
+            "backend=$($captureMetadata.capture_backend), " +
             "uia_quality=$($windowState.data.uia_quality), " +
             "uia_nodes=$($windowState.data.uia_node_count)"
         )

@@ -149,10 +149,11 @@ try {
         [string]$TimeoutSeconds
     )
     $vision = $windowState.data.vision_metadata
+    $captureMetadata = $windowState.data.capture.capture_metadata
     if (
         -not $windowState.success -or
         @($windowState.artifacts).Count -lt 1 -or
-        $windowState.data.capture_metadata.capture_backend -ne "wgc" -or
+        $captureMetadata.capture_backend -ne "wgc" -or
         [int]$windowState.data.vision_node_count -lt 1 -or
         [int]$vision.num_icons -lt 1 -or
         [int]$vision.num_text -lt 1 -or
@@ -161,7 +162,7 @@ try {
     ) {
         throw (
             "Standalone SOM smoke failed: " +
-            "backend=$($windowState.data.capture_metadata.capture_backend), " +
+            "backend=$($captureMetadata.capture_backend), " +
             "vision_nodes=$($windowState.data.vision_node_count), " +
             "icons=$($vision.num_icons), text=$($vision.num_text), " +
             "icon_status=$($vision.icon_semantic_status), " +

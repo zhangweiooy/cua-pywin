@@ -9,7 +9,7 @@ are distributed through GitHub Releases rather than PyPI.
 - A manual `Build and release` workflow run builds and validates a candidate.
   It uploads a one-day checksum candidate, but does not upload release binaries
   or create a GitHub Release.
-- Pushing a tag such as `v0.2.5` runs the same validation, builds the Windows
+- Pushing a tag such as `v0.2.6` runs the same validation, builds the Windows
   installer, and creates the GitHub Release.
 - The repository is currently private. Decide whether it should become public
   before announcing a user-facing release.
@@ -28,7 +28,7 @@ are distributed through GitHub Releases rather than PyPI.
 5. Build the candidate:
 
    ```powershell
-   ./scripts/build_release.ps1 -Version 0.2.5
+   ./scripts/build_release.ps1 -Version 0.2.6
    ```
 
 6. Install `dist/*.whl` in a clean Windows Python 3.12 environment.
@@ -50,8 +50,8 @@ are distributed through GitHub Releases rather than PyPI.
 2. Create an annotated tag:
 
    ```powershell
-   git tag -a v0.2.5 -m "cua-pywin 0.2.5"
-   git push origin v0.2.5
+   git tag -a v0.2.6 -m "cua-pywin 0.2.6"
+   git push origin v0.2.6
    ```
 
 3. Wait for the `Build and release` workflow to finish.
@@ -65,8 +65,8 @@ are distributed through GitHub Releases rather than PyPI.
 For the normal Windows installer path:
 
 ```powershell
-Get-FileHash .\cua-win-0.2.5-win64-setup.exe -Algorithm SHA256
-.\cua-win-0.2.5-win64-setup.exe
+Get-FileHash .\cua-win-0.2.6-win64-setup.exe -Algorithm SHA256
+.\cua-win-0.2.6-win64-setup.exe
 cua-win doctor
 cua-win list-tools
 cua-win start
@@ -78,7 +78,7 @@ cua-win stop
 For wheel validation in a clean Python 3.12 environment:
 
 ```powershell
-pip install .\cua_pywin-0.2.5-py3-none-any.whl
+pip install .\cua_pywin-0.2.6-py3-none-any.whl
 cua-win doctor
 cua-win list-tools
 ```
@@ -102,7 +102,7 @@ For local executable testing, build a standalone directory:
 
 ```powershell
 ./scripts/build_nuitka.ps1
-./scripts/build_nuitka.ps1 -Version 0.2.5
+./scripts/build_nuitka.ps1 -Version 0.2.6
 ```
 
 When `-Version` is omitted, the script reads the version from `pyproject.toml`.
@@ -158,20 +158,20 @@ Install Inno Setup 6 so `ISCC.exe` is available on PATH or in the default
 installer from the standalone output:
 
 ```powershell
-./scripts/build_nuitka.ps1 -Version 0.2.5
-./scripts/build_installer.ps1 -Version 0.2.5
+./scripts/build_nuitka.ps1 -Version 0.2.6
+./scripts/build_installer.ps1 -Version 0.2.6
 ```
 
 For a one-command local build:
 
 ```powershell
-./scripts/build_installer.ps1 -Version 0.2.5 -BuildNuitka -SkipSync -SkipChecks
+./scripts/build_installer.ps1 -Version 0.2.6 -BuildNuitka -SkipSync -SkipChecks
 ```
 
 The output is:
 
 ```text
-dist-installer/cua-win-0.2.5-win64-setup.exe
+dist-installer/cua-win-0.2.6-win64-setup.exe
 dist-installer/SHA256SUMS.txt
 ```
 

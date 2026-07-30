@@ -152,14 +152,14 @@ uv run python scripts/run_agent_smoke.py --dry-run --scenario fixture-basic
 uv run --no-sync python "C:\Users\vinfl\.codex\skills\.system\skill-creator\scripts\quick_validate.py" skills/cua-win
 
 # Build and validate a release candidate
-./scripts/build_release.ps1 -Version 0.2.2
+./scripts/build_release.ps1 -Version 0.2.6
 
 # Build a local Nuitka standalone executable directory
 ./scripts/build_nuitka.ps1
-./scripts/build_nuitka.ps1 -Version 0.2.2
+./scripts/build_nuitka.ps1 -Version 0.2.6
 
 # Build a Windows setup.exe from the standalone output
-./scripts/build_installer.ps1 -Version 0.2.2
+./scripts/build_installer.ps1 -Version 0.2.6
 
 # Fast local Nuitka iteration after dependencies are already synced
 ./scripts/build_nuitka.ps1 -SkipSync -SkipChecks
@@ -715,7 +715,7 @@ uv run cua-win stop
 
 ### Current State
 
-- Protocol `0.2` and package version `0.2.2` are the active development line.
+- Protocol `0.2` and package version `0.2.6` are the active development line.
   It intentionally has no 0.1 public compatibility mode. The repository is
   still private.
 - Do not move an existing release tag for documentation-only cleanup. Move a

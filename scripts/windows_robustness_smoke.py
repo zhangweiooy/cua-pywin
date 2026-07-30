@@ -127,7 +127,8 @@ async def _launch_or_find(
 
 
 def _summarize_state(label: str, state: dict[str, Any], source: str) -> dict[str, Any]:
-    metadata = state.get("capture_metadata") or {}
+    capture = state.get("capture") or {}
+    metadata = capture.get("capture_metadata") or {}
     profile = state.get("target_profile") or {}
     return {
         "label": label,
