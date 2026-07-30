@@ -120,6 +120,9 @@ Read `data.state_text` before scanning the full node list. `data.agent_state`
 contains truncation and sampling metadata without a duplicate text copy. The
 summary is capped by `agent_text_limit=500` by default; pass
 `show_full_text=true` or raise `agent_text_limit` for diagnostic runs.
+Public data keeps canonical node counts, exposes capture diagnostics under
+`capture.capture_metadata`, and omits exact duplicate counts and empty
+diagnostic fields.
 
 Click a screenshot coordinate:
 

@@ -4482,6 +4482,8 @@ def create_mcp_server() -> FastMCP:
         Combines accessibility tree walking with optional SOM vision detection.
         Each actionable element gets an element_index that can be used with
         computer_click (use count=2 for double-click), computer_scroll, etc.
+        Public data keeps state_text as the single summary text, canonical node
+        counts, and capture diagnostics under capture.capture_metadata.
 
         Args:
             window: Canonical window object from list/get_window_state output.
@@ -4492,7 +4494,7 @@ def create_mcp_server() -> FastMCP:
             max_nodes: Maximum number of highest-priority nodes to return. Default 100;
                 use 0 or null to return all nodes.
             agent_text_limit: Maximum characters in the default state_text summary.
-            show_full_text: When True, do not truncate the agent_state text.
+            show_full_text: When True, do not truncate state_text.
             include_tree_markdown: Include the full debug tree markdown. Disabled
                 by default because nodes and state_text cover normal agent use.
             response_mode: "standard" keeps normal diagnostics; "compact" caps

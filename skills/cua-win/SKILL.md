@@ -139,6 +139,8 @@ metadata without duplicating the text. Inspect `result.data.nodes`,
 insufficient. The summary is capped by `agent_text_limit=500` by default. Use
 `show_full_text=true` or raise `agent_text_limit` for diagnostics. Full
 `tree_markdown` is opt-in with `include_tree_markdown=true`.
+Public data keeps canonical node counts; exact duplicate counts and empty
+diagnostic fields are omitted.
 
 Returned node boxes use `nodes_coordinate_space="window_resized"` and align
 with the returned screenshot. When clicking or dragging from that screenshot,

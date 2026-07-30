@@ -25,6 +25,9 @@ def test_active_docs_do_not_restore_removed_protocol_surface() -> None:
     assert "data.screenshots" not in text
     assert "top-level `state_text`" not in text
     assert "顶层别名 `state_text`" not in text
+    assert "agent_state.text" not in text
+    assert "data.capture_metadata" not in text
+    assert "result.data.capture_metadata" not in text
 
 
 def test_repository_mcp_config_uses_stable_cli_entrypoint() -> None:

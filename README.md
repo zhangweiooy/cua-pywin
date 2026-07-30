@@ -417,6 +417,7 @@ type/key，以及明确 canonical window 的 type/key/manage 不要求 observati
 `agent_text_limit=500` 限制长度；只有摘要不足时才使用
 `show_full_text=true` 或提高 `agent_text_limit`，再进一步检查 `nodes`；需要
 完整调试树时显式启用 `include_tree_markdown=true`。
+公开 payload 只保留 canonical 节点计数；严格相等的重复计数和空诊断字段会被省略。
 目标与 transient capture 的结构化描述只存在于 envelope 的 `artifacts[]`；
 实际图片位于 MCP image content，对应 artifact 会给出 role、MIME、尺寸、字节数、
 `content_index`、`window`、`observation_id` 和 `screenshot_id`。
@@ -445,7 +446,7 @@ type/key，以及明确 canonical window 的 type/key/manage 不要求 observati
 
 - **SOM 检测仍在工具路径同步运行**：warm-up 会预加载模型，但每帧检测仍会增加 `computer_get_window_state` 的尾延迟
 - **录制截图仍有动作内成本**：turn 写盘已进入有界 writer 线程，但每个被采样动作的截图捕获通常仍增加约 50-200 ms
-- **SOM OCR 遮挡噪音**：WGC window capture 可避免大多数重叠窗口污染；screen crop 回退会在 `capture_metadata.occlusion_risk=true` 中显式标记
+- **SOM OCR 遮挡噪音**：WGC window capture 可避免大多数重叠窗口污染；screen crop 回退会在 `capture.capture_metadata.occlusion_risk=true` 中显式标记
 - **SOM YOLO/OCR 并行收益有限**：2026-06-01 EasyOCR CPU 基准（1280x830 WGC screenshot）串行 3.31s、`ThreadPoolExecutor` 并行 3.07s，仅约 8% 提升；RapidOCR 后端需重新基准后再决定是否并行
 - **学习 IME 对终端无效**：PowerShell/CMD 无 UIA ValuePattern，回退拼音 + OCR
 - **录制坐标绝对化**：回放时窗口位置变化导致错位。`window_ref` 机制在窗口存活时可重算坐标，窗口过期则按进程名/标题重新搜索
@@ -928,6 +929,8 @@ the text. The summary is capped by `agent_text_limit=500` by default; use
 `show_full_text=true` or raise `agent_text_limit` only when the
 compact state is insufficient, then inspect `nodes`; explicitly enable
 `include_tree_markdown=true` only when the full debug tree is needed.
+The public payload keeps canonical node counts; exact duplicate counts and
+empty diagnostic fields are omitted.
 Target and transient capture descriptors live only in the envelope's
 `artifacts[]`. Actual images are MCP image content; each artifact identifies its
 role, MIME type, dimensions, byte count, `content_index`, `window`,
@@ -1001,7 +1004,7 @@ known icon-shape misreads requires `CUA_OCR_DENOISE=strict`. Set
 
 - **SOM detection remains synchronous in the tool path**: warm-up preloads models, but per-frame detection still contributes to `computer_get_window_state` tail latency
 - **Recording capture still has an in-action cost**: turn writes use a bounded writer thread, but each sampled action's screenshot capture typically adds about 50-200 ms
-- **SOM OCR occlusion noise**: WGC window capture avoids most overlapping-window pollution; screen-crop fallback marks `capture_metadata.occlusion_risk=true`
+- **SOM OCR occlusion noise**: WGC window capture avoids most overlapping-window pollution; screen-crop fallback marks `capture.capture_metadata.occlusion_risk=true`
 - **Limited SOM YOLO/OCR parallelism gain**: the 2026-06-01 EasyOCR CPU benchmark on a 1280x830 WGC screenshot measured 3.31s serial vs 3.07s with `ThreadPoolExecutor` parallelism, about 8% faster; re-benchmark with RapidOCR before enabling parallelism
 - **Learning IME not supported in terminals**: PowerShell/CMD lack UIA ValuePattern. Falls back to pinyin + OCR
 - **Recording coordinates are absolute**: window position changes break replay. `window_ref` recalculates if window is alive; falls back to process-name/title search for stale IDs

@@ -201,6 +201,9 @@ omitting verbose diagnostics. The full tree is disabled by default; add
 `"include_tree_markdown": true` only when tree diagnostics are required.
 Public floating-point values are rounded to two decimal places without
 reducing internal coordinate precision.
+Public data keeps `state_text` as the single summary text, removes exact
+duplicate node counts, and exposes capture diagnostics at
+`capture.capture_metadata`. Empty diagnostic fields are omitted.
 
 Then verify:
 

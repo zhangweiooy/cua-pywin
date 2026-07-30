@@ -210,6 +210,8 @@ returned only with `include_tree_markdown=true`. Use
 verbose capture/provider/vision diagnostics. Public window-state floats are
 rounded to two decimal places; internal freshness and coordinate geometry keep
 their original precision.
+Public data keeps canonical node counts; exact duplicate counts and empty
+diagnostic fields are omitted.
 
 Key invariant: `ElementCache` stores window-relative coordinates, and
 `_resolve_element_center` returns screen coordinates.
