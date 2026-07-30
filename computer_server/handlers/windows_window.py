@@ -24,11 +24,48 @@ class WindowsWindowHandler(GenericWindowHandler):
                 import ctypes
 
                 user32 = ctypes.windll.user32
+                kernel32 = ctypes.windll.kernel32
                 if user32.IsIconic(hwnd):
                     user32.ShowWindow(hwnd, 9)  # SW_RESTORE
-                user32.keybd_event(0x12, 0, 0, 0)  # VK_MENU (Alt) down
-                user32.keybd_event(0x12, 0, 2, 0)  # Alt up
-                user32.SetForegroundWindow(hwnd)
+
+                current_thread = int(kernel32.GetCurrentThreadId())
+                foreground_window = int(user32.GetForegroundWindow())
+                thread_ids = {
+                    int(user32.GetWindowThreadProcessId(hwnd, None)),
+                }
+                if foreground_window:
+                    thread_ids.add(
+                        int(
+                            user32.GetWindowThreadProcessId(
+                                foreground_window,
+                                None,
+                            )
+                        )
+                    )
+
+                attached_threads = []
+                try:
+                    for thread_id in thread_ids:
+                        if (
+                            thread_id
+                            and thread_id != current_thread
+                            and user32.AttachThreadInput(
+                                current_thread,
+                                thread_id,
+                                True,
+                            )
+                        ):
+                            attached_threads.append(thread_id)
+                    user32.BringWindowToTop(hwnd)
+                    user32.SetForegroundWindow(hwnd)
+                finally:
+                    for thread_id in reversed(attached_threads):
+                        user32.AttachThreadInput(
+                            current_thread,
+                            thread_id,
+                            False,
+                        )
+
                 await asyncio.sleep(0.05)
                 foreground = int(user32.GetForegroundWindow())
                 if foreground != hwnd:

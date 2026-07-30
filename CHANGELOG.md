@@ -17,6 +17,9 @@ All notable changes to this project will be documented in this file.
 - Query window process IDs through `win32process` after UIA Invoke and keep
   best-effort window-change telemetry failures from changing a completed click
   into `ACTION_OUTCOME_UNKNOWN`.
+- Activate Windows targets by temporarily attaching input threads instead of
+  injecting a synthetic Alt keystroke, and always detach successfully attached
+  threads when activation completes or fails.
 
 ## 0.2.5 - 2026-07-29
 
