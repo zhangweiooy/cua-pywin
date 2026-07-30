@@ -18,6 +18,25 @@ logger = logging.getLogger(__name__)
 
 T = TypeVar("T")
 DEFAULT_RETURNED_NODE_LIMIT = 100
+PUBLIC_FLOAT_DECIMALS = 2
+
+_COMPACT_WINDOW_STATE_OMIT_FIELDS = frozenset({
+    "accessibility_hint",
+    "agent_state",
+    "capture_metadata",
+    "merged_node_count",
+    "msaa_node_count",
+    "msaa_total_elements",
+    "msaa_tree_node_count",
+    "node_sources",
+    "nodes_filtered",
+    "provider_errors",
+    "total_elements",
+    "uia_node_count",
+    "unfiltered_node_count",
+    "vision_metadata",
+    "vision_node_count",
+})
 
 
 @dataclass(frozen=True)
@@ -1131,6 +1150,51 @@ def limit_nodes_for_response(
         key=lambda item: (-node_return_priority(item[1]), item[0]),
     )
     return [node for _, node in ranked[:max_nodes]]
+
+
+def _round_public_floats(value: Any) -> Any:
+    """Round public response floats without changing internal geometry."""
+    if isinstance(value, float):
+        rounded = round(value, PUBLIC_FLOAT_DECIMALS)
+        return 0.0 if rounded == 0 else rounded
+    if isinstance(value, dict):
+        return {key: _round_public_floats(item) for key, item in value.items()}
+    if isinstance(value, list):
+        return [_round_public_floats(item) for item in value]
+    if isinstance(value, tuple):
+        return tuple(_round_public_floats(item) for item in value)
+    return value
+
+
+def _compact_node(node: Dict[str, Any]) -> Dict[str, Any]:
+    """Drop empty node fields while retaining all actionable values."""
+    return {
+        key: value
+        for key, value in node.items()
+        if value is not None and value != "" and value != [] and value != {}
+    }
+
+
+def project_window_state_response(
+    response: Dict[str, Any],
+    *,
+    include_tree_markdown: bool,
+    response_mode: str,
+) -> Dict[str, Any]:
+    """Project an internal window snapshot into a bounded public response."""
+    projected = dict(response)
+    if not include_tree_markdown:
+        projected.pop("tree_markdown", None)
+    if response_mode == "compact":
+        for field in _COMPACT_WINDOW_STATE_OMIT_FIELDS:
+            projected.pop(field, None)
+        nodes = projected.get("nodes")
+        if isinstance(nodes, list):
+            projected["nodes"] = [
+                _compact_node(node) if isinstance(node, dict) else node
+                for node in nodes
+            ]
+    return _round_public_floats(projected)
 
 
 def build_accessibility_hint(

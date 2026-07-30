@@ -1634,10 +1634,20 @@ async def test_get_window_state_accepts_window_and_returns_window(monkeypatch):
     assert content["target_profile"]["family"]
     assert "screenshots" not in content
     assert "window_ref" not in content
+    assert "tree_markdown" not in content
     assert content["agent_state"]["text_limit"] == 500
     assert content["agent_state"]["show_full_text"] is False
     assert content["state_text"] == content["agent_state"]["text"]
     assert "observation_id=" in content["state_text"]
+
+    tree_result = await create_mcp_server().call_tool(
+        "computer_get_window_state",
+        {
+            "window": {"id": 456, "pid": 123},
+            "include_tree_markdown": True,
+        },
+    )
+    assert _content(tree_result)["tree_markdown"] == ""
 
 
 @pytest.mark.asyncio
@@ -1664,6 +1674,91 @@ async def test_get_window_state_validates_agent_text_options(monkeypatch):
         "code": "INVALID_ARGUMENT",
         "suggestion": None,
     }
+
+
+@pytest.mark.asyncio
+async def test_get_window_state_compact_mode_caps_payload_and_diagnostics(
+    monkeypatch,
+):
+    import computer_server.mcp_server as mcp_module
+    import computer_server.services.window_state_service as window_state_service
+
+    received = {}
+
+    async def fake_get_window_state_snapshot(
+        _automation_handler,
+        _pid,
+        _window_id,
+        **kwargs,
+    ):
+        received.update(kwargs)
+        return {
+            "success": True,
+            "node_count": 1,
+            "unfiltered_node_count": 1,
+            "nodes": [
+                {
+                    "element_index": 1,
+                    "name": "Run",
+                    "confidence": 0.123456789,
+                    "metadata": {},
+                }
+            ],
+            "tree_markdown": "# full tree",
+            "screen_width": 100,
+            "screen_height": 50,
+            "capture_metadata": {
+                "capture_backend": "wgc",
+                "stage_timings": {"capture_total_latency": 0.987654321},
+            },
+            "vision_metadata": {"stage_timings": {"som": 1.23456789}},
+            "provider_errors": {},
+            "_capture_geometry": {
+                "compression_ratio": 1.23456789,
+                "original_width": 200,
+                "original_height": 100,
+                "window_origin_x": 10,
+                "window_origin_y": 20,
+                "crop_origin_screen_x": 10,
+                "crop_origin_screen_y": 20,
+            },
+        }
+
+    monkeypatch.setattr(
+        window_state_service,
+        "get_window_state_snapshot",
+        fake_get_window_state_snapshot,
+    )
+    monkeypatch.setattr(
+        mcp_module,
+        "_handlers",
+        SimpleNamespace(automation=_FakeAutomation()),
+    )
+
+    result = await create_mcp_server().call_tool(
+        "computer_get_window_state",
+        {
+            "window": {"id": 456, "pid": 123},
+            "response_mode": "compact",
+            "max_image_dimension": 1280,
+            "max_nodes": 0,
+        },
+    )
+
+    content = _content(result)
+    assert received["max_image_dimension"] == 960
+    assert received["max_nodes"] == 30
+    assert content["nodes"][0] == {
+        "element_index": 1,
+        "name": "Run",
+        "confidence": 0.12,
+    }
+    assert "tree_markdown" not in content
+    assert "capture_metadata" not in content
+    assert "vision_metadata" not in content
+    assert "provider_errors" not in content
+    assert "agent_state" not in content
+    assert "state_text" in content
 
 
 @pytest.mark.asyncio
@@ -1744,7 +1839,10 @@ async def test_get_window_state_registers_related_transient_screenshots(
     mcp = create_mcp_server()
     result = await mcp.call_tool(
         "computer_get_window_state",
-        {"window": {"id": 456, "pid": 123}},
+        {
+            "window": {"id": 456, "pid": 123},
+            "response_mode": "compact",
+        },
     )
 
     content = _content(result)

@@ -4473,6 +4473,8 @@ def create_mcp_server() -> FastMCP:
         max_nodes: Optional[int] = 100,
         agent_text_limit: int = 500,
         show_full_text: bool = False,
+        include_tree_markdown: bool = False,
+        response_mode: str = "standard",
     ) -> Any:
         """
         Get a rich snapshot of a window's UI state: screenshot + element tree + indexed nodes.
@@ -4491,6 +4493,12 @@ def create_mcp_server() -> FastMCP:
                 use 0 or null to return all nodes.
             agent_text_limit: Maximum characters in the default state_text summary.
             show_full_text: When True, do not truncate the agent_state text.
+            include_tree_markdown: Include the full debug tree markdown. Disabled
+                by default because nodes and state_text cover normal agent use.
+            response_mode: "standard" keeps normal diagnostics; "compact" caps
+                the image at 960px, nodes at 30, and state_text at 300
+                characters, and omits verbose diagnostics. Public floats in
+                either mode are rounded to two decimal places.
 
         Returns:
             A protocol envelope whose data contains:
@@ -4499,7 +4507,8 @@ def create_mcp_server() -> FastMCP:
             - nodes: list of elements with element_index, bounds, center,
               control_type, name, actions, and action_hints
             - node_count: total number of nodes
-            - tree_markdown: formatted markdown representation of the UI tree
+            - tree_markdown: optional formatted UI tree, returned only when
+              include_tree_markdown=true
             - tree_quality: 'rich', 'ok', 'poor', or 'empty'
             - accessibility_hint / observation_recommendation: observation
               quality and next-step guidance
@@ -4514,8 +4523,12 @@ def create_mcp_server() -> FastMCP:
             build_agent_state,
         )
         from computer_server.services.window_state_service import get_window_state_snapshot
+        from computer_server.services.window_state_service import (
+            project_window_state_response,
+        )
         from computer_server.services.validation_service import (
             error_result,
+            validate_choice,
             validate_int_range,
             validate_max_image_dimension,
             validate_max_nodes,
@@ -4532,6 +4545,13 @@ def create_mcp_server() -> FastMCP:
             )
             if not isinstance(show_full_text, bool):
                 raise ValueError("show_full_text must be a boolean")
+            if not isinstance(include_tree_markdown, bool):
+                raise ValueError("include_tree_markdown must be a boolean")
+            response_mode = validate_choice(
+                "response_mode",
+                response_mode,
+                {"standard", "compact"},
+            )
         except ValueError as e:
             return error_result(e)
 
@@ -4550,6 +4570,15 @@ def create_mcp_server() -> FastMCP:
                 "code": "TARGET_REQUIRED",
                 "error": "window with id and pid is required",
             }
+
+        if response_mode == "compact":
+            max_image_dimension = min(max_image_dimension, 960)
+            if max_nodes is None or max_nodes == 0:
+                max_nodes = 30
+            else:
+                max_nodes = min(max_nodes, 30)
+            if not show_full_text:
+                agent_text_limit = min(agent_text_limit, 300)
 
         automation_handler = _get_handlers().automation
         result = await get_window_state_snapshot(
@@ -4687,6 +4716,12 @@ def create_mcp_server() -> FastMCP:
         elif result.get("success"):
             result.pop("_capture_geometry", None)
             result.pop("_related_screenshots", None)
+        if result.get("success"):
+            result = project_window_state_response(
+                result,
+                include_tree_markdown=include_tree_markdown,
+                response_mode=response_mode,
+            )
         return result
 
     # ============================================================

@@ -203,7 +203,12 @@ whether callers should narrow with `query` or raise `max_nodes`.
 `data.agent_state` and `data.state_text` provide the default
 agent-facing observation summary. The text is capped by `agent_text_limit=500`
 by default; use `show_full_text=true` or raise `agent_text_limit` only when the
-compact state is insufficient.
+compact state is insufficient. `tree_markdown` is omitted by default and is
+returned only with `include_tree_markdown=true`. Use
+`response_mode="compact"` for a bounded 960-pixel, 30-node response without
+verbose capture/provider/vision diagnostics. Public window-state floats are
+rounded to two decimal places; internal freshness and coordinate geometry keep
+their original precision.
 
 Key invariant: `ElementCache` stores window-relative coordinates, and
 `_resolve_element_center` returns screen coordinates.
@@ -261,8 +266,8 @@ Merged public entry points:
   supports bounded incremental reads with `after_sequence` and
   `timeline_limit`, and callers continue from `data.next_sequence`.
 - App/title/query window search uses `computer_list_windows`.
-- Accessibility-tree reads use `computer_get_window_state` `tree_markdown` and
-  `nodes`.
+- Accessibility-tree reads use `computer_get_window_state` `nodes`; request
+  `tree_markdown` explicitly with `include_tree_markdown=true` for diagnostics.
 
 `window_ref` is separate replay metadata. Agents should not hand-author it;
 recording builds it from the resolved `window` plus origin, process, title,

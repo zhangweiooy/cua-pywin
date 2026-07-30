@@ -192,9 +192,15 @@ Observe:
 ```json
 {
   "window": {"id": 123456, "pid": 8888},
-  "max_nodes": 100
+  "response_mode": "compact"
 }
 ```
+
+Compact observations cap the image at 960 pixels and returned nodes at 30 while
+omitting verbose diagnostics. The full tree is disabled by default; add
+`"include_tree_markdown": true` only when tree diagnostics are required.
+Public floating-point values are rounded to two decimal places without
+reducing internal coordinate precision.
 
 Then verify:
 

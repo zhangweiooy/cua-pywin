@@ -403,14 +403,19 @@ type/key，以及明确 canonical window 的 type/key/manage 不要求 observati
 节点过多的应用一次性撑大 payload；可传 `max_nodes=0` 返回全部节点，或配合
 `query` / `max_nodes` 先筛选再调整上限。该限制只影响返回 payload，不影响内部
 `ElementCache`，后者仍保留完整窗口全分辨率坐标。
+`tree_markdown` 默认不返回；仅在调试完整树时传
+`include_tree_markdown=true`。`response_mode="compact"` 会把图片最长边限制为
+960、节点限制为 30、普通摘要限制为 300 字，并省略详细 capture/provider/vision
+诊断。公开响应中的浮点数统一保留 2 位小数，内部 observation 和坐标换算仍保留
+原始精度。
 节点同时包含底层 `actions` 和面向 agent 的 `action_hints`（如 `click`、`type`、
 `set_value`、`expand`），便于区分可点击、可输入和可展开候选。
 `data.accessibility_hint` / `data.observation_recommendation` 会说明语义树是否稀疏、
 是否已启用视觉/OCR，以及是否应继续用 `query` 或提高 `max_nodes` 收窄观察。
 `data.agent_state` 和 `data.state_text` 是默认给 agent 读取的紧凑状态摘要，
 默认由 `agent_text_limit=500` 限制长度；只有摘要不足时才使用
-`show_full_text=true` 或提高 `agent_text_limit`，再进一步检查 `nodes` /
-`tree_markdown`。
+`show_full_text=true` 或提高 `agent_text_limit`，再进一步检查 `nodes`；需要
+完整调试树时显式启用 `include_tree_markdown=true`。
 目标与 transient capture 的结构化描述只存在于 envelope 的 `artifacts[]`；
 实际图片位于 MCP image content，对应 artifact 会给出 role、MIME、尺寸、字节数、
 `content_index`、`window`、`observation_id` 和 `screenshot_id`。
@@ -904,6 +909,12 @@ from producing oversized payloads. Pass `max_nodes=0` to return every node, or
 combine `query` and `max_nodes` to filter first and then adjust the cap. This
 limit only affects the returned payload; the internal `ElementCache` still
 stores complete window-full-resolution coordinates.
+`tree_markdown` is omitted by default; request it only for full-tree debugging
+with `include_tree_markdown=true`. `response_mode="compact"` caps the image at
+960 pixels, returned nodes at 30, and the normal summary at 300 characters,
+while omitting verbose capture/provider/vision diagnostics. Public
+window-state floats are rounded to two decimal places; internal observation and
+coordinate geometry retain their original precision.
 Nodes include low-level `actions` and agent-facing `action_hints` such as
 `click`, `type`, `set_value`, and `expand`, making actionable/editable/expandable
 candidates easier to distinguish. `data.accessibility_hint` and
@@ -913,7 +924,8 @@ with `query` or raise `max_nodes`.
 `data.agent_state` and `data.state_text` are the default compact
 agent-facing observation summary. The text is capped by `agent_text_limit=500`
 by default; use `show_full_text=true` or raise `agent_text_limit` only when the
-compact state is insufficient, then inspect `nodes` / `tree_markdown` as needed.
+compact state is insufficient, then inspect `nodes`; explicitly enable
+`include_tree_markdown=true` only when the full debug tree is needed.
 Target and transient capture descriptors live only in the envelope's
 `artifacts[]`. Actual images are MCP image content; each artifact identifies its
 role, MIME type, dimensions, byte count, `content_index`, `window`,

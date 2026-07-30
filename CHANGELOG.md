@@ -9,8 +9,18 @@ All notable changes to this project will be documented in this file.
 - Allow `computer_screenshot` to capture an optional canonical target window
   through the WGC-first, screen-crop-fallback pixel path without running
   UIA/MSAA/SOM or adding a new public MCP tool.
+- Add `computer_get_window_state(response_mode="compact")` for bounded
+  960-pixel, 30-node observations without verbose capture/provider/vision
+  diagnostics.
 - Add `cua-win help TOOL` and route `cua-win TOOL --help` to human-readable
   schema-derived tool argument help.
+
+### Changed
+
+- Omit `computer_get_window_state` tree markdown by default; callers can request
+  it explicitly with `include_tree_markdown=true`.
+- Round public window-state floating-point values to two decimal places while
+  retaining full internal observation and coordinate precision.
 
 ### Fixed
 

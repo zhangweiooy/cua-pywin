@@ -134,10 +134,10 @@ fresh bindings.
 
 Read `result.data.agent_state.text` or `result.data.state_text` first. It is the
 compact default state summary for planning; inspect `result.data.nodes`,
-`result.artifacts`, the corresponding MCP image content, and
-`result.data.tree_markdown` only when the summary is insufficient. The summary
-is capped by `agent_text_limit=500` by default. Use `show_full_text=true` or
-raise `agent_text_limit` for diagnostics.
+`result.artifacts`, and the corresponding MCP image content when the summary is
+insufficient. The summary is capped by `agent_text_limit=500` by default. Use
+`show_full_text=true` or raise `agent_text_limit` for diagnostics. Full
+`tree_markdown` is opt-in with `include_tree_markdown=true`.
 
 Returned node boxes use `nodes_coordinate_space="window_resized"` and align
 with the returned screenshot. When clicking or dragging from that screenshot,
@@ -148,6 +148,10 @@ and zoom bindings for that window.
 Only the 100 highest-priority nodes are returned by default. Use `query` to
 narrow first, increase `max_nodes` when more candidates are needed, or set
 `max_nodes=0` only when the full node list is truly useful.
+Use `response_mode="compact"` for routine bounded observations: it caps the
+image at 960 pixels, nodes at 30, and the normal summary at 300 characters,
+while omitting verbose capture/provider/vision diagnostics. Public floats are
+rounded to two decimal places without reducing internal coordinate precision.
 Use `result.data.nodes[].action_hints` before inferring how to operate a node.
 They translate low-level UIA/MSAA/SOM actions into agent-facing hints such as
 `click`, `type`, `set_value`, `select`, `toggle`, `expand`, and `scroll`. Check
@@ -158,10 +162,10 @@ narrow with `query`. Also inspect `result.data.target_profile`,
 `result.data.semantic_degraded_reason`, and `result.data.provider_errors` when
 an observation looks empty, stale, minimized, or visually inconsistent.
 
-Use `query` to narrow `tree_markdown` when looking for text. Use
-`include_all_nodes=true` only when you need the full `nodes` array despite a
-query. Use `force_som=true` when testing visual fallback or when UIA/MSAA is
-known to be poor.
+Use `query` to narrow nodes and an explicitly requested `tree_markdown` when
+looking for text. Use `include_all_nodes=true` only when you need the full
+`nodes` array despite a query. Use `force_som=true` when testing visual fallback
+or when UIA/MSAA is known to be poor.
 
 Use `computer_zoom` when a target is visually small. Pass the parent
 `screenshot_id`; use the returned `zoom_id` for follow-up zoom-coordinate

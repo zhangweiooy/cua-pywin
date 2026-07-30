@@ -27,6 +27,7 @@ from computer_server.services.window_state_service import (
     prepare_direct_window_snapshot_image,
     prepare_window_snapshot_image,
     project_nodes_to_window_resized,
+    project_window_state_response,
 )
 
 
@@ -360,6 +361,80 @@ def test_limit_nodes_for_response_zero_or_none_returns_all_nodes_copy():
     assert limit_nodes_for_response(nodes, 0) == nodes
     assert limit_nodes_for_response(nodes, None) == nodes
     assert limit_nodes_for_response(nodes, 0) is not nodes
+
+
+def test_project_window_state_response_hides_tree_and_rounds_nested_floats():
+    response = {
+        "success": True,
+        "tree_markdown": "# full tree",
+        "nodes": [
+            {
+                "element_index": 1,
+                "confidence": 0.987654321,
+                "center": [12.1234567, 34.7654321],
+            }
+        ],
+        "capture_metadata": {
+            "stage_timings": {"capture_total_latency": 0.123456789},
+        },
+    }
+
+    projected = project_window_state_response(
+        response,
+        include_tree_markdown=False,
+        response_mode="standard",
+    )
+
+    assert "tree_markdown" not in projected
+    assert projected["nodes"][0]["confidence"] == 0.99
+    assert projected["nodes"][0]["center"] == [12.12, 34.77]
+    assert (
+        projected["capture_metadata"]["stage_timings"]["capture_total_latency"]
+        == 0.12
+    )
+
+
+def test_project_window_state_response_compact_omits_verbose_diagnostics():
+    response = {
+        "success": True,
+        "tree_markdown": "# full tree",
+        "nodes": [
+            {
+                "element_index": 1,
+                "name": "Run",
+                "description": "",
+                "metadata": {},
+                "enabled": False,
+            }
+        ],
+        "agent_state": {"text": "duplicate"},
+        "state_text": "compact summary",
+        "capture_metadata": {"stage_timings": {"capture": 1.234567}},
+        "vision_metadata": {"stage_timings": {"som": 2.345678}},
+        "provider_errors": {},
+        "accessibility_hint": {"recommended_next_step": "inspect"},
+        "uia_node_count": 1,
+        "total_elements": 10,
+    }
+
+    projected = project_window_state_response(
+        response,
+        include_tree_markdown=True,
+        response_mode="compact",
+    )
+
+    assert projected["tree_markdown"] == "# full tree"
+    assert projected["state_text"] == "compact summary"
+    assert projected["nodes"] == [
+        {"element_index": 1, "name": "Run", "enabled": False}
+    ]
+    assert "agent_state" not in projected
+    assert "capture_metadata" not in projected
+    assert "vision_metadata" not in projected
+    assert "provider_errors" not in projected
+    assert "accessibility_hint" not in projected
+    assert "uia_node_count" not in projected
+    assert "total_elements" not in projected
 
 
 def test_node_matches_query_checks_icon_label_metadata():

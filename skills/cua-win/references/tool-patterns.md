@@ -96,13 +96,20 @@ Observe a window with actionable semantic and screenshot bindings:
 ```json
 {
   "window": {"id": 123456, "pid": 8888},
-  "max_image_dimension": 1280,
-  "max_nodes": 100
+  "response_mode": "compact"
 }
 ```
 
 `max_nodes` defaults to `100` and returns the highest-priority nodes after any
 `query` filtering. Use `0` to return every node.
+`response_mode="compact"` caps the image at 960 pixels, returned nodes at 30,
+and the normal state summary at 300 characters while omitting verbose
+capture/provider/vision diagnostics. Standard mode preserves the normal
+diagnostics and caller-selected size limits.
+`tree_markdown` is omitted by default. Pass `include_tree_markdown=true` only
+when the full debug tree is required. Public floating-point values are rounded
+to two decimal places while internal observation geometry remains full
+precision.
 Each node may include `action_hints`, a compact agent-facing translation of
 low-level `actions`. Prefer these hints when choosing between click, type,
 set_value, select, toggle, expand, and scroll paths.
