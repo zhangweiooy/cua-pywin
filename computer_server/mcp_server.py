@@ -4182,7 +4182,9 @@ def create_mcp_server() -> FastMCP:
         """Manage a window: activate, minimize, maximize, close, move, or resize.
 
         Args:
-            action: activate|minimize|maximize|close|move|resize.
+            action: activate|minimize|maximize|close|move|resize. On Windows,
+                activate restores minimized targets and verifies foreground
+                activation without injecting synthetic key input.
             window: Canonical window object from list/get_window_state output.
             x: Target screen X coordinate for action=move.
             y: Target screen Y coordinate for action=move.

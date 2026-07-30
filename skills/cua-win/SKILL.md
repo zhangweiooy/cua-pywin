@@ -191,6 +191,10 @@ Prefer high-level action tools:
 
 When a canonical `window` is supplied, input tools activate and verify the
 target before sending input. Calls without a window act on current focus.
+On Windows, `computer_manage_window` with `action="activate"` restores a
+minimized target and verifies foreground activation without injecting
+synthetic key input. Treat activation failure as a stop condition; do not send
+untargeted input as a workaround.
 After actions, first inspect the top-level protocol `action` outcome, then read
 `data.action_path.target_profile`, `data.action_path.delivery_risk`, and
 `data.action_path.delivery_note` when diagnosing Chromium/Electron, terminal,

@@ -20,6 +20,7 @@ import shlex
 import socket
 import subprocess
 import sys
+import textwrap
 import time
 import urllib.error
 import urllib.parse
@@ -2017,9 +2018,20 @@ def _format_tool_help(tool: dict[str, Any]) -> str:
         elif "default" in schema:
             qualifiers.append(f"default={json.dumps(schema['default'], ensure_ascii=False)}")
         lines.append(f"  {argument} ({', '.join(qualifiers)})")
-        argument_description = str(schema.get("description") or "").strip()
+        argument_description = " ".join(
+            str(schema.get("description") or "").split()
+        )
         if argument_description:
-            lines.append(f"      {argument_description}")
+            lines.extend(
+                textwrap.wrap(
+                    argument_description,
+                    width=79,
+                    initial_indent="      ",
+                    subsequent_indent="      ",
+                    break_long_words=False,
+                    break_on_hyphens=False,
+                )
+            )
     lines.extend(
         [
             "",

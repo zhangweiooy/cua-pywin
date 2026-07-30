@@ -565,6 +565,10 @@ async def test_agent_native_tools_are_not_exposed():
     assert "max_image_dimension" in screenshot.parameters["properties"]
     assert "window_id" not in screenshot.parameters["properties"]
     assert "UIA/MSAA" in screenshot.description
+    manage_window = next(tool for tool in tools if tool.name == "computer_manage_window")
+    manage_action = manage_window.parameters["properties"]["action"]
+    assert "restores minimized targets" in manage_action["description"]
+    assert "without injecting synthetic key input" in manage_action["description"]
 
 
 @pytest.mark.asyncio

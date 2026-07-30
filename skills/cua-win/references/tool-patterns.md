@@ -66,6 +66,16 @@ Get the current foreground window:
 {"active": true}
 ```
 
+Activate or restore a canonical target window:
+
+```json
+{"action": "activate", "window": {"id": 123456, "pid": 8888}}
+```
+
+Use this with `computer_manage_window`. On Windows it restores a minimized
+target and verifies that it became foreground without injecting synthetic key
+input. If activation fails, stop rather than sending untargeted input.
+
 Capture only target-window pixels:
 
 ```json

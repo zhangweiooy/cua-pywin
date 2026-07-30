@@ -332,7 +332,11 @@ def test_tool_help_describes_schema_arguments_and_discovery_commands() -> None:
                 "properties": {
                     "action": {
                         "type": "string",
-                        "description": "start|stop|status.",
+                        "description": (
+                            "start|stop|status. This intentionally long argument "
+                            "description verifies that continuation lines remain "
+                            "aligned in human-readable tool help."
+                        ),
                     },
                     "session_id": {
                         "anyOf": [{"type": "string"}, {"type": "null"}],
@@ -356,6 +360,15 @@ def test_tool_help_describes_schema_arguments_and_discovery_commands() -> None:
     assert "timeline_limit (integer, default=64)" in help_text
     assert "cua-win call --help" in help_text
     assert "cua-win describe computer_learn --no-daemon" in help_text
+    action_block = help_text.split("  action (string, required)\n", 1)[1].split(
+        "  session_id",
+        1,
+    )[0]
+    assert all(
+        line.startswith("      ")
+        for line in action_block.splitlines()
+        if line
+    )
 
 
 def test_help_subcommand_accepts_optional_tool() -> None:

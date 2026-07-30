@@ -386,7 +386,9 @@ recording，也不会把旧 turn 混入新的 0.2 trajectory。
 节点的主动作使用 `computer_click`；节点明确暴露的非主动作使用
 `computer_perform_secondary_action`。当前仅支持 MSAA dropdown/splitbutton 的
 `action="expand"`。窗口置前不属于 accessibility action，统一使用
-`computer_manage_window({"action":"activate",...})`。
+`computer_manage_window({"action":"activate",...})`。Windows 激活会恢复已最小化
+的目标并验证其成为前台窗口；该路径临时连接相关输入线程，不注入模拟 Alt
+按键。激活失败时，显式指定窗口的输入工具不会继续发送输入。
 
 `computer_get_window_state` 要求 canonical `window`，并返回
 `data.observation_id`、`data.screenshot_id` 和对应图片 artifact。
@@ -831,7 +833,9 @@ current-focus behavior. Key-up skips activation so globally held input can
 always be released.
 `computer_click`, `computer_drag`, and `computer_scroll` also activate and
 verify the target when canonical `window` is explicitly supplied. Activation
-failure prevents mouse input.
+failure prevents mouse input. On Windows, activation restores a minimized
+target, temporarily attaches the relevant input threads, and verifies the
+foreground window without injecting a synthetic Alt keystroke.
 Action results add `data.action_path.target_profile`,
 `data.action_path.delivery_risk`, and `data.action_path.delivery_note` to
 explain Chromium, terminal, WPF/WinUI, VCL/SAL, or generic target risk. These

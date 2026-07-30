@@ -129,6 +129,7 @@ python -m compileall -q computer_server som
 uv run python scripts/mcp_test_one.py --list
 uv run cua-win computer_learn --help
 uv run cua-win computer_screenshot --help
+uv run cua-win computer_manage_window --help
 '{"action":"status"}' | uv run python scripts/mcp_test_one.py computer_learn - --timeout 120
 uv run --no-sync python "C:\Users\vinfl\.codex\skills\.system\skill-creator\scripts\quick_validate.py" skills/cua-win
 uv run python scripts/validate_release.py --version 0.2.5
@@ -143,6 +144,9 @@ Expected:
   arguments without starting the daemon.
 - `computer_screenshot --help` reports optional canonical `window` capture
   without adding another public tool.
+- `computer_manage_window --help` states that Windows `action=activate`
+  restores minimized targets, verifies foreground activation, and does not
+  inject synthetic key input.
 - MCP initialize reports server version `0.2.5`.
 - `computer_learn status` returns a valid protocol 0.2 envelope.
 - Skill and release validation pass.

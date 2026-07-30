@@ -364,6 +364,9 @@ is internal replay metadata.
 
 - `force_frontmost=True` activates a target window and uses `win32api.mouse_event`
   for HID-level clicks needed by some WebView2/UWP targets.
+- Windows activation restores minimized targets, temporarily attaches the
+  relevant input threads, verifies the target became foreground, and never
+  injects a synthetic Alt keystroke.
 - `computer_click` returns action-path metadata (`method`, foreground/system
   input flags, visibility requirements, coordinate source) so callers can tell
   whether the action used UIA Invoke, force-frontmost mouse events, or normal
