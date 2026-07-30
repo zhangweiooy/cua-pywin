@@ -1637,8 +1637,11 @@ async def test_get_window_state_accepts_window_and_returns_window(monkeypatch):
     assert "tree_markdown" not in content
     assert content["agent_state"]["text_limit"] == 500
     assert content["agent_state"]["show_full_text"] is False
-    assert content["state_text"] == content["agent_state"]["text"]
+    assert "text" not in content["agent_state"]
     assert "observation_id=" in content["state_text"]
+    assert "returned_node_count" not in content
+    assert "merged_node_count" not in content
+    assert "capture_metadata" not in content
 
     tree_result = await create_mcp_server().call_tool(
         "computer_get_window_state",

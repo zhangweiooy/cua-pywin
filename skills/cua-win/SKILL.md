@@ -132,8 +132,9 @@ observation or actionable `screenshot_id`. Use `computer_get_window_state`
 instead when subsequent element or window-relative coordinate actions need
 fresh bindings.
 
-Read `result.data.agent_state.text` or `result.data.state_text` first. It is the
-compact default state summary for planning; inspect `result.data.nodes`,
+Read `result.data.state_text` first. It is the single compact default state
+summary for planning; `result.data.agent_state` contains truncation and sampling
+metadata without duplicating the text. Inspect `result.data.nodes`,
 `result.artifacts`, and the corresponding MCP image content when the summary is
 insufficient. The summary is capped by `agent_text_limit=500` by default. Use
 `show_full_text=true` or raise `agent_text_limit` for diagnostics. Full
@@ -158,7 +159,7 @@ They translate low-level UIA/MSAA/SOM actions into agent-facing hints such as
 `result.data.accessibility_hint` / `result.data.observation_recommendation`
 before deciding whether to trust semantic nodes, switch to vision/OCR nodes, or
 narrow with `query`. Also inspect `result.data.target_profile`,
-`result.data.capture_metadata.capture_reliability`,
+`result.data.capture.capture_metadata.capture_reliability`,
 `result.data.semantic_degraded_reason`, and `result.data.provider_errors` when
 an observation looks empty, stale, minimized, or visually inconsistent.
 

@@ -529,8 +529,8 @@ def create_mcp_server() -> FastMCP:
         1. Bind a target window with computer_get_window(active=true),
            computer_list_windows, computer_list_apps, or computer_launch_app(wait_for_window=true).
         2. Observe it with computer_get_window_state. Reuse the returned window object.
-        3. Read agent_state/state_text first for a compact summary, then inspect nodes,
-           screenshots, and tree_markdown only as needed.
+        3. Read state_text first for a compact summary, then inspect agent_state
+           metadata, nodes, screenshots, and tree_markdown only as needed.
         4. Prefer element_index actions from the latest observation when available. Pass
            observation_id with element_index. When using screenshot coordinates, pass screenshot_id and
            coordinate_space="window_resized".
@@ -4512,7 +4512,8 @@ def create_mcp_server() -> FastMCP:
             - tree_quality: 'rich', 'ok', 'poor', or 'empty'
             - accessibility_hint / observation_recommendation: observation
               quality and next-step guidance
-            - agent_state / state_text: concise text summary for agent reasoning
+            - state_text: concise text summary for agent reasoning
+            - agent_state: summary truncation and sampling metadata
             - total_elements: total elements visited
 
             The screenshot is returned only as MCP image content, described by

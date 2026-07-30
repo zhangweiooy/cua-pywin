@@ -1175,6 +1175,51 @@ def _compact_node(node: Dict[str, Any]) -> Dict[str, Any]:
     }
 
 
+def _drop_exact_window_state_duplicates(projected: Dict[str, Any]) -> None:
+    """Remove fields whose values are already represented canonically."""
+    if projected.get("returned_node_count") == projected.get("node_count"):
+        projected.pop("returned_node_count", None)
+    if projected.get("merged_node_count") == projected.get("unfiltered_node_count"):
+        projected.pop("merged_node_count", None)
+
+    agent_state = projected.get("agent_state")
+    if isinstance(agent_state, dict):
+        compact_agent_state = dict(agent_state)
+        if compact_agent_state.get("text") == projected.get("state_text"):
+            compact_agent_state.pop("text", None)
+        if compact_agent_state.get("node_sample_count") == projected.get("node_count"):
+            compact_agent_state.pop("node_sample_count", None)
+        if compact_agent_state.get("nodes_truncated") == projected.get("nodes_truncated"):
+            compact_agent_state.pop("nodes_truncated", None)
+        if compact_agent_state.get("recommended_next_step") == projected.get(
+            "observation_recommendation"
+        ):
+            compact_agent_state.pop("recommended_next_step", None)
+        if compact_agent_state:
+            projected["agent_state"] = compact_agent_state
+        else:
+            projected.pop("agent_state", None)
+
+    capture = projected.get("capture")
+    if isinstance(capture, dict):
+        nested_capture_metadata = capture.get("capture_metadata")
+        if nested_capture_metadata == projected.get("capture_metadata"):
+            projected.pop("capture_metadata", None)
+        if (
+            isinstance(nested_capture_metadata, dict)
+            and projected.get("capture_reliability")
+            == nested_capture_metadata.get("capture_reliability")
+        ):
+            projected.pop("capture_reliability", None)
+
+
+def _drop_empty_window_state_diagnostics(projected: Dict[str, Any]) -> None:
+    """Omit known diagnostic fields when they carry no information."""
+    for field in ("provider_errors", "semantic_degraded_reason", "vision_metadata"):
+        if projected.get(field) in (None, "", [], {}):
+            projected.pop(field, None)
+
+
 def project_window_state_response(
     response: Dict[str, Any],
     *,
@@ -1185,6 +1230,8 @@ def project_window_state_response(
     projected = dict(response)
     if not include_tree_markdown:
         projected.pop("tree_markdown", None)
+    _drop_exact_window_state_duplicates(projected)
+    _drop_empty_window_state_diagnostics(projected)
     if response_mode == "compact":
         for field in _COMPACT_WINDOW_STATE_OMIT_FIELDS:
             projected.pop(field, None)

@@ -364,9 +364,18 @@ def test_limit_nodes_for_response_zero_or_none_returns_all_nodes_copy():
 
 
 def test_project_window_state_response_hides_tree_and_rounds_nested_floats():
+    capture_metadata = {
+        "capture_backend": "wgc",
+        "capture_reliability": "high",
+        "stage_timings": {"capture_total_latency": 0.123456789},
+    }
     response = {
         "success": True,
         "tree_markdown": "# full tree",
+        "node_count": 1,
+        "returned_node_count": 1,
+        "unfiltered_node_count": 2,
+        "merged_node_count": 2,
         "nodes": [
             {
                 "element_index": 1,
@@ -374,9 +383,23 @@ def test_project_window_state_response_hides_tree_and_rounds_nested_floats():
                 "center": [12.1234567, 34.7654321],
             }
         ],
-        "capture_metadata": {
-            "stage_timings": {"capture_total_latency": 0.123456789},
+        "state_text": "Window summary",
+        "agent_state": {
+            "text": "Window summary",
+            "text_limit": 500,
+            "truncated": False,
+            "node_sample_count": 1,
+            "nodes_truncated": False,
+            "recommended_next_step": "inspect nodes",
         },
+        "nodes_truncated": False,
+        "observation_recommendation": "inspect nodes",
+        "capture_metadata": capture_metadata,
+        "capture_reliability": "high",
+        "capture": {"capture_metadata": dict(capture_metadata)},
+        "provider_errors": {},
+        "semantic_degraded_reason": None,
+        "vision_metadata": {},
     }
 
     projected = project_window_state_response(
@@ -386,10 +409,26 @@ def test_project_window_state_response_hides_tree_and_rounds_nested_floats():
     )
 
     assert "tree_markdown" not in projected
+    assert "returned_node_count" not in projected
+    assert "merged_node_count" not in projected
+    assert projected["node_count"] == 1
+    assert projected["unfiltered_node_count"] == 2
+    assert projected["state_text"] == "Window summary"
+    assert projected["agent_state"] == {
+        "text_limit": 500,
+        "truncated": False,
+    }
+    assert "capture_metadata" not in projected
+    assert "capture_reliability" not in projected
+    assert "provider_errors" not in projected
+    assert "semantic_degraded_reason" not in projected
+    assert "vision_metadata" not in projected
     assert projected["nodes"][0]["confidence"] == 0.99
     assert projected["nodes"][0]["center"] == [12.12, 34.77]
     assert (
-        projected["capture_metadata"]["stage_timings"]["capture_total_latency"]
+        projected["capture"]["capture_metadata"]["stage_timings"][
+            "capture_total_latency"
+        ]
         == 0.12
     )
 

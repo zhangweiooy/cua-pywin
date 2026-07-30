@@ -200,10 +200,11 @@ to store complete window-full-res coordinates. Nodes include low-level
 `data.accessibility_hint` and `data.observation_recommendation` summarize
 whether UIA/MSAA semantics are sufficient, whether vision/OCR was needed, and
 whether callers should narrow with `query` or raise `max_nodes`.
-`data.agent_state` and `data.state_text` provide the default
-agent-facing observation summary. The text is capped by `agent_text_limit=500`
-by default; use `show_full_text=true` or raise `agent_text_limit` only when the
-compact state is insufficient. `tree_markdown` is omitted by default and is
+`data.state_text` provides the default agent-facing observation summary, while
+`data.agent_state` contains its truncation and sampling metadata without a
+duplicate text copy. The text is capped by `agent_text_limit=500` by default;
+use `show_full_text=true` or raise `agent_text_limit` only when the compact
+state is insufficient. `tree_markdown` is omitted by default and is
 returned only with `include_tree_markdown=true`. Use
 `response_mode="compact"` for a bounded 960-pixel, 30-node response without
 verbose capture/provider/vision diagnostics. Public window-state floats are
@@ -399,9 +400,9 @@ is internal replay metadata.
   comparison is worth an extra pre-action observation; then the result also
   includes `data.post_action_delta` summarizing node count, added/removed nodes,
   text changes, tree-quality changes, and before/after screenshot ids.
-- Window snapshots include `capture_metadata` with screenshot provenance,
+- Window snapshots include `capture.capture_metadata` with screenshot provenance,
   crop geometry, resize metadata, capture backend, fallback reason, and
-  explicit occlusion-risk warnings. `capture_metadata.stage_timings` includes
+  explicit occlusion-risk warnings. `capture.capture_metadata.stage_timings` includes
   bounds lookup, WGC attempt, fallback activation, screen capture, decode,
   crop/resize, and total capture latency. WGC backend timings additionally
   split item creation, D3D setup, session setup, frame wait, and texture

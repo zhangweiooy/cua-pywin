@@ -21,6 +21,10 @@ All notable changes to this project will be documented in this file.
   it explicitly with `include_tree_markdown=true`.
 - Round public window-state floating-point values to two decimal places while
   retaining full internal observation and coordinate precision.
+- Remove exact duplicate window-state fields from public data: keep
+  `state_text` as the single summary text, keep canonical node counts, and
+  expose capture diagnostics only under `capture.capture_metadata`. Empty
+  diagnostic fields are omitted.
 
 ### Fixed
 
