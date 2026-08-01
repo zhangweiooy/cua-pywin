@@ -533,14 +533,7 @@ function Remove-RuntimeBloat {
 
     $rapidOcrModels = Join-Path $Destination "rapidocr\models"
     if (Test-Path -LiteralPath $rapidOcrModels) {
-        Get-ChildItem -LiteralPath $rapidOcrModels -Recurse -File -Force |
-            Remove-Item -Force
-        Get-ChildItem -LiteralPath $rapidOcrModels -Recurse -Directory -Force |
-            Sort-Object { $_.FullName.Length } -Descending |
-            Remove-Item -Force -ErrorAction SilentlyContinue
-    }
-    else {
-        New-Item -ItemType Directory -Path $rapidOcrModels -Force | Out-Null
+        Remove-Item -LiteralPath $rapidOcrModels -Recurse -Force
     }
 
     $removeFiles = @()

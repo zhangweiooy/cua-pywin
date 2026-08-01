@@ -5,6 +5,7 @@ import sys
 import types
 
 import numpy as np
+import pytest
 from PIL import Image
 
 from som.ocr import DEFAULT_OCR_TIMEOUT_SECONDS, OCRProcessor
@@ -224,18 +225,29 @@ def test_rapidocr_uses_explicit_bundled_model_paths(monkeypatch, tmp_path):
     assert isinstance(reader, FakeRapidOCR)
     for key, name in expected_names.items():
         assert captured[key] == str(tmp_path / name)
+    assert captured["Global.model_root_dir"] == str(tmp_path)
     assert captured["Global.log_level"] == "error"
 
 
 def test_rapidocr_missing_bundled_model_fails_closed(monkeypatch, tmp_path):
+    constructor_called = False
+
+    def create_rapidocr(*, params):
+        nonlocal constructor_called
+        constructor_called = True
+        raise AssertionError(f"RapidOCR constructor must not be called: {params}")
+
+    monkeypatch.setitem(
+        sys.modules,
+        "rapidocr",
+        types.SimpleNamespace(RapidOCR=create_rapidocr),
+    )
     monkeypatch.setenv("CUA_RAPIDOCR_MODEL_DIR", str(tmp_path))
 
-    try:
-        OCRProcessor()._rapidocr_params()
-    except RuntimeError as exc:
-        assert "Bundled RapidOCR model files are missing" in str(exc)
-    else:
-        raise AssertionError("missing model bundle should fail initialization")
+    with pytest.raises(RuntimeError, match="Bundled RapidOCR model files are missing"):
+        OCRProcessor()._create_rapidocr_reader()
+
+    assert constructor_called is False
 
 
 def test_easyocr_developer_fallback_disables_download(monkeypatch):

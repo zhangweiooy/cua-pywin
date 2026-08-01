@@ -114,6 +114,7 @@ class OCRProcessor:
             key: str(path)
             for key, path in paths.items()
         }
+        params["Global.model_root_dir"] = str(model_dir)
         params["Global.log_level"] = os.getenv(
             "CUA_RAPIDOCR_LOG_LEVEL", "error"
         ).strip().lower()

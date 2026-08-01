@@ -92,7 +92,10 @@ def test_nuitka_uses_a_pruned_production_runtime_staging() -> None:
     assert '"--no-emit-project"' in script
     assert "New-ProductionRuntimeStaging" in script
     assert '"rapidocr\\models"' in script
-    assert "New-Item -ItemType Directory -Path $rapidOcrModels" in script
+    assert (
+        "Remove-Item -LiteralPath $rapidOcrModels -Recurse -Force" in script
+    )
+    assert "New-Item -ItemType Directory -Path $rapidOcrModels" not in script
     assert '"opencv_videoio_ffmpeg*.dll"' in script
     assert '"testing",' not in script
     assert '"--include-package=unittest"' in script

@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
 import threading
 import time
 import warnings
@@ -26,6 +27,105 @@ from computer_server.handlers.element_cache import CachedElement
 from computer_server.services.icon_caption_service import IconCaption
 
 logger = logging.getLogger(__name__)
+
+
+def _trace_id() -> str:
+    return f"{os.getpid()}-{time.monotonic_ns()}"
+
+
+def _exception_details(exc: BaseException) -> tuple[str, str, str]:
+    current = exc
+    messages = []
+    seen = set()
+    while id(current) not in seen:
+        seen.add(id(current))
+        messages.append(str(current))
+        next_exc = current.__cause__ or current.__context__
+        if next_exc is None:
+            break
+        current = next_exc
+
+    combined = " ".join(messages)
+    if "Bundled RapidOCR model files are missing" in combined:
+        error_code = "cua_rapidocr_bundle_missing"
+    elif "model_root_dir" in combined and "does not exist" in combined:
+        error_code = "rapidocr_model_root_missing"
+    else:
+        error_code = "unclassified"
+    return type(exc).__name__, type(current).__name__, error_code
+
+
+def _failure_fields(exc: BaseException) -> str:
+    error_type, root_error_type, error_code = _exception_details(exc)
+    return (
+        f" error_type={error_type} root_error_type={root_error_type}"
+        f" error_code={error_code}"
+    )
+
+
+def _log_complete(
+    *,
+    event: str,
+    trace_field: str,
+    trace_id: str,
+    started: float,
+    status: str,
+    level: int = logging.INFO,
+    details: str = "",
+) -> None:
+    logger.log(
+        level,
+        "event=%s %s=%s pid=%d total_duration_ms=%.2f status=%s%s",
+        event,
+        trace_field,
+        trace_id,
+        os.getpid(),
+        (time.perf_counter() - started) * 1000,
+        status,
+        details,
+    )
+
+
+def _timed_stage(
+    *,
+    event: str,
+    trace_field: str,
+    trace_id: str,
+    stage: str,
+    operation: Any,
+    details: str = "",
+) -> Any:
+    started = time.perf_counter()
+    try:
+        result = operation()
+    except Exception as exc:
+        error_type, root_error_type, error_code = _exception_details(exc)
+        logger.warning(
+            "event=%s %s=%s pid=%d stage=%s duration_ms=%.2f status=failed "
+            "error_type=%s root_error_type=%s error_code=%s%s",
+            event,
+            trace_field,
+            trace_id,
+            os.getpid(),
+            stage,
+            (time.perf_counter() - started) * 1000,
+            error_type,
+            root_error_type,
+            error_code,
+            details,
+        )
+        raise
+    logger.info(
+        "event=%s %s=%s pid=%d stage=%s duration_ms=%.2f status=ready%s",
+        event,
+        trace_field,
+        trace_id,
+        os.getpid(),
+        stage,
+        (time.perf_counter() - started) * 1000,
+        details,
+    )
+    return result
 
 
 # ---------------------------------------------------------------------------
@@ -54,6 +154,7 @@ _parser_state = "idle"  # idle | loading | ready | failed
 _parser_failure: Optional[str] = None
 _som_available: Optional[bool] = None
 _som_available_lock = threading.Lock()
+_latest_warmup_id: Optional[str] = None
 
 
 def _set_parser_state(state: str, failure: Optional[str] = None) -> None:
@@ -134,28 +235,80 @@ def warm_up() -> None:
     """
 
     def _init() -> None:
+        global _latest_warmup_id
+        warmup_id = _trace_id()
+        _latest_warmup_id = warmup_id
+        warmup_started = time.perf_counter()
+        logger.info(
+            "event=som_warmup_start warmup_id=%s pid=%d",
+            warmup_id,
+            os.getpid(),
+        )
 
         try:
             if not is_available():
-                logger.debug("SOM not available, skipping warm-up")
+                _log_complete(
+                    event="som_warmup_complete",
+                    trace_field="warmup_id",
+                    trace_id=warmup_id,
+                    started=warmup_started,
+                    status="unavailable",
+                )
                 return
             with _parser_condition:
                 if _parser_state in ("loading", "ready"):
-                    logger.debug("SOM warm-up skipped; state=%s", _parser_state)
+                    _log_complete(
+                        event="som_warmup_complete",
+                        trace_field="warmup_id",
+                        trace_id=warmup_id,
+                        started=warmup_started,
+                        status="skipped",
+                        details=f" parser_state={_parser_state}",
+                    )
                     return
                 _set_parser_state("loading")
-            logger.info("SOM available, starting background warm-up...")
 
             from concurrent.futures import ThreadPoolExecutor
 
-            parser = _get_parser()
-            logger.info("SOM parser singleton created; loading YOLO + OCR...")
+            parser = _timed_stage(
+                event="som_warmup_stage",
+                trace_field="warmup_id",
+                trace_id=warmup_id,
+                stage="parser",
+                operation=_get_parser,
+            )
 
             with _parse_lock:
                 captions_ready = False
+                ocr_backend = str(getattr(parser.ocr, "backend", "unknown"))
+                ocr_details = f" backend={ocr_backend}"
+                if ocr_backend == "rapidocr":
+                    model_dir = parser.ocr._rapidocr_model_dir()
+                    model_root_source = (
+                        "override" if os.getenv("CUA_RAPIDOCR_MODEL_DIR") else "bundled"
+                    )
+                    ocr_details += (
+                        f" model_root_source={model_root_source}"
+                        f" model_root_exists={str(model_dir.is_dir()).lower()}"
+                    )
                 with ThreadPoolExecutor(max_workers=2) as ex:
-                    f_yolo = ex.submit(parser.detector.load_model)
-                    f_ocr = ex.submit(parser.ocr._ensure_reader)
+                    f_yolo = ex.submit(
+                        _timed_stage,
+                        event="som_warmup_stage",
+                        trace_field="warmup_id",
+                        trace_id=warmup_id,
+                        stage="yolo",
+                        operation=parser.detector.load_model,
+                    )
+                    f_ocr = ex.submit(
+                        _timed_stage,
+                        event="som_warmup_stage",
+                        trace_field="warmup_id",
+                        trace_id=warmup_id,
+                        stage="rapidocr" if ocr_backend == "rapidocr" else "easyocr",
+                        operation=parser.ocr._ensure_reader,
+                        details=ocr_details,
+                    )
                     f_yolo.result()
                     f_ocr.result()
 
@@ -168,27 +321,55 @@ def warm_up() -> None:
                         warm_up as _warm_icon_captions,
                     )
 
-                    captions_ready = _warm_icon_captions()
+                    captions_ready = _timed_stage(
+                        event="som_warmup_stage",
+                        trace_field="warmup_id",
+                        trace_id=warmup_id,
+                        stage="florence2",
+                        operation=_warm_icon_captions,
+                    )
                     if not captions_ready:
                         logger.warning(
-                            "Florence-2 warm-up did not complete; "
-                            "SOM will continue without icon captions"
+                            "event=som_warmup_optional_backend warmup_id=%s pid=%d "
+                            "stage=florence2 status=unavailable",
+                            warmup_id,
+                            os.getpid(),
                         )
                 except Exception as icon_exc:
+                    error_type, root_error_type, error_code = _exception_details(icon_exc)
                     logger.warning(
-                        "Florence-2 warm-up failed; SOM will continue without "
-                        "icon captions: %s",
-                        icon_exc,
+                        "event=som_warmup_optional_backend warmup_id=%s pid=%d "
+                        "stage=florence2 status=failed error_type=%s "
+                        "root_error_type=%s error_code=%s",
+                        warmup_id,
+                        os.getpid(),
+                        error_type,
+                        root_error_type,
+                        error_code,
                     )
 
             _set_parser_state("ready")
-            logger.info(
-                "SOM OmniParser pre-warmed — YOLO + OCR ready; captions=%s",
-                "ready" if captions_ready else "unavailable",
+            _log_complete(
+                event="som_warmup_complete",
+                trace_field="warmup_id",
+                trace_id=warmup_id,
+                started=warmup_started,
+                status="ready",
+                details=(
+                    f" captions={'ready' if captions_ready else 'unavailable'}"
+                ),
             )
         except Exception as exc:
             _set_parser_state("failed", str(exc))
-            logger.warning("SOM pre-warm failed: %s", exc)
+            _log_complete(
+                event="som_warmup_complete",
+                trace_field="warmup_id",
+                trace_id=warmup_id,
+                started=warmup_started,
+                status="failed",
+                level=logging.WARNING,
+                details=_failure_fields(exc),
+            )
 
     t = threading.Thread(target=_init, name="som-warmup", daemon=True)
     t.start()
@@ -547,46 +728,143 @@ def detect_sync(
     runs on the calling thread.  Use this from async handlers to keep
     heavy ML imports off the event-loop thread.
     """
+    detect_id = _trace_id()
+    correlated_warmup_id = _latest_warmup_id or "none"
+    detect_started = time.perf_counter()
+    logger.info(
+        "event=som_detect_sync_start detect_id=%s warmup_id=%s pid=%d",
+        detect_id,
+        correlated_warmup_id,
+        os.getpid(),
+    )
     if not is_available():
-        logger.warning("SOM detect_sync: not available")
+        _log_complete(
+            event="som_detect_sync_complete",
+            trace_field="detect_id",
+            trace_id=detect_id,
+            started=detect_started,
+            status="unavailable",
+            level=logging.WARNING,
+        )
         return None
-    if not _wait_if_loading(timeout=30.0):
-        logger.info("SOM detect_sync: parser still warming up")
+    wait_started = time.perf_counter()
+    warmup_ready = _wait_if_loading(timeout=30.0)
+    wait_duration_ms = (time.perf_counter() - wait_started) * 1000
+    wait_state = parser_status()["state"]
+    logger.info(
+        "event=som_detect_sync_wait detect_id=%s pid=%d duration_ms=%.2f "
+        "status=%s parser_state=%s",
+        detect_id,
+        os.getpid(),
+        wait_duration_ms,
+        "ready" if warmup_ready else "timeout",
+        wait_state,
+    )
+    if not warmup_ready:
+        _log_complete(
+            event="som_detect_sync_complete",
+            trace_field="detect_id",
+            trace_id=detect_id,
+            started=detect_started,
+            status="warming_up",
+        )
         return VisionResult(elements=[], metadata={"status": "warming_up"})
 
     try:
         with _parser_condition:
             if _parser_state == "failed":
+                _log_complete(
+                    event="som_detect_sync_complete",
+                    trace_field="detect_id",
+                    trace_id=detect_id,
+                    started=detect_started,
+                    status="failed",
+                    level=logging.WARNING,
+                    details=" stage=warmup",
+                )
                 return VisionResult(elements=[], metadata={"status": "failed", "failure": _parser_failure})
             if _parser_state == "idle":
                 _set_parser_state("loading")
-        parser = _get_parser()
-    except Exception as exc:
-        _set_parser_state("failed", str(exc))
-        logger.warning("SOM detect_sync: parser init failed: %s", exc)
-        return None
-
-    try:
-        with _parse_lock:
-            result = parser.parse(
-                screenshot_bytes,
-                box_threshold=box_threshold,
-                use_ocr=use_ocr,
-            )
-        _set_parser_state("ready")
-        logger.info("SOM detect_sync: parse complete — %d elements", len(getattr(result, "elements", []) or []))
-    except Exception as exc:
-        logger.warning("SOM detect_sync: parse failed: %s", exc)
-        return None
-
-    try:
-        return _convert_parse_result(
-            result,
-            screenshot_bytes,
-            screen_width,
-            screen_height,
-            vision_index_start,
+        parser = _timed_stage(
+            event="som_detect_sync_stage",
+            trace_field="detect_id",
+            trace_id=detect_id,
+            stage="parser",
+            operation=_get_parser,
         )
     except Exception as exc:
-        logger.warning("Failed to convert SOM result: %s", exc)
+        _set_parser_state("failed", str(exc))
+        _log_complete(
+            event="som_detect_sync_complete",
+            trace_field="detect_id",
+            trace_id=detect_id,
+            started=detect_started,
+            status="failed",
+            level=logging.WARNING,
+            details=" stage=parser" + _failure_fields(exc),
+        )
+        return None
+
+    try:
+        def _parse() -> Any:
+            with _parse_lock:
+                return parser.parse(
+                    screenshot_bytes,
+                    box_threshold=box_threshold,
+                    use_ocr=use_ocr,
+                )
+
+        result = _timed_stage(
+            event="som_detect_sync_stage",
+            trace_field="detect_id",
+            trace_id=detect_id,
+            stage="parse",
+            operation=_parse,
+        )
+        _set_parser_state("ready")
+    except Exception as exc:
+        _log_complete(
+            event="som_detect_sync_complete",
+            trace_field="detect_id",
+            trace_id=detect_id,
+            started=detect_started,
+            status="failed",
+            level=logging.WARNING,
+            details=" stage=parse" + _failure_fields(exc),
+        )
+        return None
+
+    try:
+        converted = _timed_stage(
+            event="som_detect_sync_stage",
+            trace_field="detect_id",
+            trace_id=detect_id,
+            stage="convert",
+            operation=lambda: _convert_parse_result(
+                result,
+                screenshot_bytes,
+                screen_width,
+                screen_height,
+                vision_index_start,
+            ),
+        )
+        _log_complete(
+            event="som_detect_sync_complete",
+            trace_field="detect_id",
+            trace_id=detect_id,
+            started=detect_started,
+            status="ready",
+            details=f" element_count={len(converted.elements)}",
+        )
+        return converted
+    except Exception as exc:
+        _log_complete(
+            event="som_detect_sync_complete",
+            trace_field="detect_id",
+            trace_id=detect_id,
+            started=detect_started,
+            status="failed",
+            level=logging.WARNING,
+            details=" stage=convert" + _failure_fields(exc),
+        )
         return None
