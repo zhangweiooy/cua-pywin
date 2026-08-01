@@ -136,7 +136,8 @@ def test_nuitka_bundles_clean_environment_comtypes_uia_bindings() -> None:
         / "scripts"
         / "validate_standalone_som.ps1"
     ).read_text(encoding="utf-8")
-    assert '$env:CUA_OCR_TIMEOUT_SECONDS = $null' in som_smoke
+    assert '$env:CUA_OCR_TIMEOUT_SECONDS = "60"' in som_smoke
+    assert "without changing the runtime default" in som_smoke
     assert "force_som = $true" in som_smoke
     assert 'icon_semantic_status -ne "ready"' in som_smoke
     assert "[int]$vision.num_text -lt 1" in som_smoke

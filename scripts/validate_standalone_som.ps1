@@ -88,7 +88,10 @@ try {
 
     $env:APPDATA = $privateAppData
     $env:CUA_ENABLE_FLORENCE2 = "1"
-    $env:CUA_OCR_TIMEOUT_SECONDS = $null
+    # Single-core release runners can take more than the 20-second production
+    # budget on the first frozen RapidOCR inference. Keep this smoke bounded by
+    # the outer 300-second command timeout without changing the runtime default.
+    $env:CUA_OCR_TIMEOUT_SECONDS = "60"
     $env:CUA_SKIP_SOM_WARMUP = "1"
     $env:CUA_WIN_STATE_DIR = $stateRoot
     $env:HF_HOME = $hfHome
