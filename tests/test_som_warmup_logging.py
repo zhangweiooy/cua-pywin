@@ -121,6 +121,28 @@ def test_warmup_logs_rapidocr_root_failure_without_exception_text(
     assert som_bridge.parser_status()["state"] == "failed"
 
 
+def test_skipped_warmup_keeps_last_completed_correlation_id(monkeypatch, caplog):
+    monkeypatch.setattr(
+        som_bridge,
+        "threading",
+        SimpleNamespace(Thread=_ImmediateThread),
+    )
+    monkeypatch.setattr(som_bridge, "is_available", lambda: True)
+    monkeypatch.setattr(som_bridge, "_parser_state", "ready")
+    monkeypatch.setattr(som_bridge, "_latest_warmup_id", "completed-warmup")
+    caplog.set_level(logging.INFO, logger=som_bridge.__name__)
+
+    som_bridge.warm_up()
+
+    assert som_bridge._latest_warmup_id == "completed-warmup"
+    assert any(
+        "event=som_warmup_complete" in message
+        and "status=skipped" in message
+        and "parser_state=ready" in message
+        for message in _messages(caplog)
+    )
+
+
 def test_detect_sync_logs_wait_parse_convert_and_total(monkeypatch, caplog):
     parse_result = SimpleNamespace(elements=[])
     parser = SimpleNamespace(parse=lambda *args, **kwargs: parse_result)

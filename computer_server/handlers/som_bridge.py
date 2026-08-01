@@ -16,6 +16,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
+import re
 import threading
 import time
 import warnings
@@ -27,6 +28,18 @@ from computer_server.handlers.element_cache import CachedElement
 from computer_server.services.icon_caption_service import IconCaption
 
 logger = logging.getLogger(__name__)
+
+_ADVISORY_ONLY_CAPTION_WORDS = {
+    "box",
+    "button",
+    "circle",
+    "icon",
+    "outline",
+    "rectangle",
+    "shape",
+    "square",
+    "symbol",
+}
 
 
 def _trace_id() -> str:
@@ -237,7 +250,6 @@ def warm_up() -> None:
     def _init() -> None:
         global _latest_warmup_id
         warmup_id = _trace_id()
-        _latest_warmup_id = warmup_id
         warmup_started = time.perf_counter()
         logger.info(
             "event=som_warmup_start warmup_id=%s pid=%d",
@@ -267,6 +279,7 @@ def warm_up() -> None:
                     )
                     return
                 _set_parser_state("loading")
+                _latest_warmup_id = warmup_id
 
             from concurrent.futures import ThreadPoolExecutor
 
@@ -411,6 +424,7 @@ def _element_to_cached(
         "semantic_collision_role",
         "semantic_uncertainty",
         "semantic_resolution",
+        "semantic_alternatives",
     ):
         if key in arbitration_metadata:
             metadata[key] = arbitration_metadata[key]
@@ -527,6 +541,14 @@ def _label_icon_elements(
         return {}, "inference_failed"
 
 
+def _caption_supports_icon_preference(caption: Optional[IconCaption]) -> bool:
+    """Require a specific caption before preferring an icon over OCR."""
+    if caption is None or caption.label is None:
+        return False
+    words = re.findall(r"[a-z0-9]+", caption.label.casefold())
+    return any(word not in _ADVISORY_ONLY_CAPTION_WORDS for word in words)
+
+
 def _convert_parse_result(
     result: Any,
     screenshot_bytes: bytes,
@@ -549,9 +571,28 @@ def _convert_parse_result(
         for raw_pos, elem in enumerate(raw_elements)
         if getattr(elem, "type", None) == "icon"
         and (getattr(elem, "metadata", {}) or {}).get("semantic_collision_id")
-        and icon_captions.get(raw_pos) is not None
-        and icon_captions[raw_pos].label is not None
+        and _caption_supports_icon_preference(icon_captions.get(raw_pos))
     }
+    collision_text_alternatives: Dict[str, List[Dict[str, Any]]] = {}
+    for elem in raw_elements:
+        elem_metadata = dict(getattr(elem, "metadata", {}) or {})
+        collision_id = elem_metadata.get("semantic_collision_id")
+        if not collision_id or getattr(elem, "type", None) != "text":
+            continue
+        alternatives = collision_text_alternatives.setdefault(str(collision_id), [])
+        if len(alternatives) >= 3:
+            continue
+        alternative: Dict[str, Any] = {
+            "control_type": "text",
+            "name": str(getattr(elem, "content", "") or "")[:16],
+        }
+        confidence = getattr(elem, "confidence", None)
+        if confidence is not None:
+            try:
+                alternative["confidence"] = float(confidence)
+            except (TypeError, ValueError):
+                pass
+        alternatives.append(alternative)
 
     stage_start = time.perf_counter()
     cached: List[CachedElement] = []
@@ -568,9 +609,14 @@ def _convert_parse_result(
             ):
                 continue
             if collision_id and str(collision_id) in resolved_collision_ids:
-                arbitration_metadata.pop("semantic_uncertainty", None)
                 arbitration_metadata["semantic_resolution"] = (
-                    "icon_with_yolo_and_florence_evidence"
+                    "icon_preferred_with_yolo_and_florence_evidence"
+                )
+                arbitration_metadata["semantic_uncertainty"] = (
+                    "ocr_icon_collision_advisory_resolution"
+                )
+                arbitration_metadata["semantic_alternatives"] = (
+                    collision_text_alternatives.get(str(collision_id), [])
                 )
                 elem.metadata = arbitration_metadata
             cached.append(
@@ -588,6 +634,12 @@ def _convert_parse_result(
             continue
 
     metadata = _build_metadata(result)
+    metadata["num_icons"] = sum(
+        1 for element in cached if element.control_type == "icon"
+    )
+    metadata["num_text"] = sum(
+        1 for element in cached if element.control_type == "text"
+    )
     stage_timings = dict(metadata.get("stage_timings", {}) or {})
     stage_timings["tinyclip_latency"] = 0.0
     stage_timings["florence2_latency"] = icon_semantic_latency

@@ -96,12 +96,55 @@ def test_bridge_uses_florence_as_additional_evidence_for_ambiguous_icon(monkeypa
     assert node.metadata["icon_label_source"] == "omniparser_v2_florence2"
     assert (
         node.metadata["semantic_resolution"]
-        == "icon_with_yolo_and_florence_evidence"
+        == "icon_preferred_with_yolo_and_florence_evidence"
     )
+    assert (
+        node.metadata["semantic_uncertainty"]
+        == "ocr_icon_collision_advisory_resolution"
+    )
+    assert node.metadata["semantic_alternatives"] == [
+        {"control_type": "text", "name": "口", "confidence": 0.79}
+    ]
+    assert converted.metadata["num_icons"] == 1
+    assert converted.metadata["num_text"] == 0
     assert converted.metadata["raw_icon_count"] == 1
     assert converted.metadata["raw_text_count"] == 1
     assert converted.metadata["ocr_icon_collision_count"] == 1
     assert converted.metadata["ambiguous_collisions_preserved"] == 1
+
+
+def test_generic_florence_caption_keeps_true_single_character_ocr(monkeypatch):
+    parser = _parser([_file_icon()], [_ocr("中", 0.9)])
+    _, screenshot_bytes = _image_and_bytes()
+    result = parser.parse(screenshot_bytes, use_ocr=True)
+    icon_position = next(
+        i for i, element in enumerate(result.elements) if element.type == "icon"
+    )
+    monkeypatch.setattr(
+        som_bridge,
+        "_label_icon_elements",
+        lambda *_args, **_kwargs: (
+            {
+                icon_position: IconCaption(
+                    raw_caption="a square button",
+                    normalized_label="square",
+                )
+            },
+            "ready",
+        ),
+    )
+
+    converted = som_bridge._convert_parse_result(
+        result, screenshot_bytes, 100, 100, vision_index_start=10000
+    )
+
+    assert {node.control_type for node in converted.elements} == {"icon", "text"}
+    text_node = next(
+        node for node in converted.elements if node.control_type == "text"
+    )
+    assert text_node.name == "中"
+    assert converted.metadata["num_icons"] == 1
+    assert converted.metadata["num_text"] == 1
 
 
 def test_clear_search_text_suppresses_overlapping_duplicate_icon():
