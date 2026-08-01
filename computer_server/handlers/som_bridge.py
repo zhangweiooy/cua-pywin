@@ -224,6 +224,15 @@ def _element_to_cached(
     confidence = getattr(elem, "confidence", None)
 
     metadata: Dict[str, Any] = {}
+    arbitration_metadata = dict(getattr(elem, "metadata", {}) or {})
+    for key in (
+        "semantic_collision_id",
+        "semantic_collision_role",
+        "semantic_uncertainty",
+        "semantic_resolution",
+    ):
+        if key in arbitration_metadata:
+            metadata[key] = arbitration_metadata[key]
     if confidence is not None:
         try:
             metadata["vision_confidence"] = float(confidence)
@@ -354,12 +363,35 @@ def _convert_parse_result(
     )
     icon_semantic_latency = time.perf_counter() - stage_start
 
+    resolved_collision_ids = {
+        str((getattr(elem, "metadata", {}) or {}).get("semantic_collision_id"))
+        for raw_pos, elem in enumerate(raw_elements)
+        if getattr(elem, "type", None) == "icon"
+        and (getattr(elem, "metadata", {}) or {}).get("semantic_collision_id")
+        and icon_captions.get(raw_pos) is not None
+        and icon_captions[raw_pos].label is not None
+    }
+
     stage_start = time.perf_counter()
     cached: List[CachedElement] = []
     next_index = vision_index_start
 
     for raw_pos, elem in enumerate(raw_elements):
         try:
+            arbitration_metadata = dict(getattr(elem, "metadata", {}) or {})
+            collision_id = arbitration_metadata.get("semantic_collision_id")
+            if (
+                collision_id
+                and str(collision_id) in resolved_collision_ids
+                and getattr(elem, "type", None) == "text"
+            ):
+                continue
+            if collision_id and str(collision_id) in resolved_collision_ids:
+                arbitration_metadata.pop("semantic_uncertainty", None)
+                arbitration_metadata["semantic_resolution"] = (
+                    "icon_with_yolo_and_florence_evidence"
+                )
+                elem.metadata = arbitration_metadata
             cached.append(
                 _element_to_cached(
                     elem,
@@ -409,6 +441,17 @@ def _build_metadata(result: Any) -> Dict[str, Any]:
         "latency": getattr(md, "latency", None),
         "device": getattr(md, "device", None),
         "stage_timings": dict(getattr(md, "stage_timings", {}) or {}),
+        "raw_icon_count": int(getattr(md, "raw_icon_count", num_icons) or 0),
+        "raw_text_count": int(getattr(md, "raw_text_count", num_text) or 0),
+        "ocr_icon_collision_count": int(
+            getattr(md, "ocr_icon_collision_count", 0) or 0
+        ),
+        "icons_suppressed_by_ocr": int(
+            getattr(md, "icons_suppressed_by_ocr", 0) or 0
+        ),
+        "ambiguous_collisions_preserved": int(
+            getattr(md, "ambiguous_collisions_preserved", 0) or 0
+        ),
     }
 
 

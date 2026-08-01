@@ -30,6 +30,11 @@ class UIElement(BaseModel):
     bbox: BoundingBox
     interactivity: bool = Field(default=False, description="Whether the element is interactive")
     confidence: float = Field(default=1.0, description="Detection confidence score")
+    metadata: Dict[str, Any] = Field(
+        default_factory=dict,
+        exclude=True,
+        description="Bounded internal metadata used while resolving cross-modal semantics",
+    )
 
 
 class IconElement(UIElement):
@@ -77,6 +82,14 @@ class ParserMetadata(BaseModel):
     stage_timings: Dict[str, float] = Field(
         default_factory=dict,
         description="Per-stage latency timings in seconds",
+    )
+    raw_icon_count: int = Field(default=0, description="YOLO candidates before OCR arbitration")
+    raw_text_count: int = Field(default=0, description="OCR candidates before arbitration")
+    ocr_icon_collision_count: int = Field(default=0, description="Overlapping OCR/icon pairs")
+    icons_suppressed_by_ocr: int = Field(default=0, description="Icons suppressed by clear OCR text")
+    ambiguous_collisions_preserved: int = Field(
+        default=0,
+        description="Ambiguous OCR/icon pairs preserved for semantic captioning",
     )
 
     @property

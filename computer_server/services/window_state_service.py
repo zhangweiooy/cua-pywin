@@ -1604,6 +1604,9 @@ def merge_som_vision(
     crop_origin_window_y: int,
     cache: Any,
     uia_quality: str,
+    *,
+    target_family: str = "",
+    existing_nodes: Optional[List[Dict[str, Any]]] = None,
 ) -> Dict[str, Any]:
     """Run SOM detection and merge vision nodes into the element cache."""
     try:
@@ -1621,6 +1624,39 @@ def merge_som_vision(
         )
         if vision_result is None or not vision_result.elements:
             return {"nodes": [], "vision_node_count": 0, "vision_quality": "empty"}
+
+        vision_metadata = dict(getattr(vision_result, "metadata", {}) or {})
+        compose_diagnostics: Dict[str, Any] = {
+            "compose_region_count": 0,
+            "compose_candidate_count": 0,
+            "compose_layout_latency": 0.0,
+        }
+        if target_family == "wechat":
+            try:
+                from computer_server.services.wechat_compose_service import (
+                    detect_wechat_compose_region,
+                )
+
+                compose_detection = detect_wechat_compose_region(
+                    img,
+                    vision_result.elements,
+                    target_family=target_family,
+                    existing_nodes=existing_nodes or (),
+                )
+                compose_diagnostics.update(compose_detection.diagnostics)
+                if compose_detection.element is not None:
+                    vision_result.elements.append(compose_detection.element)
+            except Exception:
+                logger.debug(
+                    "WeChat compose-region detection skipped",
+                    exc_info=True,
+                )
+        vision_metadata.update(compose_diagnostics)
+        stage_timings = dict(vision_metadata.get("stage_timings") or {})
+        stage_timings["compose_layout_latency"] = compose_diagnostics[
+            "compose_layout_latency"
+        ]
+        vision_metadata["stage_timings"] = stage_timings
 
         z = compression_ratio
         for el in vision_result.elements:
@@ -1674,7 +1710,7 @@ def merge_som_vision(
             "nodes": nodes,
             "vision_node_count": len(vision_result.elements),
             "vision_quality": classify_tree_quality(len(vision_result.elements)),
-            "vision_metadata": vision_result.metadata,
+            "vision_metadata": vision_metadata,
         }
     except Exception as e:
         logger.warning("SOM vision detection skipped: %s", e, exc_info=True)
@@ -2077,6 +2113,14 @@ async def get_window_state_snapshot(
         capture_metadata = capture_result["capture_metadata"]
         window_capture_state = capture_result["window_capture_state"]
 
+        from computer_server.services.target_profile_service import classify_target_profile
+
+        target_profile = classify_target_profile(
+            pid=pid,
+            window_id=window_id,
+            class_name=window_capture_state.get("class_name"),
+        )
+
         zoom_metadata = zoom_metadata if zoom_metadata is not None else {}
         zoom_entry = geometry.to_zoom_metadata()
         zoom_entry["capture_backend"] = capture_metadata.get("capture_backend")
@@ -2156,6 +2200,11 @@ async def get_window_state_snapshot(
         )
 
         if force_som or tree_quality in ("poor", "empty"):
+            existing_nodes_for_compose = (
+                project_nodes_to_window_resized(nodes, geometry)
+                if target_profile.family == "wechat"
+                else []
+            )
             vision_data = merge_som_vision(
                 img,
                 pid,
@@ -2167,6 +2216,8 @@ async def get_window_state_snapshot(
                 geometry.crop_origin_window_y,
                 cache,
                 tree_quality,
+                target_family=target_profile.family,
+                existing_nodes=existing_nodes_for_compose,
             )
             nodes.extend(vision_data["nodes"])
             vision_node_count = vision_data["vision_node_count"]
@@ -2204,14 +2255,6 @@ async def get_window_state_snapshot(
         )
         if semantic_degraded_reason is None and msaa_data.get("degraded_reason"):
             semantic_degraded_reason = str(msaa_data["degraded_reason"])
-
-        from computer_server.services.target_profile_service import classify_target_profile
-
-        target_profile = classify_target_profile(
-            pid=pid,
-            window_id=window_id,
-            class_name=window_capture_state.get("class_name"),
-        )
 
         screenshot_field = save_window_state_screenshot(
             img,

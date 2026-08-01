@@ -50,6 +50,125 @@ from .visualization import BoxAnnotator
 
 logger = logging.getLogger(__name__)
 
+_ICON_COLLISION_MIN_CONFIDENCE = 0.3
+_OCR_ICON_OVERLAP_THRESHOLD = 0.6
+
+
+def _intersection_over_area(first: UIElement, second: UIElement) -> float:
+    """Return intersection divided by the smaller element area."""
+    left = max(first.bbox.x1, second.bbox.x1)
+    top = max(first.bbox.y1, second.bbox.y1)
+    right = min(first.bbox.x2, second.bbox.x2)
+    bottom = min(first.bbox.y2, second.bbox.y2)
+    intersection = max(0.0, right - left) * max(0.0, bottom - top)
+    first_area = max(0.0, first.bbox.x2 - first.bbox.x1) * max(
+        0.0, first.bbox.y2 - first.bbox.y1
+    )
+    second_area = max(0.0, second.bbox.x2 - second.bbox.x1) * max(
+        0.0, second.bbox.y2 - second.bbox.y1
+    )
+    smaller_area = min(first_area, second_area)
+    return intersection / smaller_area if smaller_area > 0 else 0.0
+
+
+def _has_neighboring_text(text: TextElement, candidates: List[UIElement]) -> bool:
+    """Whether an OCR fragment has a close, line-aligned neighbor that can form text."""
+    text_height = max(0.0, text.bbox.y2 - text.bbox.y1)
+    for candidate in candidates:
+        if candidate is text or not isinstance(candidate, TextElement):
+            continue
+        vertical_overlap = max(
+            0.0,
+            min(text.bbox.y2, candidate.bbox.y2)
+            - max(text.bbox.y1, candidate.bbox.y1),
+        )
+        candidate_height = max(0.0, candidate.bbox.y2 - candidate.bbox.y1)
+        min_height = min(text_height, candidate_height)
+        if min_height <= 0 or vertical_overlap / min_height < 0.5:
+            continue
+        horizontal_gap = max(
+            0.0,
+            max(text.bbox.x1, candidate.bbox.x1)
+            - min(text.bbox.x2, candidate.bbox.x2),
+        )
+        if horizontal_gap <= max(text_height, candidate_height) * 0.75:
+            return True
+    return False
+
+
+def _is_ambiguous_short_ocr(text: TextElement, candidates: List[UIElement]) -> bool:
+    """Identify isolated, compact OCR glyphs without using a character blacklist."""
+    content = text.content.strip()
+    if len(content) != 1 or _has_neighboring_text(text, candidates):
+        return False
+    width = max(0.0, text.bbox.x2 - text.bbox.x1)
+    height = max(0.0, text.bbox.y2 - text.bbox.y1)
+    if width <= 0 or height <= 0:
+        return False
+    aspect_ratio = width / height
+    return 0.5 <= aspect_ratio <= 2.0
+
+
+def _arbitrate_ocr_icon_collisions(
+    icons: List[UIElement],
+    texts: List[UIElement],
+) -> tuple[List[UIElement], set[int], Dict[str, int]]:
+    """Suppress clear duplicate icons and protect ambiguous pairs for Florence."""
+    diagnostics = {
+        "raw_icon_count": len(icons),
+        "raw_text_count": len(texts),
+        "ocr_icon_collision_count": 0,
+        "icons_suppressed_by_ocr": 0,
+        "ambiguous_collisions_preserved": 0,
+    }
+    protected_ids: set[int] = set()
+    retained_icons: List[UIElement] = []
+    collision_sequence = 0
+
+    for icon in icons:
+        collisions = [
+            text
+            for text in texts
+            if _intersection_over_area(icon, text) >= _OCR_ICON_OVERLAP_THRESHOLD
+        ]
+        diagnostics["ocr_icon_collision_count"] += len(collisions)
+        if not collisions:
+            retained_icons.append(icon)
+            continue
+
+        ambiguous = (
+            icon.interactivity
+            and icon.confidence >= _ICON_COLLISION_MIN_CONFIDENCE
+            and all(_is_ambiguous_short_ocr(text, texts) for text in collisions)
+        )
+        if not ambiguous:
+            diagnostics["icons_suppressed_by_ocr"] += 1
+            continue
+
+        collision_sequence += 1
+        collision_id = f"ocr-icon-{collision_sequence}"
+        icon.metadata.update(
+            {
+                "semantic_collision_id": collision_id,
+                "semantic_collision_role": "icon",
+                "semantic_uncertainty": "ocr_icon_collision",
+            }
+        )
+        protected_ids.add(id(icon))
+        for text in collisions:
+            text.metadata.update(
+                {
+                    "semantic_collision_id": collision_id,
+                    "semantic_collision_role": "text",
+                    "semantic_uncertainty": "ocr_icon_collision",
+                }
+            )
+            protected_ids.add(id(text))
+        diagnostics["ambiguous_collisions_preserved"] += len(collisions)
+        retained_icons.append(icon)
+
+    return retained_icons, protected_ids, diagnostics
+
 
 
 
@@ -77,6 +196,7 @@ class OmniParser:
         self.ocr = OCRProcessor(languages=ocr_languages)
         self.visualizer = BoxAnnotator()
         self._last_stage_timings: Dict[str, float] = {}
+        self._last_collision_diagnostics: Dict[str, int] = {}
 
     def process_image(
         self,
@@ -108,6 +228,13 @@ class OmniParser:
             )
             stage_timings["yolo_latency"] = time.perf_counter() - stage_start
             logger.info(f"Found {len(icon_detections)} interactive elements")
+            self._last_collision_diagnostics = {
+                "raw_icon_count": len(icon_detections),
+                "raw_text_count": 0,
+                "ocr_icon_collision_count": 0,
+                "icons_suppressed_by_ocr": 0,
+                "ambiguous_collisions_preserved": 0,
+            }
 
             # Convert icon detections to typed objects
             elements: List[UIElement] = cast(
@@ -159,38 +286,27 @@ class OmniParser:
                 )
 
                 if elements and text_elements:
-                    # Filter out non-OCR elements that have OCR elements with center points colliding with them
-                    filtered_elements = []
-                    for elem in elements:  # elements at this point contains only non-OCR elements
-                        should_keep = True
-                        for text_elem in text_elements:
-                            # Calculate center point of the text element
-                            center_x = (text_elem.bbox.x1 + text_elem.bbox.x2) / 2
-                            center_y = (text_elem.bbox.y1 + text_elem.bbox.y2) / 2
-
-                            # Check if this center point is inside the non-OCR element
-                            if (
-                                center_x >= elem.bbox.x1
-                                and center_x <= elem.bbox.x2
-                                and center_y >= elem.bbox.y1
-                                and center_y <= elem.bbox.y2
-                            ):
-                                should_keep = False
-                                break
-
-                        if should_keep:
-                            filtered_elements.append(elem)
-                    elements = filtered_elements
+                    elements, protected_ids, collision_diagnostics = (
+                        _arbitrate_ocr_icon_collisions(elements, text_elements)
+                    )
+                    self._last_collision_diagnostics = collision_diagnostics
 
                     # Merge detections using NMS
                     all_elements = elements + text_elements
                     boxes = torch.tensor([elem.bbox.coordinates for elem in all_elements])
                     scores = torch.tensor([elem.confidence for elem in all_elements])
                     keep_indices = torchvision.ops.nms(boxes, scores, iou_threshold)
-                    elements = [all_elements[i] for i in keep_indices]
+                    kept_positions = {int(i) for i in keep_indices}
+                    kept_positions.update(
+                        i for i, elem in enumerate(all_elements) if id(elem) in protected_ids
+                    )
+                    elements = [
+                        elem for i, elem in enumerate(all_elements) if i in kept_positions
+                    ]
                 else:
                     # Just add text elements to the list if IOU doesn't need to be applied
                     elements.extend(text_elements)
+                    self._last_collision_diagnostics["raw_text_count"] = len(text_elements)
                 stage_timings["merge_latency"] = time.perf_counter() - stage_start
             else:
                 stage_timings["ocr_latency"] = 0.0
@@ -338,6 +454,7 @@ class OmniParser:
                     ocr_enabled=use_ocr,
                     latency=latency,
                     stage_timings=stage_timings,
+                    **self._last_collision_diagnostics,
                 ),
             )
 
