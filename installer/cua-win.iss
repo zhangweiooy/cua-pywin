@@ -121,18 +121,22 @@ var
   Remaining: string;
   Item: string;
   Semi: Integer;
+  HasMore: Boolean;
+  FirstOutput: Boolean;
 begin
   Result := '';
   Remaining := PathValue;
   Dir := NormalizePath(Dir);
+  FirstOutput := True;
 
-  while Remaining <> '' do
-  begin
+  repeat
+    HasMore := False;
     Semi := Pos(';', Remaining);
     if Semi > 0 then
     begin
       Item := Copy(Remaining, 1, Semi - 1);
       Delete(Remaining, 1, Semi);
+      HasMore := True;
     end
     else
     begin
@@ -140,11 +144,16 @@ begin
       Remaining := '';
     end;
 
-    if (Item <> '') and (CompareText(NormalizePath(Item), Dir) <> 0) then
+    if CompareText(NormalizePath(Item), Dir) <> 0 then
     begin
-      Result := AppendPathPart(Result, Item);
+      if not FirstOutput then
+      begin
+        Result := Result + ';';
+      end;
+      Result := Result + Item;
+      FirstOutput := False;
     end;
-  end;
+  until not HasMore;
 end;
 
 procedure AddToUserPath(Dir: string);

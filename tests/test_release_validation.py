@@ -163,6 +163,9 @@ def test_installer_build_requires_clean_environment_lifecycle() -> None:
     build_script = (root / "scripts" / "build_installer.ps1").read_text(
         encoding="utf-8"
     )
+    installer_script = (root / "installer" / "cua-win.iss").read_text(
+        encoding="utf-8"
+    )
     validator = (root / "scripts" / "validate_installer.ps1").read_text(
         encoding="utf-8"
     )
@@ -183,6 +186,9 @@ def test_installer_build_requires_clean_environment_lifecycle() -> None:
     assert "Refusing to replace an existing cua-win installation" in validator
     assert "Uninstaller did not remove the installation directory" in validator
     assert "changed the current user's PATH" in validator
+    assert "FirstOutput: Boolean;" in installer_script
+    assert "if not FirstOutput then" in installer_script
+    assert "until not HasMore;" in installer_script
 
 
 def test_validate_source_models_rejects_lfs_pointer(
