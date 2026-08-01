@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 import statistics
 
 import pytest
@@ -272,7 +273,10 @@ def test_existing_semantic_edit_suppresses_synthetic_duplicate():
     assert result.element is None
 
 
-def test_merge_adds_compose_to_cache_and_preserves_public_projection(monkeypatch):
+def test_merge_adds_compose_to_cache_and_preserves_public_projection(
+    monkeypatch,
+    caplog,
+):
     import computer_server.handlers.som_bridge as som_bridge
 
     image, elements, _ = _wechat_fixture()
@@ -294,6 +298,7 @@ def test_merge_adds_compose_to_cache_and_preserves_public_projection(monkeypatch
             self.quality = quality
 
     cache = FakeCache()
+    caplog.set_level(logging.INFO, logger=window_state_service.__name__)
     result = window_state_service.merge_som_vision(
         image,
         pid=1,
@@ -312,8 +317,20 @@ def test_merge_adds_compose_to_cache_and_preserves_public_projection(monkeypatch
     edit_node = next(node for node in result["nodes"] if node["control_type"] == "edit")
     cached_edit = next(element for element in cache.elements if element.control_type == "edit")
     assert edit_node["element_index"] == cached_edit.element_index
-    assert result["vision_metadata"]["compose_region_count"] == 1
-    assert result["vision_metadata"]["stage_timings"]["compose_layout_latency"] > 0
+    assert "compose_region_count" not in result["vision_metadata"]
+    assert (
+        "compose_layout_latency"
+        not in result["vision_metadata"].get("stage_timings", {})
+    )
+    compose_logs = [
+        record.getMessage()
+        for record in caplog.records
+        if "event=wechat_compose_detection" in record.getMessage()
+    ]
+    assert len(compose_logs) == 1
+    assert "status=matched" in compose_logs[0]
+    assert "candidate_count=" in compose_logs[0]
+    assert "latency_ms=" in compose_logs[0]
 
     enriched = window_state_service.enrich_nodes_with_action_hints(result["nodes"])
     enriched_edit = next(node for node in enriched if node["control_type"] == "edit")

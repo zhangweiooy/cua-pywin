@@ -1626,11 +1626,6 @@ def merge_som_vision(
             return {"nodes": [], "vision_node_count": 0, "vision_quality": "empty"}
 
         vision_metadata = dict(getattr(vision_result, "metadata", {}) or {})
-        compose_diagnostics: Dict[str, Any] = {
-            "compose_region_count": 0,
-            "compose_candidate_count": 0,
-            "compose_layout_latency": 0.0,
-        }
         if target_family == "wechat":
             try:
                 from computer_server.services.wechat_compose_service import (
@@ -1643,20 +1638,26 @@ def merge_som_vision(
                     target_family=target_family,
                     existing_nodes=existing_nodes or (),
                 )
-                compose_diagnostics.update(compose_detection.diagnostics)
+                compose_diagnostics = compose_detection.diagnostics
+                logger.info(
+                    "event=wechat_compose_detection pid=%d window_id=%d "
+                    "status=%s candidate_count=%d latency_ms=%.2f",
+                    pid,
+                    window_id,
+                    "matched" if compose_detection.element is not None else "not_matched",
+                    int(compose_diagnostics.get("compose_candidate_count", 0) or 0),
+                    float(compose_diagnostics.get("compose_layout_latency", 0.0) or 0.0)
+                    * 1000,
+                )
                 if compose_detection.element is not None:
                     vision_result.elements.append(compose_detection.element)
             except Exception:
                 logger.debug(
-                    "WeChat compose-region detection skipped",
+                    "event=wechat_compose_detection pid=%d window_id=%d status=failed",
+                    pid,
+                    window_id,
                     exc_info=True,
                 )
-        vision_metadata.update(compose_diagnostics)
-        stage_timings = dict(vision_metadata.get("stage_timings") or {})
-        stage_timings["compose_layout_latency"] = compose_diagnostics[
-            "compose_layout_latency"
-        ]
-        vision_metadata["stage_timings"] = stage_timings
 
         z = compression_ratio
         for el in vision_result.elements:
