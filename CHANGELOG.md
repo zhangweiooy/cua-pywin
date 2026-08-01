@@ -4,6 +4,25 @@ All notable changes to this project will be documented in this file.
 
 ## Unreleased
 
+## 0.2.7 - 2026-08-01
+
+### Added
+
+- Detect the bounded WeChat message composition region from its subtle border
+  and bottom-toolbar anchors, exposing it as a cached visual edit node.
+- Report bounded OCR/icon collision, WeChat composition, and SOM warm-up
+  diagnostics without logging screenshots or recognized text.
+
+### Fixed
+
+- Preserve plausible interactive icons when isolated shape-like OCR collides
+  with them, while retaining overlapping real text and delaying icon semantics
+  to Florence-2.
+- Initialize RapidOCR with the explicit bundled model root and prune its entire
+  package-default model directory from Nuitka output.
+- Keep Florence-captioned icons actionable and preserve icon candidates through
+  cross-type suppression when an OCR/icon collision is ambiguous.
+
 ## 0.2.6 - 2026-07-30
 
 ### Added

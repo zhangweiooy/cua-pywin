@@ -6,7 +6,7 @@ on:
       version:
         description: Candidate version without a leading v
         required: true
-        default: "0.2.6"
+        default: "0.2.7"
   push:
     tags:
       - "v*"
