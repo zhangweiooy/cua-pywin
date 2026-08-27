@@ -4,6 +4,17 @@ All notable changes to this project will be documented in this file.
 
 ## Unreleased
 
+## 0.2.8 - 2026-08-27
+
+### Fixed
+
+- Load Chromium WebContents accessibility nodes during the first observation
+  when the top-level UIA tree is still shell-only.
+- Bound degraded Chromium accessibility retries with exponential backoff while
+  keeping the ready hot path to a single tree walk.
+- Classify UIA tree quality from retained semantic nodes so shell-only trees do
+  not incorrectly suppress the existing SOM fallback.
+
 ## 0.2.7 - 2026-08-01
 
 ### Added
