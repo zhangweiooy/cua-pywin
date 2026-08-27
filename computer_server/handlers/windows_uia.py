@@ -12,10 +12,14 @@ from __future__ import annotations
 import logging
 import sys
 import threading
+import time
 from dataclasses import dataclass, field
 from typing import Any, Callable, Dict, List, Optional, Set, Tuple
 
-from computer_server.handlers.control_types import CONTROL_TYPE_NAMES, uia_control_type_name
+from computer_server.handlers.control_types import (
+    CONTROL_TYPE_NAMES,
+    uia_control_type_name,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -141,6 +145,7 @@ else:
 
     import ctypes
     import comtypes
+    import win32gui
     from comtypes import COMError
 
     # Note on COM call timeouts:
@@ -195,6 +200,7 @@ else:
     # comtypes 1.4.x lazy-loads submodules — explicit import required.
     try:
         import comtypes.client  # noqa: F811
+
         comtypes.client.GetModule("UIAutomationCore.dll")
         from comtypes.gen import UIAutomationClient as UIA  # type: ignore
     except Exception as exc:
@@ -265,6 +271,11 @@ else:
         "AppBar",
     }
 
+    _CHROMIUM_TOP_LEVEL_CLASS_PREFIX = "Chrome_WidgetWin_"
+    _CHROMIUM_RENDER_WIDGET_CLASS = "Chrome_RenderWidgetHostHWND"
+    _CHROMIUM_CONTENT_RETRY_INTERVAL_SECONDS = 0.1
+    _CHROMIUM_CONTENT_RETRY_TIMEOUT_SECONDS = 2.0
+
     # -------------------------------------------------------------------
     # Helpers
     # -------------------------------------------------------------------
@@ -285,7 +296,9 @@ else:
         except (COMError, AttributeError, ValueError, TypeError):
             pass
         try:
-            return _com_call(lambda: element.GetCurrentPropertyValue(prop_id), default=default)
+            return _com_call(
+                lambda: element.GetCurrentPropertyValue(prop_id), default=default
+            )
         except (COMError, AttributeError, ValueError, TypeError):
             return default
 
@@ -666,7 +679,12 @@ else:
             return True
         # Some apps use "Custom" for WPF Border/Grid containers.
         # Treat Custom as layout-only when it has no identity at all.
-        if node.control_type == "Custom" and not node.name and not node.value and not node.automation_id:
+        if (
+            node.control_type == "Custom"
+            and not node.name
+            and not node.value
+            and not node.automation_id
+        ):
             return True
         return False
 
@@ -730,7 +748,11 @@ else:
 
         # Walk children
         try:
-            child = _com_call(lambda el=element, cr=cache_request: walker.GetFirstChildElementBuildCache(el, cr))
+            child = _com_call(
+                lambda el=element, cr=cache_request: (
+                    walker.GetFirstChildElementBuildCache(el, cr)
+                )
+            )
         except COMError as exc:
             logger.debug("GetFirstChildElement COMError: %s", exc)
             child = None
@@ -750,7 +772,11 @@ else:
                 logger.warning("Error during DFS at depth %d: %s", depth + 1, exc)
 
             try:
-                child = _com_call(lambda ch=child, cr=cache_request: walker.GetNextSiblingElementBuildCache(ch, cr))
+                child = _com_call(
+                    lambda ch=child, cr=cache_request: (
+                        walker.GetNextSiblingElementBuildCache(ch, cr)
+                    )
+                )
             except COMError as exc:
                 logger.debug("GetNextSibling COMError: %s", exc)
                 child = None
@@ -762,13 +788,13 @@ else:
     # Public API
     # -------------------------------------------------------------------
 
-    def walk_uia_tree(
+    def _walk_uia_tree_once(
         hwnd: int,
         query: Optional[str] = None,
         max_depth: int = 25,
         max_elements: int = 5000,
     ) -> UiaTreeResult:
-        """Walk the UIA tree rooted at hwnd and produce a UiaTreeResult.
+        """Walk one UIA tree rooted at hwnd and produce a UiaTreeResult.
 
         Per-thread COM initialization (needed when called from executor threads).
         """
@@ -860,6 +886,86 @@ else:
             )
         finally:
             _co_uninitialize_if_needed(com_initialized)
+
+    def _chromium_render_widget_hwnds(hwnd: int) -> List[int]:
+        """Return visible WebContents HWNDs for a Chromium top-level window."""
+        try:
+            if not win32gui.GetClassName(int(hwnd)).startswith(
+                _CHROMIUM_TOP_LEVEL_CLASS_PREFIX
+            ):
+                return []
+        except Exception:
+            return []
+
+        render_widgets: List[int] = []
+
+        def _collect(child_hwnd: int, _context: Any) -> bool:
+            try:
+                if win32gui.GetClassName(
+                    child_hwnd
+                ) == _CHROMIUM_RENDER_WIDGET_CLASS and win32gui.IsWindowVisible(
+                    child_hwnd
+                ):
+                    render_widgets.append(int(child_hwnd))
+            except Exception:
+                pass
+            return True
+
+        try:
+            win32gui.EnumChildWindows(int(hwnd), _collect, None)
+        except Exception:
+            return []
+        return render_widgets
+
+    def _chromium_content_ready(result: UiaTreeResult) -> bool:
+        """Return whether a Chromium walk contains a populated web document."""
+        has_document = any(node.control_type == "Document" for node in result.nodes)
+        return has_document and len(result.nodes) > 1
+
+    def walk_uia_tree(
+        hwnd: int,
+        query: Optional[str] = None,
+        max_depth: int = 25,
+        max_elements: int = 5000,
+    ) -> UiaTreeResult:
+        """Walk a UIA tree, activating lazy Chromium WebContents when needed."""
+        result = _walk_uia_tree_once(hwnd, query, max_depth, max_elements)
+        if _chromium_content_ready(result):
+            return result
+
+        render_widgets = _chromium_render_widget_hwnds(hwnd)
+        if not render_widgets:
+            return result
+
+        best_content_result: Optional[UiaTreeResult] = None
+        retry_deadline = time.monotonic() + _CHROMIUM_CONTENT_RETRY_TIMEOUT_SECONDS
+        while True:
+            for render_widget in render_widgets:
+                content_result = _walk_uia_tree_once(
+                    render_widget,
+                    query,
+                    max_depth,
+                    max_elements,
+                )
+                if best_content_result is None or len(content_result.nodes) > len(
+                    best_content_result.nodes
+                ):
+                    best_content_result = content_result
+                if _chromium_content_ready(content_result):
+                    return content_result
+            remaining_seconds = retry_deadline - time.monotonic()
+            if remaining_seconds <= 0:
+                break
+            time.sleep(min(_CHROMIUM_CONTENT_RETRY_INTERVAL_SECONDS, remaining_seconds))
+
+        if best_content_result is not None and any(
+            node.control_type == "Document" for node in best_content_result.nodes
+        ):
+            return best_content_result
+
+        # A Chromium shell-only tree must not suppress the existing SOM fallback.
+        result.tree_quality = "poor"
+        return result
 
 
 __all__ = [

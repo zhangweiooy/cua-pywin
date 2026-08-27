@@ -185,3 +185,109 @@ def test_unsupported_pattern_is_rejected_before_dispatch(monkeypatch):
         )
 
     assert dispatches == []
+
+
+def _tree_result(*control_types: str, quality: str = "ok"):
+    nodes = [
+        windows_uia.UiaNode(
+            element_index=index,
+            control_type=control_type,
+            name=control_type,
+            automation_id=None,
+        )
+        for index, control_type in enumerate(control_types)
+    ]
+    return windows_uia.UiaTreeResult(
+        tree_markdown="",
+        nodes=nodes,
+        indexed_nodes=nodes,
+        tree_quality=quality,
+        total_elements=len(nodes),
+    )
+
+
+def test_walk_uia_tree_retries_chromium_render_widget_until_content_is_ready(
+    monkeypatch,
+):
+    shell = _tree_result("Button", "Button")
+    loading = _tree_result("Document")
+    content = _tree_result("Document", "Edit", "Button")
+    calls: list[int] = []
+    sleeps: list[float] = []
+    clock = {"now": 0.0}
+
+    def fake_walk(hwnd, query, max_depth, max_elements):
+        calls.append(hwnd)
+        if hwnd == 100:
+            return shell
+        return loading if calls.count(200) == 1 else content
+
+    monkeypatch.setattr(windows_uia, "_walk_uia_tree_once", fake_walk)
+    monkeypatch.setattr(
+        windows_uia.win32gui,
+        "GetClassName",
+        lambda hwnd: (
+            "Chrome_WidgetWin_1" if hwnd == 100 else "Chrome_RenderWidgetHostHWND"
+        ),
+    )
+    monkeypatch.setattr(
+        windows_uia.win32gui,
+        "EnumChildWindows",
+        lambda _hwnd, callback, context: callback(200, context),
+    )
+    monkeypatch.setattr(windows_uia.win32gui, "IsWindowVisible", lambda _hwnd: True)
+
+    def fake_sleep(seconds):
+        sleeps.append(seconds)
+        clock["now"] += seconds
+
+    monkeypatch.setattr(windows_uia.time, "monotonic", lambda: clock["now"])
+    monkeypatch.setattr(windows_uia.time, "sleep", fake_sleep)
+
+    result = windows_uia.walk_uia_tree(100)
+
+    assert result is content
+    assert calls == [100, 200, 200]
+    assert sleeps == [0.1]
+
+
+def test_walk_uia_tree_marks_unavailable_chromium_content_as_poor(monkeypatch):
+    shell = _tree_result("Button", "Button")
+    calls: list[int] = []
+    sleeps: list[float] = []
+    clock = {"now": 0.0}
+
+    def fake_walk(hwnd, query, max_depth, max_elements):
+        calls.append(hwnd)
+        return shell
+
+    monkeypatch.setattr(windows_uia, "_walk_uia_tree_once", fake_walk)
+    monkeypatch.setattr(
+        windows_uia.win32gui,
+        "GetClassName",
+        lambda hwnd: (
+            "Chrome_WidgetWin_1" if hwnd == 100 else "Chrome_RenderWidgetHostHWND"
+        ),
+    )
+    monkeypatch.setattr(
+        windows_uia.win32gui,
+        "EnumChildWindows",
+        lambda _hwnd, callback, context: callback(200, context),
+    )
+    monkeypatch.setattr(windows_uia.win32gui, "IsWindowVisible", lambda _hwnd: True)
+
+    def fake_sleep(seconds):
+        sleeps.append(seconds)
+        clock["now"] += seconds
+
+    monkeypatch.setattr(windows_uia.time, "monotonic", lambda: clock["now"])
+    monkeypatch.setattr(windows_uia.time, "sleep", fake_sleep)
+
+    result = windows_uia.walk_uia_tree(100)
+
+    assert result is shell
+    assert result.tree_quality == "poor"
+    assert calls[0] == 100
+    assert all(hwnd == 200 for hwnd in calls[1:])
+    assert sum(sleeps) == pytest.approx(2.0)
+    assert max(sleeps) <= 0.1
