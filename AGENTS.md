@@ -570,6 +570,20 @@ Important behavior:
 
 ## Critical Constraints
 
+### Performance Is Part of Correctness
+
+`cua-win` is a low-level shared automation runtime, so every modification must
+evaluate its performance cost as part of correctness. Account for added
+latency, CPU/GPU load, memory, threads/processes, I/O, polling/retries,
+screenshot/UIA/MSAA calls, model invocation, startup/warm-up work, and response
+payload size. Keep the healthy hot path free of unnecessary waits, duplicate
+observations, heavy inference, and background work. Any extra retry or fallback
+must be triggered by an observed degraded condition, bounded, and stop as soon
+as the required state is available. For meaningful hot-path changes, compare a
+representative baseline with the changed path and add deterministic assertions
+for applicable limits; do not solve a local reliability problem by imposing an
+unmeasured cost on every tool call.
+
 ### No First-time C-extension Imports Inside Tool Handlers
 
 Never import `numpy`, `torch`, or trigger any C-extension DLL load for the first

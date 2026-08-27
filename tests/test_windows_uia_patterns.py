@@ -206,6 +206,23 @@ def _tree_result(*control_types: str, quality: str = "ok"):
     )
 
 
+@pytest.mark.parametrize(
+    ("control_types", "expected_quality"),
+    [
+        (("Button",) * 4, "poor"),
+        (("Text",) * 16, "ok"),
+        (("Document",) + ("Button",) * 51, "rich"),
+    ],
+)
+def test_classify_tree_quality_uses_retained_semantic_nodes(
+    control_types,
+    expected_quality,
+):
+    nodes = _tree_result(*control_types).nodes
+
+    assert windows_uia._classify_tree_quality(nodes) == expected_quality
+
+
 def test_walk_uia_tree_retries_chromium_render_widget_until_content_is_ready(
     monkeypatch,
 ):
@@ -251,6 +268,27 @@ def test_walk_uia_tree_retries_chromium_render_widget_until_content_is_ready(
     assert sleeps == [0.1]
 
 
+def test_walk_uia_tree_does_not_probe_ready_content_twice(monkeypatch):
+    content = _tree_result("Document", "Edit", "Button")
+    calls: list[int] = []
+
+    def fake_walk(hwnd, query, max_depth, max_elements):
+        calls.append(hwnd)
+        return content
+
+    monkeypatch.setattr(windows_uia, "_walk_uia_tree_once", fake_walk)
+    monkeypatch.setattr(
+        windows_uia,
+        "_chromium_render_widget_hwnds",
+        lambda _hwnd: pytest.fail("ready content must not enumerate render widgets"),
+    )
+
+    result = windows_uia.walk_uia_tree(100)
+
+    assert result is content
+    assert calls == [100]
+
+
 def test_walk_uia_tree_marks_unavailable_chromium_content_as_poor(monkeypatch):
     shell = _tree_result("Button", "Button")
     calls: list[int] = []
@@ -289,5 +327,6 @@ def test_walk_uia_tree_marks_unavailable_chromium_content_as_poor(monkeypatch):
     assert result.tree_quality == "poor"
     assert calls[0] == 100
     assert all(hwnd == 200 for hwnd in calls[1:])
+    assert len(calls) == 7
     assert sum(sleeps) == pytest.approx(2.0)
-    assert max(sleeps) <= 0.1
+    assert max(sleeps) <= 0.5

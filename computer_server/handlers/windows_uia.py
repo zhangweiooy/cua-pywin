@@ -273,7 +273,8 @@ else:
 
     _CHROMIUM_TOP_LEVEL_CLASS_PREFIX = "Chrome_WidgetWin_"
     _CHROMIUM_RENDER_WIDGET_CLASS = "Chrome_RenderWidgetHostHWND"
-    _CHROMIUM_CONTENT_RETRY_INTERVAL_SECONDS = 0.1
+    _CHROMIUM_CONTENT_RETRY_INITIAL_INTERVAL_SECONDS = 0.1
+    _CHROMIUM_CONTENT_RETRY_MAX_INTERVAL_SECONDS = 0.5
     _CHROMIUM_CONTENT_RETRY_TIMEOUT_SECONDS = 2.0
 
     # -------------------------------------------------------------------
@@ -574,10 +575,20 @@ else:
         markdown_lines: List[str] = field(default_factory=list)
         next_index: int = 0
         total_visited: int = 0
-        named_count: int = 0
         max_depth: int = 25
         max_elements: int = 5000
         stopped: bool = False
+
+    def _classify_tree_quality(nodes: List[UiaNode]) -> str:
+        """Classify the meaningful semantic nodes retained for callers."""
+        count = len(nodes)
+        if count == 0:
+            return "empty"
+        if count > 50:
+            return "rich"
+        if count > 15:
+            return "ok"
+        return "poor"
 
     def _format_markdown_line(node: UiaNode) -> str:
         indent = "  " * node.depth
@@ -693,9 +704,6 @@ else:
     # -------------------------------------------------------------------
 
     def _record_node(node: UiaNode, state: _WalkState) -> None:
-        if node.name or node.automation_id:
-            state.named_count += 1
-
         actionable = _is_actionable(node)
         keep = actionable or _has_content(node)
         if not keep:
@@ -865,17 +873,7 @@ else:
             if query:
                 markdown = filter_tree(markdown, query)
 
-            if state.total_visited == 0:
-                quality = "empty"
-            else:
-                ratio = state.named_count / state.total_visited
-                count = state.total_visited
-                if ratio > 0.5 and count > 50:
-                    quality = "rich"
-                elif ratio > 0.15 and count > 15:
-                    quality = "ok"
-                else:
-                    quality = "poor"
+            quality = _classify_tree_quality(state.nodes)
 
             return UiaTreeResult(
                 tree_markdown=markdown,
@@ -939,8 +937,14 @@ else:
 
         best_content_result: Optional[UiaTreeResult] = None
         retry_deadline = time.monotonic() + _CHROMIUM_CONTENT_RETRY_TIMEOUT_SECONDS
+        retry_interval = _CHROMIUM_CONTENT_RETRY_INITIAL_INTERVAL_SECONDS
         while True:
             for render_widget in render_widgets:
+                if (
+                    best_content_result is not None
+                    and time.monotonic() >= retry_deadline
+                ):
+                    break
                 content_result = _walk_uia_tree_once(
                     render_widget,
                     query,
@@ -956,7 +960,11 @@ else:
             remaining_seconds = retry_deadline - time.monotonic()
             if remaining_seconds <= 0:
                 break
-            time.sleep(min(_CHROMIUM_CONTENT_RETRY_INTERVAL_SECONDS, remaining_seconds))
+            time.sleep(min(retry_interval, remaining_seconds))
+            retry_interval = min(
+                retry_interval * 2,
+                _CHROMIUM_CONTENT_RETRY_MAX_INTERVAL_SECONDS,
+            )
 
         if best_content_result is not None and any(
             node.control_type == "Document" for node in best_content_result.nodes
