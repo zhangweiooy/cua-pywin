@@ -93,7 +93,10 @@ def test_bridge_uses_florence_as_additional_evidence_for_ambiguous_icon(monkeypa
     assert node.control_type == "icon"
     assert node.actions == ["click"]
     assert node.name == "file/document"
-    assert node.metadata["icon_label_source"] == "omniparser_v2_florence2"
+    assert (
+        node.metadata["icon_label_source"]
+        == "omniparser_v2_florence2_int8_community"
+    )
     assert (
         node.metadata["semantic_resolution"]
         == "icon_preferred_with_yolo_and_florence_evidence"

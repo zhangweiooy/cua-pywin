@@ -39,18 +39,6 @@ if not _LIGHTWEIGHT_MCP_IMPORT:
     except Exception:
         pass
     try:
-        # Florence-2 dependencies can import native extensions through
-        # tokenizers, safetensors, torchvision, and timm. Import them before
-        # FastMCP's anyio event loop starts; weights are still loaded by the
-        # background warm-up thread.
-        import einops as _pre_einops  # noqa: F401
-        import safetensors.torch as _pre_safetensors_torch  # noqa: F401
-        import timm as _pre_timm  # noqa: F401
-        from transformers import AutoModelForCausalLM as _pre_auto_model  # noqa: F401
-        from transformers import AutoProcessor as _pre_auto_processor  # noqa: F401
-    except Exception:
-        pass
-    try:
         # PyWinRT loads native extensions. Import before the anyio loop so WGC can
         # be used safely from get_window_state without first-time DLL loading there.
         from computer_server.handlers.windows_wgc import is_available as _pre_wgc_avail

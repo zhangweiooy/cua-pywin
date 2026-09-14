@@ -5,7 +5,6 @@ import json
 from pathlib import Path
 import time
 import threading
-from types import SimpleNamespace
 
 import numpy as np
 import pytest
@@ -19,27 +18,6 @@ from computer_server.services.icon_caption_service import (
     IconCaptionService,
 )
 from computer_server.handlers import som_bridge
-from scripts.poc_icon_backends import PocIconCaptionService
-
-
-class _FakeSession:
-    def get_inputs(self):
-        return [SimpleNamespace(name="input", shape=["batch", 1, 96, 96])]
-
-    def get_outputs(self):
-        return [SimpleNamespace(name="output", shape=["batch", 2])]
-
-    def get_providers(self):
-        return ["CPUExecutionProvider"]
-
-    def run(self, _outputs, feeds):
-        batch = feeds["input"].shape[0]
-        return [
-            np.asarray(
-                [[4.0, 0.0] if index == 0 else [0.0, 0.0] for index in range(batch)],
-                dtype=np.float32,
-            )
-        ]
 
 
 def test_lightweight_processor_matches_official_florence_processor() -> None:
@@ -154,49 +132,8 @@ def test_success_clears_previous_inference_error(monkeypatch):
     assert service.status["inference_failure"] is None
 
 
-def test_quasivision_preprocess_matches_model_boundary() -> None:
-    result = PocIconCaptionService._quasivision_preprocess(
-        Image.new("RGBA", (20, 40), (0, 0, 0, 128))
-    )
-
-    assert result.shape == (1, 96, 96)
-    assert result.dtype == np.float32
-    assert float(result.min()) >= 0.0
-    assert float(result.max()) <= 1.0
-
-
-def test_quasivision_reads_labels_and_preserves_unknown(monkeypatch, tmp_path) -> None:
-    model_path = tmp_path / "icon_classifier.onnx"
-    labels_path = tmp_path / "labels.json"
-    model_path.write_bytes(b"test")
-    labels_path.write_text('{"0":"search","1":"settings"}', encoding="utf-8")
-    monkeypatch.setattr(
-        PocIconCaptionService,
-        "_create_onnx_session",
-        staticmethod(lambda _path: _FakeSession()),
-    )
-    service = PocIconCaptionService(
-        backend="quasivision",
-        model_name_or_path=str(model_path),
-        processor_name_or_path=str(labels_path),
-        confidence_threshold=0.9,
-    )
-
-    assert service.ensure_ready() is True
-    captions = service.caption_icons(
-        [Image.new("RGB", (64, 64), "white") for _ in range(2)]
-    )
-
-    assert captions[0].label == "search"
-    assert captions[0].confidence_provenance == "quasivision_softmax"
-    assert captions[0].candidates[0][0] == "search"
-    assert captions[1].label is None
-    assert captions[1].raw_caption == "unknown"
-    assert captions[1].confidence == 0.5
-
-
 def test_captioning_does_not_wait_for_loading_backend() -> None:
-    service = IconCaptionService(backend="quasivision", enabled=True)
+    service = IconCaptionService(enabled=True)
     service._state = "loading"
 
     started = time.perf_counter()

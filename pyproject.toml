@@ -43,10 +43,7 @@ dependencies = [
     "opencv-python-headless>=4.11",
     "ultralytics>=8.1",
     "supervision>=0.25",
-    "transformers>=4.46.1,<4.47",
     "tokenizers>=0.20,<0.21",
-    "einops>=0.8",
-    "timm>=1.0",
     # Windows.Graphics.Capture target-window capture backend
     "winrt-windows-foundation>=3.2.1",
     "winrt-windows-graphics>=3.2.1",
@@ -89,7 +86,6 @@ excludes = [
 [tool.pdm.build.package-data]
 computer_server = [
     "py.typed",
-    "models/omniparser_v2/icon_caption/*",
     "models/omniparser_v2/icon_caption_onnx_community/*",
     "models/omniparser_v2/icon_caption_onnx_community/int8/*",
     "models/omniparser_v2/icon_caption_onnx_community/onnx/*",
@@ -101,6 +97,7 @@ som = ["weights/icon_detect/model.pt", "weights/icon_detect/model_manifest.json"
 test = [
     "pytest>=7.0.0",
     "pytest-asyncio>=0.23.0",
+    "transformers>=4.46.1,<4.47",
 ]
 format = [
     "black>=23.0.0",
@@ -121,7 +118,6 @@ api = "cua-win serve"
 
 [tool.ruff]
 extend-exclude = [
-    "computer_server/models/omniparser_v2/icon_caption",
     "computer_server/models/omniparser_v2/icon_caption_onnx_community",
     "artifacts/icon-semantic-poc/onnx-community",
 ]

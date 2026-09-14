@@ -945,18 +945,14 @@ role, MIME type, dimensions, byte count, `content_index`, `window`,
 **Tree quality + SOM fallback** — `rich(>50) / ok(16-50)` skip SOM; `poor(1-15) / empty(0)` enable SOM vision. `uia_quality` and `vision_quality` are reported separately and do not overwrite each other.
 
 **Bundled OmniParser V2 pipeline** — The YOLO detector is bundled at
-`som/weights/icon_detect/model.pt`. The fine-tuned Florence-2 icon-caption model,
-processor, tokenizer, and model code are bundled under
-`computer_server/models/omniparser_v2/icon_caption/`, with the 1.08 GB weight
-tracked through Git LFS. Runtime model download is not supported: missing or
-invalid model files fail explicitly and are replaced only by a developer-built
-release. Production uses the separately bundled ONNX Community conversion at
+`som/weights/icon_detect/model.pt`. Icon semantics use only the bundled ONNX
+Community conversion of the fine-tuned OmniParser Florence-2 model at
 `computer_server/models/omniparser_v2/icon_caption_onnx_community/`: the
 vision encoder and token embeddings remain FP32, while the BART encoder and
 cached decoder graphs are generated through the ONNX Runtime preprocessing,
 Transformer optimization (including Python fusions), and dynamic per-channel `QInt8` pipeline. It runs
-with `CPUExecutionProvider`; the original PyTorch weight is not loaded by that
-runtime path. Only one semantic backend is loaded per process. Icon crops are
+with `CPUExecutionProvider`. The original PyTorch bundle is not shipped or
+loadable. Icon crops are
 resized to 64x64 and captioned in batches, matching the official V2 pipeline.
 RapidOCR remains responsible for visible text.
 
@@ -964,15 +960,13 @@ Florence-2 output is exposed as `raw_caption` plus a conservative
 `normalized_label`. It has no calibrated confidence score, so nodes explicitly
 report `icon_label_confidence=null` and
 `icon_label_confidence_provenance="florence2_onnx_community_greedy_generation"`
-for INT8 (`unscored_greedy_generation` for the original baseline). Empty or
+for INT8. Empty or
 generic captions remain unknown rather than receiving a forced label. Controls:
 `CUA_ICON_SEMANTIC_BACKEND=florence2_int8_community` (the production default),
 `CUA_ENABLE_ICON_SEMANTICS`, `CUA_FLORENCE2_COMMUNITY_ONNX_DIR`,
 `CUA_FLORENCE2_BATCH_SIZE`, and
-`CUA_FLORENCE2_MAX_NEW_TOKENS`. The fixed-vocabulary quasivision classifier is
-kept in `scripts/poc_icon_backends.py` as an independent benchmark PoC.
-The production service accepts only `florence2_int8_community` and the
-explicit `florence2` baseline. Debug timing includes `florence2_latency` and
+`CUA_FLORENCE2_MAX_NEW_TOKENS`. The production service accepts only
+`florence2_int8_community`. Debug timing includes `florence2_latency` and
 `icon_semantic_latency`; legacy `tinyclip_latency` remains `0.0` for metadata
 compatibility. `vision_metadata.icon_semantic_status` reports whether captioning
 was ready, disabled/failed during model initialization, or failed during
@@ -980,9 +974,9 @@ inference; YOLO and OCR nodes remain available when captioning fails.
 Batch size and generated-token limits are capped at 256 and 128 respectively to
 bound accidental memory growth.
 
-The bundled models total about 1.91 GB before wheel compression, including
-the original Florence-2 baseline, its approximately 733 MiB INT8 ONNX bundle,
-YOLO, and RapidOCR. Wheel size must be measured from the built artifact.
+The selected INT8 icon-semantic bundle is approximately 733 MiB before wheel
+compression; YOLO and RapidOCR are bundled separately. Wheel size must be
+measured from the built artifact.
 This exceeds PyPI's normal per-file upload limit; distribute release wheels
 through GitHub Releases, an installer, or another artifact store. Source
 checkouts must run `git lfs pull`; `cua-win doctor` rejects an unresolved LFS

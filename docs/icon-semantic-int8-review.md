@@ -1,10 +1,9 @@
 # Icon semantic INT8 iteration review
 
-The selected default is `florence2_int8_community`. The original Florence-2
-backend remains an explicit local baseline; it is not loaded alongside INT8.
-Quasivision, the old manual one-file INT8 adapter and exploratory beam search
-are development scripts, excluded from the runtime package. Local experiments
-and screenshots under `artifacts/` are preserved and ignored by Git.
+The sole production backend is `florence2_int8_community`. The original
+PyTorch Florence-2 bundle, quasivision PoC, and old manual one-file INT8 PoC
+were removed after selection. Exploratory reports and source-graph provenance
+remain ignored development artifacts and are never loaded by the runtime.
 
 ## Review findings and corrections
 
@@ -77,11 +76,10 @@ warm-up ready at 1579 ms, then semantic ready 1909 ms later. The temporary
 daemon was stopped; the user's normal daemon was not restarted.
 
 Run from the repository with locally acquired source graphs; runtime never
-downloads models. Keep the three alternatives in separate worker processes.
+downloads models.
 
 ```powershell
 uv run --no-sync --with onnx python scripts/quantize_onnx_community_florence2.py --output-dir artifacts/icon-semantic-poc/onnx-community/pipeline-reviewed --bundle-dir computer_server/models/omniparser_v2/icon_caption_onnx_community
-uv run --no-sync python scripts/benchmark_icon_semantics.py
 uv run --no-sync python scripts/benchmark_onnx_community_florence2.py --pipeline-dir artifacts/icon-semantic-poc/onnx-community/pipeline-reviewed --output-dir artifacts/icon-semantic-poc/onnx-community/benchmark-reviewed
 uv run --no-sync python scripts/verify_florence2_runtime.py
 uv run --no-sync pytest -q
@@ -92,9 +90,5 @@ uv run --no-sync python scripts/validate_release.py --version 0.3.0
 The historical benchmark automatically includes the local
 `artifacts/wechat-som-20260801/wechat-window.png` when available; otherwise
 it has 140 synthetic rows, not 151. Private screenshots are not bundled.
-The original PyTorch baseline still uses its original tokenizer/generation
-configuration, so differences from community FP32 cannot be attributed to
-quantization alone.
-
 Commit/push, version bump, published release and installed-daemon replacement
 are separate delivery steps. This review does not change an existing release tag.

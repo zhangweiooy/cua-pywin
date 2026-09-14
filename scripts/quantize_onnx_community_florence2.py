@@ -28,10 +28,6 @@ GRAPH_NAMES = (
 
 def bundle_pipeline(source_dir: Path, pipeline_dir: Path, bundle_dir: Path) -> None:
     """Stage the reviewed local graphs and generate checksums from actual bytes."""
-    baseline = (
-        Path(__file__).resolve().parents[1]
-        / "computer_server/models/omniparser_v2/icon_caption"
-    )
     files = {
         name: source_dir / name
         for name in (
@@ -55,8 +51,8 @@ def bundle_pipeline(source_dir: Path, pipeline_dir: Path, bundle_dir: Path) -> N
             for name in GRAPH_NAMES
         }
     )
-    files["processing_florence2.py"] = baseline / "processing_florence2.py"
-    files["LICENSE"] = baseline / "LICENSE"
+    files["processing_florence2.py"] = source_dir / "processing_florence2.py"
+    files["LICENSE"] = source_dir / "LICENSE"
     files["pipeline_manifest.json"] = pipeline_dir / "pipeline_manifest.json"
     for name, source in files.items():
         target = bundle_dir / name

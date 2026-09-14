@@ -659,7 +659,7 @@ def _convert_parse_result(
         1 for caption in icon_captions.values() if caption.label is not None
     )
     metadata["icon_caption_count"] = len(icon_captions)
-    semantic_backend = "florence2"
+    semantic_backend = "florence2_int8_community"
     if icon_captions:
         semantic_backend = next(iter(icon_captions.values())).backend
     else:

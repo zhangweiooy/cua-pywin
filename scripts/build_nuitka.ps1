@@ -639,15 +639,12 @@ try {
         "rapidocr",
         "requests",
         "rich",
-        "safetensors",
         "scipy",
         "screeninfo",
         "starlette",
-        "timm",
         "tokenizers",
         "torch",
         "torchvision",
-        "transformers",
         "uiautomation",
         "ultralytics",
         "uvicorn",
@@ -716,10 +713,7 @@ try {
             "--include-package=starlette",
             "--include-package=rapidocr",
             "--include-package=onnxruntime",
-            "--include-package=transformers",
             "--include-package=tokenizers",
-            "--include-package=safetensors",
-            "--include-package=timm",
             "--include-package=torch",
             "--include-package=torchvision",
             "--include-package=ultralytics",
@@ -793,7 +787,7 @@ try {
         }
     }
     Invoke-TimedStep "copy bundled models" {
-        foreach ($bundle in @("rapidocr_ppocrv4", "omniparser_v2\icon_caption", "omniparser_v2\icon_caption_onnx_community")) {
+        foreach ($bundle in @("rapidocr_ppocrv4", "omniparser_v2\icon_caption_onnx_community")) {
             Copy-CleanDirectory `
                 -Source (Join-Path $ProjectRoot "computer_server\models\$bundle") `
                 -Destination (Join-Path $DistDir "computer_server\models\$bundle")

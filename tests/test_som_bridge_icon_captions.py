@@ -57,7 +57,7 @@ def test_convert_parse_result_applies_florence2_icon_caption(monkeypatch):
     assert converted.elements[0].metadata["vision_confidence"] == 0.9
     assert (
         converted.elements[0].metadata["icon_label_source"]
-        == "omniparser_v2_florence2"
+        == "omniparser_v2_florence2_int8_community"
     )
     assert converted.elements[0].metadata["raw_caption"] == "a send button"
     assert converted.elements[0].metadata["normalized_label"] == "send button"
@@ -67,7 +67,7 @@ def test_convert_parse_result_applies_florence2_icon_caption(monkeypatch):
     assert converted.elements[1].metadata["ocr_confidence"] == 0.8
     assert converted.metadata["icon_label_count"] == 1
     assert converted.metadata["icon_caption_count"] == 1
-    assert converted.metadata["icon_semantic_backend"] == "florence2"
+    assert converted.metadata["icon_semantic_backend"] == "florence2_int8_community"
     assert converted.metadata["icon_semantic_status"] == "ready"
     assert converted.metadata["stage_timings"]["yolo_latency"] == 0.01
     assert converted.metadata["stage_timings"]["ocr_latency"] == 0.02

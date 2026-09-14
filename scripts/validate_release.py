@@ -48,26 +48,6 @@ MODEL_BUNDLES = (
         ),
     ),
     ModelBundle(
-        name="OmniParser V2 Florence-2",
-        source_dir=Path("computer_server/models/omniparser_v2/icon_caption"),
-        wheel_dir=PurePosixPath(
-            "computer_server/models/omniparser_v2/icon_caption"
-        ),
-        required_files=(
-            "config.json",
-            "configuration_florence2.py",
-            "generation_config.json",
-            "model_manifest.json",
-            "model.safetensors",
-            "modeling_florence2.py",
-            "preprocessor_config.json",
-            "processing_florence2.py",
-            "tokenizer.json",
-            "tokenizer_config.json",
-            "vocab.json",
-        ),
-    ),
-    ModelBundle(
         name="OmniParser V2 Florence-2 ONNX Community INT8",
         source_dir=Path(
             "computer_server/models/omniparser_v2/icon_caption_onnx_community"

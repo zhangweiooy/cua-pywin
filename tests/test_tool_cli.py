@@ -1679,7 +1679,6 @@ def test_collect_doctor_checks_can_skip_slow_sections() -> None:
         "platform",
         "state_dir",
         "model:omniparser_yolo",
-        "model:omniparser_florence2",
         "model:omniparser_florence2_int8_community",
         "model:rapidocr_ppocrv4",
     }.issubset(names)
@@ -1725,31 +1724,6 @@ def test_desktop_doctor_checks_fail_on_non_windows(monkeypatch) -> None:
     assert _check_interactive_desktop().status == "fail"
     assert _check_window_enumeration().status == "fail"
     assert _check_screenshot_capture().status == "fail"
-
-
-def test_florence_doctor_rejects_git_lfs_pointer(monkeypatch, tmp_path) -> None:
-    import computer_server.tool_cli as tool_cli
-
-    model_dir = tmp_path / "icon_caption"
-    model_dir.mkdir()
-    for name in tool_cli.FLORENCE2_REQUIRED_FILES:
-        path = model_dir / name
-        if name == "model.safetensors":
-            path.write_text(
-                "version https://git-lfs.github.com/spec/v1\n"
-                "oid sha256:deadbeef\n"
-                "size 1083916964\n",
-                encoding="ascii",
-            )
-        else:
-            path.write_text("test", encoding="ascii")
-    monkeypatch.setattr(tool_cli, "FLORENCE2_MODEL_DIR", model_dir)
-
-    check = tool_cli._check_florence2_bundle()
-
-    assert check.status == "fail"
-    assert "git lfs pull" in check.message
-    assert check.details["git_lfs_pointer"] is True
 
 
 def test_yolo_doctor_verifies_manifest_hash(monkeypatch, tmp_path) -> None:

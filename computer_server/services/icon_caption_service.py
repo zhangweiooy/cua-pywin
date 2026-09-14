@@ -1,9 +1,7 @@
 """Optional icon semantics behind the stable :class:`IconCaption` boundary.
 
-Only one backend is loaded by a service instance.  The production default is
-the ONNX Community split-graph INT8 form of the existing OmniParser
-Florence-2 model; the original PyTorch baseline is selected explicitly with
-``CUA_ICON_SEMANTIC_BACKEND``. Missing local resources degrade to no semantic label.
+The only production backend is the ONNX Community split-graph INT8 form of the
+OmniParser Florence-2 model. Missing local resources degrade to no semantic label.
 """
 
 from __future__ import annotations
@@ -21,19 +19,14 @@ from PIL import Image
 
 logger = logging.getLogger(__name__)
 
-BUNDLED_FLORENCE2_MODEL_DIR = (
-    Path(__file__).resolve().parents[1] / "models" / "omniparser_v2" / "icon_caption"
-)
 BUNDLED_FLORENCE2_COMMUNITY_ONNX_DIR = (
     Path(__file__).resolve().parents[1]
     / "models"
     / "omniparser_v2"
     / "icon_caption_onnx_community"
 )
-GENERATION_PROMPT = "<CAPTION>"
-GENERATION_CONFIDENCE_PROVENANCE = "unscored_greedy_generation"
 FLORENCE2_COMMUNITY_CONFIDENCE_PROVENANCE = "florence2_onnx_community_greedy_generation"
-SUPPORTED_BACKENDS = {"florence2", "florence2_int8_community"}
+SUPPORTED_BACKENDS = {"florence2_int8_community"}
 
 _GENERIC_CAPTIONS = {
     "button",
@@ -54,9 +47,9 @@ class IconCaption:
     raw_caption: str
     normalized_label: Optional[str]
     confidence: Optional[float] = None
-    confidence_provenance: str = GENERATION_CONFIDENCE_PROVENANCE
+    confidence_provenance: str = FLORENCE2_COMMUNITY_CONFIDENCE_PROVENANCE
     candidates: tuple[tuple[str, float], ...] = ()
-    backend: str = "florence2"
+    backend: str = "florence2_int8_community"
 
     @property
     def label(self) -> Optional[str]:
@@ -113,20 +106,6 @@ def normalize_caption(caption: str) -> Optional[str]:
     return cleaned[:160]
 
 
-def default_model_name_or_path() -> str:
-    configured = os.environ.get("CUA_FLORENCE2_MODEL")
-    if configured:
-        return configured
-    return str(BUNDLED_FLORENCE2_MODEL_DIR)
-
-
-def default_processor_name_or_path(model_name_or_path: str) -> str:
-    configured = os.environ.get("CUA_FLORENCE2_PROCESSOR")
-    if configured:
-        return configured
-    return model_name_or_path
-
-
 class IconCaptionService:
     """Batch icon semantics with one selected, local-only backend."""
 
@@ -145,13 +124,9 @@ class IconCaptionService:
             processor_name_or_path or self._default_processor_path()
         )
         if enabled is None:
-            enabled = (
-                _env_flag("CUA_ENABLE_FLORENCE2", True)
-                if self.backend == "florence2"
-                else _env_flag(
-                    "CUA_ENABLE_ICON_SEMANTICS",
-                    _env_flag("CUA_ENABLE_FLORENCE2", True),
-                )
+            enabled = _env_flag(
+                "CUA_ENABLE_ICON_SEMANTICS",
+                _env_flag("CUA_ENABLE_FLORENCE2", True),
             )
         self.enabled = enabled
         self.batch_size = (
@@ -173,26 +148,17 @@ class IconCaptionService:
         self._failure: Optional[str] = None
         self._inference_failure: Optional[str] = None
         self._background_thread: Optional[threading.Thread] = None
-        self._processor: Any = None
-        self._model: Any = None
-        self._torch: Any = None
-        self._device: Any = None
-        self._dtype: Any = None
         self._community_runner: Any = None
         self._inference_lock = threading.Lock()
 
     def _default_model_path(self) -> str:
-        if self.backend == "florence2_int8_community":
-            return os.environ.get(
-                "CUA_FLORENCE2_COMMUNITY_ONNX_DIR",
-                str(BUNDLED_FLORENCE2_COMMUNITY_ONNX_DIR),
-            )
-        return default_model_name_or_path()
+        return os.environ.get(
+            "CUA_FLORENCE2_COMMUNITY_ONNX_DIR",
+            str(BUNDLED_FLORENCE2_COMMUNITY_ONNX_DIR),
+        )
 
     def _default_processor_path(self) -> str:
-        if self.backend == "florence2_int8_community":
-            return self.model_name_or_path
-        return default_processor_name_or_path(self.model_name_or_path)
+        return self.model_name_or_path
 
     @property
     def status(self) -> dict[str, Any]:
@@ -291,10 +257,7 @@ class IconCaptionService:
                 f"Unsupported icon semantic backend: {self.backend!r}; "
                 f"choose one of {sorted(SUPPORTED_BACKENDS)}"
             )
-        if self.backend == "florence2":
-            self._load_florence2()
-        elif self.backend == "florence2_int8_community":
-            self._load_florence2_community()
+        self._load_florence2_community()
 
     @staticmethod
     def _require_local_directory(value: str, label: str) -> Path:
@@ -307,50 +270,17 @@ class IconCaptionService:
             )
         return path.resolve()
 
-    def _load_florence2(self) -> None:
-        model_path = self._require_local_directory(
-            self.model_name_or_path, "Florence-2 model"
-        )
-        processor_path = self._require_local_directory(
-            self.processor_name_or_path, "Florence-2 processor"
-        )
-        import torch
-        from transformers import AutoModelForCausalLM, AutoProcessor
-
-        forced_device = os.environ.get("CUA_FLORENCE2_DEVICE")
-        device = torch.device(
-            forced_device
-            if forced_device
-            else ("cuda" if torch.cuda.is_available() else "cpu")
-        )
-        dtype = torch.float16 if device.type == "cuda" else torch.float32
-        processor = AutoProcessor.from_pretrained(
-            str(processor_path),
-            local_files_only=True,
-            trust_remote_code=True,
-        )
-        model = AutoModelForCausalLM.from_pretrained(
-            str(model_path),
-            local_files_only=True,
-            trust_remote_code=True,
-            torch_dtype=dtype,
-        )
-        model.eval()
-        model.to(device)
-        self._torch = torch
-        self._device = device
-        self._dtype = dtype
-        self._processor = processor
-        self._model = model
-
     def _load_florence2_community(self) -> None:
         from computer_server.services.community_florence2_service import (
             CommunityFlorence2Runner,
         )
 
+        model_path = self._require_local_directory(
+            self.model_name_or_path, "Florence-2 Community ONNX model"
+        )
         runner = CommunityFlorence2Runner(
-            self.model_name_or_path,
-            self.model_name_or_path,
+            model_path,
+            model_path,
             batch_size=self.batch_size,
             max_new_tokens=self.max_new_tokens,
         )
@@ -391,12 +321,6 @@ class IconCaptionService:
                     exc,
                     exc_info=True,
                 )
-                if (
-                    self._torch is not None
-                    and self._device is not None
-                    and getattr(self._device, "type", None) == "cuda"
-                ):
-                    self._torch.cuda.empty_cache()
                 raise
         finally:
             self._inference_lock.release()
@@ -405,9 +329,7 @@ class IconCaptionService:
         self,
         images: Sequence[Image.Image],
     ) -> list[Optional[IconCaption]]:
-        if self.backend == "florence2_int8_community":
-            return self._caption_florence2_community(images)
-        return self._caption_florence2(images)
+        return self._caption_florence2_community(images)
 
     def _caption_florence2_community(
         self,
@@ -430,69 +352,6 @@ class IconCaptionService:
             )
             for raw in raw_captions
         ]
-
-    def _caption_florence2(
-        self,
-        images: Sequence[Image.Image],
-    ) -> list[Optional[IconCaption]]:
-        torch = self._torch
-        processor = self._processor
-        model = self._model
-        device = self._device
-        dtype = self._dtype
-        if torch is None or processor is None or model is None or device is None:
-            return [None] * len(images)
-
-        captions: list[Optional[IconCaption]] = []
-        rgb_images = [image.convert("RGB") for image in images]
-        for start in range(0, len(rgb_images), self.batch_size):
-            batch = rgb_images[start : start + self.batch_size]
-            inputs = processor(
-                images=batch,
-                text=[GENERATION_PROMPT] * len(batch),
-                return_tensors="pt",
-                do_resize=False,
-            )
-            inputs = self._move_inputs(inputs, device, dtype)
-            with torch.inference_mode():
-                generated_ids = model.generate(
-                    input_ids=inputs["input_ids"],
-                    pixel_values=inputs["pixel_values"],
-                    max_new_tokens=self.max_new_tokens,
-                    num_beams=1,
-                    do_sample=False,
-                    early_stopping=False,
-                )
-            generated_texts = processor.batch_decode(
-                generated_ids,
-                skip_special_tokens=True,
-            )
-            if len(generated_texts) != len(batch):
-                raise RuntimeError(
-                    "Florence-2 returned "
-                    f"{len(generated_texts)} captions for {len(batch)} icon crops"
-                )
-            captions.extend(
-                IconCaption(
-                    raw_caption=re.sub(r"\s+", " ", str(raw)).strip(),
-                    normalized_label=normalize_caption(str(raw)),
-                )
-                for raw in generated_texts
-            )
-        return captions
-
-    @staticmethod
-    def _move_inputs(inputs: Any, device: Any, dtype: Any) -> Any:
-        moved: dict[str, Any] = {}
-        for key, value in dict(inputs).items():
-            if not hasattr(value, "to"):
-                moved[key] = value
-            elif getattr(value, "is_floating_point", lambda: False)():
-                moved[key] = value.to(device=device, dtype=dtype)
-            else:
-                moved[key] = value.to(device=device)
-        return moved
-
 
 _icon_caption_service: IconCaptionService | None = None
 _icon_caption_service_lock = threading.Lock()
