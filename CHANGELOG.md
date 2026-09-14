@@ -4,6 +4,24 @@ All notable changes to this project will be documented in this file.
 
 ## Unreleased
 
+## 0.3.0 - 2026-09-14
+
+### Changed
+
+- Default icon captioning to the locally bundled OmniParser-specialized
+  ONNX Community Florence-2 INT8 graphs on ONNX Runtime CPU.
+- Report detector/OCR ready before semantic warm-up completes; retain basic
+  observations on caption load or inference failures.
+- Keep classifier/manual-INT8 PoCs and experimental beam search in development
+  scripts, and exclude their resources from release artifacts.
+
+### Fixed
+
+- Respect per-row EOS, generation limits and configured greedy logits rules;
+  map decoder KV outputs by name and reject non-finite logits.
+- Match official caption tokenizer cleanup and avoid blocking semantic status
+  reads behind inference; verify nested model files and reject incomplete hashes.
+
 ## 0.2.8 - 2026-08-27
 
 ### Fixed

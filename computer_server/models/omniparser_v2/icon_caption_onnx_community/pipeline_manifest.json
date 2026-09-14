@@ -1,0 +1,170 @@
+{
+  "source": {
+    "repository": "onnx-community/OmniParser-v2.0_icon_caption",
+    "revision": "0d28990c05ddeb50792d02b92f7e6e4d0f4bd086",
+    "specialized_model": "microsoft/OmniParser-v2.0/icon_caption"
+  },
+  "pipeline": {
+    "preprocess": "onnxruntime.quantization.shape_inference.quant_pre_process",
+    "symbolic_shape_inference": true,
+    "onnx_shape_inference": true,
+    "transformer_optimizer": "onnxruntime.transformers.optimizer.optimize_model",
+    "transformer_model_type": "bart",
+    "num_heads": 12,
+    "hidden_size": 768,
+    "optimization_level": 2,
+    "only_onnxruntime": false,
+    "quantization": "onnxruntime.quantization.quantize_dynamic",
+    "weight_type": "QInt8",
+    "op_types": [
+      "MatMul",
+      "Gemm"
+    ],
+    "per_channel": true,
+    "reduce_range": false,
+    "execution_provider": "CPUExecutionProvider"
+  },
+  "graphs": {
+    "encoder_model": {
+      "source": "artifacts\\icon-semantic-poc\\onnx-community\\onnx\\encoder_model.onnx",
+      "preprocessed": "artifacts\\icon-semantic-poc\\onnx-community\\pipeline-reviewed\\preprocessed\\encoder_model.pre.onnx",
+      "optimized": "artifacts\\icon-semantic-poc\\onnx-community\\pipeline-reviewed\\optimized\\encoder_model.opt.onnx",
+      "int8": "artifacts\\icon-semantic-poc\\onnx-community\\pipeline-reviewed\\int8\\encoder_model.int8.onnx",
+      "durations_seconds": {
+        "preprocess": 3.0500646000145935,
+        "transformer_optimize": 1.6288099000230432,
+        "quantize": 3.9658179999678396
+      },
+      "fusion_statistics": {
+        "EmbedLayerNormalization": 0,
+        "Attention": 0,
+        "MultiHeadAttention": 0,
+        "Gelu": 0,
+        "FastGelu": 0,
+        "BiasGelu": 6,
+        "GemmFastGelu": 0,
+        "LayerNormalization": 0,
+        "SimplifiedLayerNormalization": 0,
+        "SkipLayerNormalization": 13,
+        "SkipSimplifiedLayerNormalization": 0,
+        "RotaryEmbedding": 0,
+        "QOrderedAttention": 0,
+        "QOrderedGelu": 0,
+        "QOrderedLayerNormalization": 0,
+        "QOrderedMatMul": 0
+      },
+      "files": {
+        "source": {
+          "bytes": 173409090,
+          "sha256": "934f366c4d834a58f017e5373f01df0b2b9a333533c1e41032e7de8849c61a12"
+        },
+        "preprocessed": {
+          "bytes": 173409563,
+          "sha256": "3464b4a80045ffd187ef5b9a193ffaa4b67d4261629ebb7cf8d6424df41c2120"
+        },
+        "optimized": {
+          "bytes": 173380189,
+          "sha256": "a184f3760356e3cf67167475c7f48dae6f6e4f37adcf080db6d7f95c673858ac"
+        },
+        "int8": {
+          "bytes": 46226898,
+          "sha256": "89e3f793f4bfd29b3ce75256c7ecf8c0f78c94010e3b8aad9b95d240680eb2f5"
+        }
+      }
+    },
+    "decoder_model": {
+      "source": "artifacts\\icon-semantic-poc\\onnx-community\\onnx\\decoder_model.onnx",
+      "preprocessed": "artifacts\\icon-semantic-poc\\onnx-community\\pipeline-reviewed\\preprocessed\\decoder_model.pre.onnx",
+      "optimized": "artifacts\\icon-semantic-poc\\onnx-community\\pipeline-reviewed\\optimized\\decoder_model.opt.onnx",
+      "int8": "artifacts\\icon-semantic-poc\\onnx-community\\pipeline-reviewed\\int8\\decoder_model.int8.onnx",
+      "durations_seconds": {
+        "preprocess": 6.50428130000364,
+        "transformer_optimize": 3.6339295000070706,
+        "quantize": 8.933731899945997
+      },
+      "fusion_statistics": {
+        "EmbedLayerNormalization": 0,
+        "Attention": 0,
+        "MultiHeadAttention": 0,
+        "Gelu": 0,
+        "FastGelu": 0,
+        "BiasGelu": 6,
+        "GemmFastGelu": 0,
+        "LayerNormalization": 0,
+        "SimplifiedLayerNormalization": 0,
+        "SkipLayerNormalization": 19,
+        "SkipSimplifiedLayerNormalization": 0,
+        "RotaryEmbedding": 0,
+        "QOrderedAttention": 0,
+        "QOrderedGelu": 0,
+        "QOrderedLayerNormalization": 0,
+        "QOrderedMatMul": 0
+      },
+      "files": {
+        "source": {
+          "bytes": 387818953,
+          "sha256": "9b197ed07d9fe1da03dcce93b1f5ebf3cee4b66e531c9703b2087fc53ca50acb"
+        },
+        "preprocessed": {
+          "bytes": 387819739,
+          "sha256": "b2b3462b3193721d376ebf4cf1395761b51499eb59c93961c977ef0d76acdfeb"
+        },
+        "optimized": {
+          "bytes": 387770080,
+          "sha256": "65b16ec31d91948e47cc4015aba53f06e694e5b94c95976d40acc53c65b52771"
+        },
+        "int8": {
+          "bytes": 100362056,
+          "sha256": "69b9b4f5a934075ba0de864b71547337f3e4a342d1f9eba1a531430aa0fc2c1e"
+        }
+      }
+    },
+    "decoder_with_past_model": {
+      "source": "artifacts\\icon-semantic-poc\\onnx-community\\onnx\\decoder_with_past_model.onnx",
+      "preprocessed": "artifacts\\icon-semantic-poc\\onnx-community\\pipeline-reviewed\\preprocessed\\decoder_with_past_model.pre.onnx",
+      "optimized": "artifacts\\icon-semantic-poc\\onnx-community\\pipeline-reviewed\\optimized\\decoder_with_past_model.opt.onnx",
+      "int8": "artifacts\\icon-semantic-poc\\onnx-community\\pipeline-reviewed\\int8\\decoder_with_past_model.int8.onnx",
+      "durations_seconds": {
+        "preprocess": 6.091073699994013,
+        "transformer_optimize": 3.39139389997581,
+        "quantize": 7.935882700025104
+      },
+      "fusion_statistics": {
+        "EmbedLayerNormalization": 0,
+        "Attention": 0,
+        "MultiHeadAttention": 0,
+        "Gelu": 0,
+        "FastGelu": 0,
+        "BiasGelu": 6,
+        "GemmFastGelu": 0,
+        "LayerNormalization": 0,
+        "SimplifiedLayerNormalization": 0,
+        "SkipLayerNormalization": 19,
+        "SkipSimplifiedLayerNormalization": 0,
+        "RotaryEmbedding": 0,
+        "QOrderedAttention": 0,
+        "QOrderedGelu": 0,
+        "QOrderedLayerNormalization": 0,
+        "QOrderedMatMul": 0
+      },
+      "files": {
+        "source": {
+          "bytes": 359461188,
+          "sha256": "4eae323c340a50dd08235f10eb63b4d31917b9e0b6858d4d892c67cd664a6f35"
+        },
+        "preprocessed": {
+          "bytes": 359461554,
+          "sha256": "34b67f4519306cab37ed9810c5fdb2f5000e60ec8af31fe08aa345bc7b0999b9"
+        },
+        "optimized": {
+          "bytes": 359413707,
+          "sha256": "4c3b37af66a01ced09db0d8f7702f98ecb91ae45fe5678d09df6d02a705fa5d5"
+        },
+        "int8": {
+          "bytes": 93180940,
+          "sha256": "19408c20229561a8bb11b6333acdd3cfeb16a829388e2eabada7eba104aa42f2"
+        }
+      }
+    }
+  }
+}

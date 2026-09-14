@@ -226,6 +226,50 @@ def _get_parser() -> Any:
     return _parser_instance
 
 
+def _start_icon_semantic_warmup(warmup_id: str) -> None:
+    """Load the selected semantic model after detector/OCR become ready."""
+
+    def _init_semantics() -> None:
+        try:
+            from computer_server.services.icon_caption_service import (
+                warm_up as _warm_icon_semantics,
+            )
+
+            ready = _timed_stage(
+                event="som_warmup_stage",
+                trace_field="warmup_id",
+                trace_id=warmup_id,
+                stage="florence2",
+                operation=_warm_icon_semantics,
+            )
+            if not ready:
+                logger.warning(
+                    "event=som_warmup_optional_backend warmup_id=%s "
+                    "stage=florence2 status=unavailable", warmup_id,
+                )
+        except Exception as icon_exc:
+            error_type, root_error_type, error_code = _exception_details(icon_exc)
+            logger.warning(
+                "event=som_warmup_optional_backend warmup_id=%s pid=%d "
+                "stage=florence2 status=failed error_type=%s "
+                "root_error_type=%s error_code=%s",
+                warmup_id,
+                os.getpid(),
+                error_type,
+                root_error_type,
+                error_code,
+            )
+
+    try:
+        threading.Thread(
+            target=_init_semantics,
+            name="icon-semantic-warmup",
+            daemon=True,
+        ).start()
+    except Exception:
+        logger.warning("Could not schedule optional icon semantics", exc_info=True)
+
+
 def warm_up() -> None:
     """Pre-initialize OmniParser in a background thread at server startup.
 
@@ -292,7 +336,6 @@ def warm_up() -> None:
             )
 
             with _parse_lock:
-                captions_ready = False
                 ocr_backend = str(getattr(parser.ocr, "backend", "unknown"))
                 ocr_details = f" backend={ocr_backend}"
                 if ocr_backend == "rapidocr":
@@ -325,42 +368,6 @@ def warm_up() -> None:
                     f_yolo.result()
                     f_ocr.result()
 
-                # Florence-2 is much larger than the detector and OCR runtime.
-                # Load it after those stages to keep startup peak memory and
-                # disk contention bounded. Caption failure is optional and
-                # must not make YOLO/OCR unavailable.
-                try:
-                    from computer_server.services.icon_caption_service import (
-                        warm_up as _warm_icon_captions,
-                    )
-
-                    captions_ready = _timed_stage(
-                        event="som_warmup_stage",
-                        trace_field="warmup_id",
-                        trace_id=warmup_id,
-                        stage="florence2",
-                        operation=_warm_icon_captions,
-                    )
-                    if not captions_ready:
-                        logger.warning(
-                            "event=som_warmup_optional_backend warmup_id=%s pid=%d "
-                            "stage=florence2 status=unavailable",
-                            warmup_id,
-                            os.getpid(),
-                        )
-                except Exception as icon_exc:
-                    error_type, root_error_type, error_code = _exception_details(icon_exc)
-                    logger.warning(
-                        "event=som_warmup_optional_backend warmup_id=%s pid=%d "
-                        "stage=florence2 status=failed error_type=%s "
-                        "root_error_type=%s error_code=%s",
-                        warmup_id,
-                        os.getpid(),
-                        error_type,
-                        root_error_type,
-                        error_code,
-                    )
-
             _set_parser_state("ready")
             _log_complete(
                 event="som_warmup_complete",
@@ -369,9 +376,10 @@ def warm_up() -> None:
                 started=warmup_started,
                 status="ready",
                 details=(
-                    f" captions={'ready' if captions_ready else 'unavailable'}"
+                    " captions=scheduled"
                 ),
             )
+            _start_icon_semantic_warmup(warmup_id)
         except Exception as exc:
             _set_parser_state("failed", str(exc))
             _log_complete(
@@ -442,12 +450,13 @@ def _element_to_cached(
         name = icon_caption.label if icon_caption is not None else None
         actions = ["click"]
         if icon_caption is not None:
+            label_source = f"omniparser_v2_{icon_caption.backend}"
             metadata.update(
                 {
                     "raw_caption": icon_caption.raw_caption,
                     "normalized_label": icon_caption.normalized_label,
                     "icon_label": icon_caption.normalized_label,
-                    "icon_label_source": "omniparser_v2_florence2",
+                    "icon_label_source": label_source,
                     "icon_label_confidence": icon_caption.confidence,
                     "icon_label_confidence_provenance": (
                         icon_caption.confidence_provenance
@@ -650,10 +659,24 @@ def _convert_parse_result(
         1 for caption in icon_captions.values() if caption.label is not None
     )
     metadata["icon_caption_count"] = len(icon_captions)
+    semantic_backend = "florence2"
+    if icon_captions:
+        semantic_backend = next(iter(icon_captions.values())).backend
+    else:
+        try:
+            from computer_server.services.icon_caption_service import (
+                get_icon_caption_service,
+            )
+
+            semantic_backend = get_icon_caption_service().backend
+        except Exception:
+            pass
     metadata["icon_labeler"] = (
-        "omniparser_v2_florence2" if icon_captions else None
+        f"omniparser_v2_{semantic_backend}"
+        if icon_captions
+        else None
     )
-    metadata["icon_semantic_backend"] = "florence2"
+    metadata["icon_semantic_backend"] = semantic_backend
     metadata["icon_semantic_status"] = icon_semantic_status
     return VisionResult(
         elements=cached,

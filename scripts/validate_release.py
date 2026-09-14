@@ -67,6 +67,36 @@ MODEL_BUNDLES = (
             "vocab.json",
         ),
     ),
+    ModelBundle(
+        name="OmniParser V2 Florence-2 ONNX Community INT8",
+        source_dir=Path(
+            "computer_server/models/omniparser_v2/icon_caption_onnx_community"
+        ),
+        wheel_dir=PurePosixPath(
+            "computer_server/models/omniparser_v2/icon_caption_onnx_community"
+        ),
+        required_files=(
+            "LICENSE",
+            "added_tokens.json",
+            "config.json",
+            "configuration_florence2.py",
+            "generation_config.json",
+            "merges.txt",
+            "model_manifest.json",
+            "pipeline_manifest.json",
+            "preprocessor_config.json",
+            "processing_florence2.py",
+            "special_tokens_map.json",
+            "tokenizer.json",
+            "tokenizer_config.json",
+            "vocab.json",
+            "int8/encoder_model.int8.onnx",
+            "int8/decoder_model.int8.onnx",
+            "int8/decoder_with_past_model.int8.onnx",
+            "onnx/embed_tokens.onnx",
+            "onnx/vision_encoder.onnx",
+        ),
+    ),
 )
 
 
@@ -175,6 +205,10 @@ def _validate_hash_entries(
     for name, expected in expected_hashes.items():
         if (
             not isinstance(name, str)
+            or PurePosixPath(name).is_absolute()
+            or ".." in PurePosixPath(name).parts
+            or "\\" in name
+            or ":" in name
             or not isinstance(expected, str)
             or not re.fullmatch(r"[0-9a-fA-F]{64}", expected)
         ):
@@ -193,7 +227,9 @@ def validate_source_models(root: Path = PROJECT_ROOT) -> None:
         manifest = _load_source_manifest(bundle, root)
         expected_hashes = manifest["sha256"]
         available_files = [
-            path.name for path in bundle_dir.iterdir() if path.is_file()
+            path.relative_to(bundle_dir).as_posix()
+            for path in bundle_dir.rglob("*")
+            if path.is_file()
         ]
         _validate_hash_entries(bundle, expected_hashes, available_files)
         for name, expected in expected_hashes.items():
@@ -248,6 +284,12 @@ def validate_wheel(
                 f"wheel version mismatch: expected {expected_version}, got {wheel_version}"
             )
         names = set(archive.namelist())
+        forbidden = (
+            "computer_server/models/omniparser_v2/icon_caption_int8/",
+            "computer_server/models/quasivision_icon_classifier/",
+        )
+        if any(name.startswith(forbidden) for name in names):
+            raise ReleaseValidationError("wheel includes development-only icon models")
         for bundle in MODEL_BUNDLES:
             source_manifest = _load_source_manifest(bundle, root)
             manifest_name = str(bundle.wheel_dir / "model_manifest.json")
@@ -261,11 +303,15 @@ def validate_wheel(
                     f"{bundle.name} wheel manifest differs from source"
                 )
             expected_hashes = source_manifest["sha256"]
-            available_files = [
-                PurePosixPath(name).name
-                for name in names
-                if PurePosixPath(name).parent == bundle.wheel_dir
-            ]
+            available_files = []
+            for name in names:
+                member_path = PurePosixPath(name)
+                try:
+                    relative = member_path.relative_to(bundle.wheel_dir)
+                except ValueError:
+                    continue
+                if relative.parts:
+                    available_files.append(relative.as_posix())
             _validate_hash_entries(bundle, expected_hashes, available_files)
             for name, expected in expected_hashes.items():
                 member = str(bundle.wheel_dir / name)

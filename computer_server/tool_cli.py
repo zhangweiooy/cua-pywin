@@ -146,6 +146,27 @@ FLORENCE2_REQUIRED_FILES = (
     "vocab.json",
 )
 FLORENCE2_MIN_MODEL_BYTES = 1_000_000_000
+FLORENCE2_COMMUNITY_REQUIRED_FILES = (
+    "LICENSE",
+    "added_tokens.json",
+    "config.json",
+    "configuration_florence2.py",
+    "generation_config.json",
+    "merges.txt",
+    "model_manifest.json",
+    "pipeline_manifest.json",
+    "preprocessor_config.json",
+    "processing_florence2.py",
+    "special_tokens_map.json",
+    "tokenizer.json",
+    "tokenizer_config.json",
+    "vocab.json",
+    "int8/encoder_model.int8.onnx",
+    "int8/decoder_model.int8.onnx",
+    "int8/decoder_with_past_model.int8.onnx",
+    "onnx/embed_tokens.onnx",
+    "onnx/vision_encoder.onnx",
+)
 OMNIPARSER_YOLO_DIR = (
     Path(__file__).resolve().parents[1]
     / "som"
@@ -157,6 +178,12 @@ FLORENCE2_MODEL_DIR = (
     / "models"
     / "omniparser_v2"
     / "icon_caption"
+)
+FLORENCE2_COMMUNITY_MODEL_DIR = (
+    Path(__file__).resolve().parent
+    / "models"
+    / "omniparser_v2"
+    / "icon_caption_onnx_community"
 )
 RAPIDOCR_REQUIRED_FILES = (
     "ch_PP-OCRv4_det_mobile.onnx",
@@ -1711,6 +1738,121 @@ def _check_florence2_bundle() -> DoctorCheck:
     )
 
 
+def _check_florence2_community_bundle() -> DoctorCheck:
+    model_dir = FLORENCE2_COMMUNITY_MODEL_DIR
+    missing = [
+        name
+        for name in FLORENCE2_COMMUNITY_REQUIRED_FILES
+        if not (model_dir / Path(name)).is_file()
+    ]
+    check_name = "model:omniparser_florence2_int8_community"
+    if missing:
+        return DoctorCheck(
+            name=check_name,
+            status="fail",
+            message=(
+                "OmniParser Florence-2 ONNX Community bundle incomplete: "
+                f"missing {', '.join(missing)}"
+            ),
+            details={"path": str(model_dir), "missing": missing},
+        )
+
+    manifest_path = model_dir / "model_manifest.json"
+    try:
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        source = manifest["source"]
+        pipeline = manifest["pipeline"]
+        expected_hashes = manifest["sha256"]
+        if (
+            source.get("repository") != "onnx-community/OmniParser-v2.0_icon_caption"
+            or not isinstance(source.get("revision"), str)
+            or pipeline.get("quantization")
+            != "onnxruntime.quantization.quantize_dynamic"
+            or pipeline.get("weight_type") != "QInt8"
+            or pipeline.get("execution_provider") != "CPUExecutionProvider"
+            or pipeline.get("per_channel") is not True
+            or not isinstance(expected_hashes, dict)
+            or not (set(FLORENCE2_COMMUNITY_REQUIRED_FILES) - {"model_manifest.json"}).issubset(expected_hashes)
+        ):
+            raise ValueError("required ONNX Community INT8 provenance fields are invalid")
+    except (OSError, KeyError, TypeError, ValueError, json.JSONDecodeError) as exc:
+        return DoctorCheck(
+            name=check_name,
+            status="fail",
+            message=f"OmniParser Florence-2 ONNX Community manifest is invalid: {exc}",
+            details={"path": str(manifest_path)},
+        )
+
+    verified: dict[str, str] = {}
+    for name, expected_hash in expected_hashes.items():
+        if not isinstance(name, str) or not isinstance(expected_hash, str) or not re.fullmatch(r"[0-9a-fA-F]{64}", expected_hash):
+            return DoctorCheck(
+                name=check_name,
+                status="fail",
+                message="OmniParser Florence-2 ONNX Community manifest has invalid SHA-256 entries",
+                details={"path": str(manifest_path), "entry": name},
+            )
+        relative = Path(name)
+        if relative.is_absolute() or ".." in relative.parts:
+            return DoctorCheck(
+                name=check_name,
+                status="fail",
+                message="OmniParser Florence-2 ONNX Community manifest contains an unsafe path",
+                details={"path": str(manifest_path), "entry": name},
+            )
+        path = model_dir / relative
+        if not path.is_file():
+            return DoctorCheck(
+                name=check_name,
+                status="fail",
+                message=f"OmniParser Florence-2 ONNX Community file is missing: {name}",
+                details={"path": str(path)},
+            )
+        with path.open("rb") as handle:
+            prefix = handle.read(128)
+        if prefix.startswith(b"version https://git-lfs.github.com/spec/v1"):
+            return DoctorCheck(
+                name=check_name,
+                status="fail",
+                message=f"OmniParser Florence-2 ONNX Community file is a Git LFS pointer: {name}",
+                details={"path": str(path)},
+            )
+        actual_hash = _sha256_file(path)
+        if actual_hash.lower() != expected_hash.lower():
+            return DoctorCheck(
+                name=check_name,
+                status="fail",
+                message=f"OmniParser Florence-2 ONNX Community checksum mismatch: {name}",
+                details={
+                    "path": str(path),
+                    "expected_sha256": expected_hash,
+                    "actual_sha256": actual_hash,
+                },
+            )
+        verified[name] = actual_hash
+
+    total_size = sum(
+        (model_dir / Path(name)).stat().st_size
+        for name in FLORENCE2_COMMUNITY_REQUIRED_FILES
+        if name != "model_manifest.json"
+    )
+    return DoctorCheck(
+        name=check_name,
+        status="ok",
+        message=(
+            "OmniParser Florence-2 ONNX Community INT8 bundle present "
+            f"({_format_size(total_size)})"
+        ),
+        details={
+            "path": str(model_dir),
+            "size_bytes": total_size,
+            "repository": source["repository"],
+            "revision": source["revision"],
+            "verified_files": len(verified),
+        },
+    )
+
+
 def _sha256_file(path: Path) -> str:
     digest = hashlib.sha256()
     with path.open("rb") as handle:
@@ -1918,6 +2060,7 @@ def _collect_doctor_checks(
     checks.append(_check_state_dir())
     checks.append(_check_omniparser_weight())
     checks.append(_check_florence2_bundle())
+    checks.append(_check_florence2_community_bundle())
     checks.append(_check_rapidocr_bundle())
 
     if desktop:

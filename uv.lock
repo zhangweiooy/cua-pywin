@@ -448,7 +448,7 @@ wheels = [
 
 [[package]]
 name = "cua-pywin"
-version = "0.2.8"
+version = "0.3.0"
 source = { editable = "." }
 dependencies = [
     { name = "aiohttp" },
@@ -474,6 +474,7 @@ dependencies = [
     { name = "starlette" },
     { name = "supervision" },
     { name = "timm" },
+    { name = "tokenizers" },
     { name = "torch" },
     { name = "torchvision" },
     { name = "transformers" },
@@ -547,6 +548,7 @@ requires-dist = [
     { name = "starlette", specifier = ">=0.50.0,<1" },
     { name = "supervision", specifier = ">=0.25" },
     { name = "timm", specifier = ">=1.0" },
+    { name = "tokenizers", specifier = ">=0.20,<0.21" },
     { name = "torch", specifier = ">=2.2" },
     { name = "torchvision", specifier = ">=0.17" },
     { name = "transformers", specifier = ">=4.46.1,<4.47" },

@@ -152,6 +152,15 @@ try {
         [string]$TimeoutSeconds
     )
     $vision = $windowState.data.vision_metadata
+    $semanticDeadline = [DateTime]::UtcNow.AddSeconds($TimeoutSeconds)
+    while ($windowState.success -and $vision.icon_semantic_status -in @("idle", "loading") -and [DateTime]::UtcNow -lt $semanticDeadline) {
+        Start-Sleep -Milliseconds 250
+        $windowState = Invoke-CuaJson -Arguments @(
+            "call", "computer_get_window_state", ("@" + $windowStateArgsPath),
+            "--json", "--timeout", [string]$TimeoutSeconds
+        )
+        $vision = $windowState.data.vision_metadata
+    }
     $captureMetadata = $windowState.data.capture.capture_metadata
     if (
         -not $windowState.success -or

@@ -793,9 +793,11 @@ try {
         }
     }
     Invoke-TimedStep "copy bundled models" {
-        Copy-CleanDirectory `
-            -Source (Join-Path $ProjectRoot "computer_server\models") `
-            -Destination (Join-Path $DistDir "computer_server\models")
+        foreach ($bundle in @("rapidocr_ppocrv4", "omniparser_v2\icon_caption", "omniparser_v2\icon_caption_onnx_community")) {
+            Copy-CleanDirectory `
+                -Source (Join-Path $ProjectRoot "computer_server\models\$bundle") `
+                -Destination (Join-Path $DistDir "computer_server\models\$bundle")
+        }
         Copy-CleanDirectory `
             -Source (Join-Path $ProjectRoot "som\weights") `
             -Destination (Join-Path $DistDir "som\weights")

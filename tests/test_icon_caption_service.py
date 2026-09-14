@@ -51,7 +51,7 @@ def test_icon_caption_service_batches_images_once():
 
     processor = FakeProcessor()
     model = FakeModel()
-    service = IconCaptionService(enabled=True, batch_size=64)
+    service = IconCaptionService(backend="florence2", enabled=True, batch_size=64)
     service._state = "ready"
     service._processor = processor
     service._model = model
@@ -98,7 +98,7 @@ def test_icon_caption_service_chunks_only_above_batch_limit():
             return torch.ones(input_ids.shape[0], 3, dtype=torch.long)
 
     processor = FakeProcessor()
-    service = IconCaptionService(enabled=True, batch_size=2)
+    service = IconCaptionService(backend="florence2", enabled=True, batch_size=2)
     service._state = "ready"
     service._processor = processor
     service._model = FakeModel()
@@ -133,6 +133,7 @@ def test_remote_model_identifier_is_rejected_without_download():
     service = IconCaptionService(
         model_name_or_path="microsoft/OmniParser-v2.0",
         processor_name_or_path="microsoft/Florence-2-base",
+        backend="florence2",
     )
 
     assert service.ensure_ready() is False
@@ -173,6 +174,7 @@ def test_local_model_loading_forces_transformers_offline(monkeypatch, tmp_path):
         model_name_or_path=str(tmp_path),
         processor_name_or_path=str(tmp_path),
         enabled=True,
+        backend="florence2",
     )
 
     assert service.ensure_ready() is True
@@ -209,7 +211,7 @@ def test_caption_service_rejects_mismatched_batch_output():
         def generate(self, input_ids, **kwargs):
             return torch.ones(input_ids.shape[0], 3, dtype=torch.long)
 
-    service = IconCaptionService(enabled=True)
+    service = IconCaptionService(backend="florence2", enabled=True)
     service._state = "ready"
     service._processor = FakeProcessor()
     service._model = FakeModel()

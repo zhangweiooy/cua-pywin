@@ -29,6 +29,10 @@ MANIFEST
 *.manifest
 *.spec
 
+# Local screenshots, downloaded PoC weights and generated benchmark outputs.
+artifacts/
+computer_server/models/omniparser_v2/icon_caption_int8/
+
 # Installer logs
 pip-log.txt
 pip-delete-this-directory.txt

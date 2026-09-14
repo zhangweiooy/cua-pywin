@@ -96,7 +96,7 @@ cua-pywin/
 下载。普通 Windows 用户优先使用安装器：
 
 ```powershell
-.\cua-win-0.2.8-win64-setup.exe
+.\cua-win-0.3.0-win64-setup.exe
 cua-win doctor
 ```
 
@@ -108,7 +108,7 @@ wheel 也内置 OmniParser V2 YOLO、Florence-2 和 RapidOCR 模型，适合 Pyt
 环境或开发验证：
 
 ```powershell
-pip install .\cua_pywin-0.2.8-py3-none-any.whl
+pip install .\cua_pywin-0.3.0-py3-none-any.whl
 cua-win doctor
 ```
 
@@ -564,7 +564,7 @@ Download releases from
 Windows users should use the installer:
 
 ```powershell
-.\cua-win-0.2.8-win64-setup.exe
+.\cua-win-0.3.0-win64-setup.exe
 cua-win doctor
 ```
 
@@ -579,7 +579,7 @@ RapidOCR models, and is intended for Python environments or developer
 validation:
 
 ```powershell
-pip install .\cua_pywin-0.2.8-py3-none-any.whl
+pip install .\cua_pywin-0.3.0-py3-none-any.whl
 cua-win doctor
 ```
 
@@ -950,17 +950,29 @@ processor, tokenizer, and model code are bundled under
 `computer_server/models/omniparser_v2/icon_caption/`, with the 1.08 GB weight
 tracked through Git LFS. Runtime model download is not supported: missing or
 invalid model files fail explicitly and are replaced only by a developer-built
-release. Icon crops are
+release. Production uses the separately bundled ONNX Community conversion at
+`computer_server/models/omniparser_v2/icon_caption_onnx_community/`: the
+vision encoder and token embeddings remain FP32, while the BART encoder and
+cached decoder graphs are generated through the ONNX Runtime preprocessing,
+Transformer optimization (including Python fusions), and dynamic per-channel `QInt8` pipeline. It runs
+with `CPUExecutionProvider`; the original PyTorch weight is not loaded by that
+runtime path. Only one semantic backend is loaded per process. Icon crops are
 resized to 64x64 and captioned in batches, matching the official V2 pipeline.
 RapidOCR remains responsible for visible text.
 
 Florence-2 output is exposed as `raw_caption` plus a conservative
 `normalized_label`. It has no calibrated confidence score, so nodes explicitly
 report `icon_label_confidence=null` and
-`icon_label_confidence_provenance="unscored_greedy_generation"`. Empty or
+`icon_label_confidence_provenance="florence2_onnx_community_greedy_generation"`
+for INT8 (`unscored_greedy_generation` for the original baseline). Empty or
 generic captions remain unknown rather than receiving a forced label. Controls:
-`CUA_ENABLE_FLORENCE2`, `CUA_FLORENCE2_DEVICE`, `CUA_FLORENCE2_BATCH_SIZE`, and
-`CUA_FLORENCE2_MAX_NEW_TOKENS`. Debug timing includes `florence2_latency` and
+`CUA_ICON_SEMANTIC_BACKEND=florence2_int8_community` (the production default),
+`CUA_ENABLE_ICON_SEMANTICS`, `CUA_FLORENCE2_COMMUNITY_ONNX_DIR`,
+`CUA_FLORENCE2_BATCH_SIZE`, and
+`CUA_FLORENCE2_MAX_NEW_TOKENS`. The fixed-vocabulary quasivision classifier is
+kept in `scripts/poc_icon_backends.py` as an independent benchmark PoC.
+The production service accepts only `florence2_int8_community` and the
+explicit `florence2` baseline. Debug timing includes `florence2_latency` and
 `icon_semantic_latency`; legacy `tinyclip_latency` remains `0.0` for metadata
 compatibility. `vision_metadata.icon_semantic_status` reports whether captioning
 was ready, disabled/failed during model initialization, or failed during
@@ -968,12 +980,23 @@ inference; YOLO and OCR nodes remain available when captioning fails.
 Batch size and generated-token limits are capped at 256 and 128 respectively to
 bound accidental memory growth.
 
-The bundled wheel is approximately 1.00 GB because it contains the full
-Florence-2 and RapidOCR model bundles.
+The bundled models total about 1.91 GB before wheel compression, including
+the original Florence-2 baseline, its approximately 733 MiB INT8 ONNX bundle,
+YOLO, and RapidOCR. Wheel size must be measured from the built artifact.
 This exceeds PyPI's normal per-file upload limit; distribute release wheels
 through GitHub Releases, an installer, or another artifact store. Source
 checkouts must run `git lfs pull`; `cua-win doctor` rejects an unresolved LFS
 pointer instead of treating it as a valid model.
+
+Detector/OCR readiness is independent of semantic loading. While captions
+load in the background, SOM returns unlabelled icons; caption failures retain
+the base observation. Production greedy decoding honors the local generation
+configuration and stops each batch row at EOS. Experimental beam search lives
+only in the benchmark scripts.
+
+See [iteration review and verification](docs/icon-semantic-int8-review.md) for
+the exact provenance, reproduction commands, and quality limitations. The small
+fixture is exploratory and is not a general desktop-UI accuracy certification.
 
 **PaddleOCR ONNX backend** — OCR defaults to RapidOCR + ONNXRuntime with
 PaddleOCR PP-OCRv4 mobile models. `CUA_OCR_BACKEND=easyocr` enables the optional

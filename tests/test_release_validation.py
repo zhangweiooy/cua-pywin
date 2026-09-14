@@ -215,3 +215,27 @@ def test_validate_source_models_rejects_lfs_pointer(
 
     with pytest.raises(ReleaseValidationError, match="Git LFS pointer"):
         validate_source_models(tmp_path)
+
+
+def test_nested_bundle_validates_source_and_wheel(monkeypatch, tmp_path):
+    import zipfile
+    from scripts.validate_release import validate_wheel
+    directory = tmp_path / "models" / "int8"
+    directory.mkdir(parents=True)
+    content = b"quantized test graph"
+    (directory / "model.onnx").write_bytes(content)
+    manifest = {"sha256": {"int8/model.onnx": hashlib.sha256(content).hexdigest()}}
+    (directory.parent / "model_manifest.json").write_text(json.dumps(manifest), encoding="utf-8")
+    bundle = ModelBundle("nested", Path("models"), PurePosixPath("models"), ("int8/model.onnx", "model_manifest.json"))
+    monkeypatch.setattr(release_validation, "MODEL_BUNDLES", (bundle,))
+    validate_source_models(tmp_path)
+    wheel = tmp_path / "test.whl"
+    with zipfile.ZipFile(wheel, "w") as archive:
+        archive.writestr("test.dist-info/METADATA", "Version: 0.3.0")
+        archive.writestr("models/model_manifest.json", json.dumps(manifest))
+        archive.writestr("models/int8/model.onnx", content)
+    validate_wheel(wheel, "0.3.0", tmp_path)
+    with zipfile.ZipFile(wheel, "a") as archive:
+        archive.writestr("computer_server/models/omniparser_v2/icon_caption_int8/model.int8.onnx", content)
+    with pytest.raises(ReleaseValidationError, match="development-only"):
+        validate_wheel(wheel, "0.3.0", tmp_path)
