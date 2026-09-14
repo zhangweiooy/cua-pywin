@@ -276,12 +276,18 @@ print(
     f"normalized {normalized_checks} machine-specific mtime checks"
 )
 '@
+    # PowerShell's native argument conversion can strip quote characters from
+    # a multi-line Python program. Pass the program as base64 so f-strings and
+    # regex literals arrive at Python byte-for-byte unchanged.
+    $encodedCode = [Convert]::ToBase64String(
+        [Text.Encoding]::UTF8.GetBytes($code)
+    )
     Invoke-Checked -Command "uv" -Arguments @(
         "run",
         "--no-sync",
         "python",
         "-c",
-        $code
+        "import base64; exec(compile(base64.b64decode('$encodedCode'), '<comtypes-build>', 'exec'))"
     ) | Out-Host
 }
 

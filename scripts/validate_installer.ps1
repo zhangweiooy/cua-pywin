@@ -182,10 +182,9 @@ try {
     )
     $missingOrDifferent = @(
         foreach ($sourceFile in $sourceFiles) {
-            $relativePath = [System.IO.Path]::GetRelativePath(
-                $resolvedSource,
-                $sourceFile.FullName
-            )
+            $relativePath = $sourceFile.FullName.Substring(
+                $resolvedSource.Length
+            ).TrimStart('\', '/')
             $installedFile = Join-Path $installDir $relativePath
             if (-not (Test-Path -LiteralPath $installedFile -PathType Leaf)) {
                 $relativePath
