@@ -1,0 +1,18 @@
+[
+  {"path":"minimize.png","expected":"minimize","icon":true,"high_frequency":false,"locale":"zh","theme":"light","scale":"native"},
+  {"path":"maximize.png","expected":"maximize","icon":true,"high_frequency":false,"locale":"zh","theme":"light","scale":"native"},
+  {"path":"close.png","expected":"close","icon":true,"high_frequency":true,"locale":"zh","theme":"light","scale":"native"},
+  {"path":"edit.png","expected":"edit","icon":true,"high_frequency":false,"locale":"zh","theme":"light","scale":"native"},
+  {"path":"automation.png","expected":"automation","icon":true,"high_frequency":false,"locale":"zh","theme":"light","scale":"native"},
+  {"path":"knowledge.png","expected":"knowledge","icon":true,"high_frequency":false,"locale":"zh","theme":"light","scale":"native"},
+  {"path":"grid.png","expected":"grid","icon":true,"high_frequency":false,"locale":"zh","theme":"light","scale":"native"},
+  {"path":"teach.png","expected":"graduation","icon":true,"high_frequency":false,"locale":"zh","theme":"light","scale":"native"},
+  {"path":"factory.png","expected":"factory","icon":true,"high_frequency":false,"locale":"zh","theme":"light","scale":"native"},
+  {"path":"shield.png","expected":"shield","icon":true,"high_frequency":false,"locale":"zh","theme":"light","scale":"native"},
+  {"path":"chevron.png","expected":"forward","icon":true,"high_frequency":false,"locale":"zh","theme":"light","scale":"native"},
+  {"path":"scan.png","expected":"scan","icon":true,"high_frequency":false,"locale":"zh","theme":"light","scale":"native"},
+  {"path":"app.png","expected":"app window","icon":true,"high_frequency":false,"locale":"zh","theme":"light","scale":"native"},
+  {"path":"globe.png","expected":"globe","icon":true,"high_frequency":false,"locale":"zh","theme":"light","scale":"native"},
+  {"path":"clipboard.png","expected":"clipboard","icon":true,"high_frequency":false,"locale":"zh","theme":"light","scale":"native"},
+  {"path":"overflow.png","expected":"overflow menu","icon":true,"high_frequency":true,"locale":"zh","theme":"light","scale":"native"}
+]

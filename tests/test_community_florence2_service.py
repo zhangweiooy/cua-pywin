@@ -93,6 +93,123 @@ def test_kv_cache_uses_output_names_and_preserves_encoder():
     }
 
 
+def test_session_uses_bounded_cpu_threading(monkeypatch, tmp_path):
+    import computer_server.services.community_florence2_service as service_module
+
+    model_path = tmp_path / "model.onnx"
+    model_path.write_bytes(b"model")
+    captured = {}
+
+    class Options:
+        graph_optimization_level = None
+        intra_op_num_threads = None
+        inter_op_num_threads = None
+
+    class FakeOrt:
+        SessionOptions = Options
+        GraphOptimizationLevel = SimpleNamespace(ORT_ENABLE_ALL="all")
+
+        @staticmethod
+        def InferenceSession(path, *, sess_options, providers):
+            captured.update(
+                path=path,
+                options=sess_options,
+                providers=providers,
+            )
+            return object()
+
+    monkeypatch.setattr(service_module, "ort", FakeOrt)
+
+    CommunityFlorence2Runner._session(model_path)
+
+    assert captured["options"].graph_optimization_level == "all"
+    assert captured["options"].intra_op_num_threads == 1
+    assert captured["options"].inter_op_num_threads == 1
+    assert captured["providers"] == ["CPUExecutionProvider"]
+
+
+def test_quantized_load_uses_int8_vision_and_fp32_embeddings(monkeypatch, tmp_path):
+    source_dir = tmp_path / "source"
+    pipeline_dir = tmp_path / "pipeline"
+    (source_dir / "onnx").mkdir(parents=True)
+    (pipeline_dir / "int8").mkdir(parents=True)
+    (source_dir / "generation_config.json").write_text("{}", encoding="utf-8")
+    paths = []
+
+    class Session:
+        def get_inputs(self):
+            return [SimpleNamespace(name="inputs_embeds")]
+
+        def get_outputs(self):
+            return []
+
+    monkeypatch.setattr(
+        CommunityFlorence2Runner,
+        "_load_processor",
+        lambda _runner: object(),
+    )
+
+    def fake_session(path):
+        paths.append(path)
+        return Session()
+
+    monkeypatch.setattr(CommunityFlorence2Runner, "_session", staticmethod(fake_session))
+    runner = CommunityFlorence2Runner(source_dir, pipeline_dir, quantized=True)
+    runner.load()
+
+    assert paths == [
+        pipeline_dir / "int8/vision_encoder.int8.onnx",
+        source_dir / "onnx/embed_tokens.onnx",
+        pipeline_dir / "int8/encoder_model.int8.onnx",
+        pipeline_dir / "int8/decoder_model.int8.onnx",
+        pipeline_dir / "int8/decoder_with_past_model.int8.onnx",
+    ]
+
+
+def test_benchmark_override_can_use_fp32_vision_with_int8_transformers(tmp_path):
+    from scripts.benchmark_onnx_community_florence2 import (
+        VisionBenchmarkRunner,
+        _fixture_coverage,
+    )
+
+    source_dir = tmp_path / "source"
+    pipeline_dir = tmp_path / "pipeline"
+    runner = VisionBenchmarkRunner(
+        source_dir,
+        pipeline_dir,
+        int8_vision=False,
+    )
+
+    assert runner.quantized is True
+    assert runner._vision_graph_path(source_dir / "onnx") == (
+        source_dir / "onnx/vision_encoder.onnx"
+    )
+    assert _fixture_coverage([{"source": "wechat"}]) == {
+        "source_counts": {"wechat": 1},
+        "required_release_source_minimums": {"oryx": 8, "wechat": 8},
+        "missing_release_sources": ["oryx", "wechat"],
+        "release_ready": False,
+    }
+    complete = [{"source": "wechat"}] * 8 + [{"source": "oryx"}] * 8
+    assert _fixture_coverage(complete)["release_ready"] is True
+
+
+def test_release_fixture_includes_both_curated_desktop_sources(tmp_path):
+    from scripts.benchmark_icon_semantics import _make_fixture
+    from scripts.benchmark_onnx_community_florence2 import _fixture_coverage
+
+    rows = _make_fixture(tmp_path)
+    coverage = _fixture_coverage(rows)
+
+    assert coverage["source_counts"] == {
+        "synthetic": 140,
+        "wechat": 11,
+        "oryx": 16,
+    }
+    assert coverage["release_ready"] is True
+    assert all((tmp_path / row["path"]).is_file() for row in rows)
+
+
 def test_greedy_logits_settings_match_transformers(tmp_path):
     import torch
     from transformers.generation.logits_process import (

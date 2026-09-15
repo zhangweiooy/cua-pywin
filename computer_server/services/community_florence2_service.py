@@ -1,8 +1,8 @@
 """Runtime for the ONNX Community split Florence-2 graphs.
 
 The source graphs are the OmniParser-specialized Florence-2 conversion.  The
-vision and token-embedding graphs stay FP32; the encoder and cached decoder
-graphs may point at the official ONNX Runtime INT8 pipeline output.
+token-embedding graph stays FP32; the vision, encoder, and cached decoder graphs
+point at the official ONNX Runtime INT8 pipeline output for production runs.
 """
 
 from __future__ import annotations
@@ -51,6 +51,8 @@ class CommunityFlorence2Runner:
             raise FileNotFoundError(path)
         options = ort.SessionOptions()
         options.graph_optimization_level = ort.GraphOptimizationLevel.ORT_ENABLE_ALL
+        options.intra_op_num_threads = 1
+        options.inter_op_num_threads = 1
         return ort.InferenceSession(
             str(path),
             sess_options=options,
@@ -76,6 +78,11 @@ class CommunityFlorence2Runner:
             ),
         )
 
+    def _vision_graph_path(self, source_onnx: Path) -> Path:
+        if self.quantized:
+            return self.pipeline_dir / "int8" / "vision_encoder.int8.onnx"
+        return source_onnx / "vision_encoder.onnx"
+
     def load(self) -> None:
         if self._processor is not None:
             return
@@ -94,9 +101,10 @@ class CommunityFlorence2Runner:
             self.pipeline_dir / "int8" if self.quantized else source_onnx
         )
         graph_suffix = ".int8.onnx" if self.quantized else ".onnx"
+        vision_graph = self._vision_graph_path(source_onnx)
         processor = self._load_processor()
         sessions = {
-            "vision": self._session(source_onnx / "vision_encoder.onnx"),
+            "vision": self._session(vision_graph),
             "embed": self._session(source_onnx / "embed_tokens.onnx"),
             "encoder": self._session(
                 transformer_graphs / f"encoder_model{graph_suffix}"

@@ -22,18 +22,32 @@
     ],
     "per_channel": true,
     "reduce_range": false,
-    "execution_provider": "CPUExecutionProvider"
+    "execution_provider": "CPUExecutionProvider",
+    "MatMulConstBOnly": true,
+    "vision": {
+      "preprocess": "onnxruntime.quantization.shape_inference.quant_pre_process",
+      "quantization": "onnxruntime.quantization.quantize_dynamic",
+      "weight_type": "QInt8",
+      "op_types": [
+        "MatMul",
+        "Gemm"
+      ],
+      "per_channel": true,
+      "reduce_range": false,
+      "MatMulConstBOnly": true,
+      "execution_provider": "CPUExecutionProvider"
+    }
   },
   "graphs": {
     "encoder_model": {
       "source": "artifacts\\icon-semantic-poc\\onnx-community\\onnx\\encoder_model.onnx",
-      "preprocessed": "artifacts\\icon-semantic-poc\\onnx-community\\pipeline-reviewed\\preprocessed\\encoder_model.pre.onnx",
-      "optimized": "artifacts\\icon-semantic-poc\\onnx-community\\pipeline-reviewed\\optimized\\encoder_model.opt.onnx",
-      "int8": "artifacts\\icon-semantic-poc\\onnx-community\\pipeline-reviewed\\int8\\encoder_model.int8.onnx",
+      "preprocessed": "artifacts\\icon-semantic-poc\\onnx-community\\pipeline-vision-int8-reviewed\\preprocessed\\encoder_model.pre.onnx",
+      "optimized": "artifacts\\icon-semantic-poc\\onnx-community\\pipeline-vision-int8-reviewed\\optimized\\encoder_model.opt.onnx",
+      "int8": "artifacts\\icon-semantic-poc\\onnx-community\\pipeline-vision-int8-reviewed\\int8\\encoder_model.int8.onnx",
       "durations_seconds": {
-        "preprocess": 3.0500646000145935,
-        "transformer_optimize": 1.6288099000230432,
-        "quantize": 3.9658179999678396
+        "preprocess": 2.7859618999973463,
+        "transformer_optimize": 1.4645721999986563,
+        "quantize": 3.719046600002912
       },
       "fusion_statistics": {
         "EmbedLayerNormalization": 0,
@@ -74,13 +88,13 @@
     },
     "decoder_model": {
       "source": "artifacts\\icon-semantic-poc\\onnx-community\\onnx\\decoder_model.onnx",
-      "preprocessed": "artifacts\\icon-semantic-poc\\onnx-community\\pipeline-reviewed\\preprocessed\\decoder_model.pre.onnx",
-      "optimized": "artifacts\\icon-semantic-poc\\onnx-community\\pipeline-reviewed\\optimized\\decoder_model.opt.onnx",
-      "int8": "artifacts\\icon-semantic-poc\\onnx-community\\pipeline-reviewed\\int8\\decoder_model.int8.onnx",
+      "preprocessed": "artifacts\\icon-semantic-poc\\onnx-community\\pipeline-vision-int8-reviewed\\preprocessed\\decoder_model.pre.onnx",
+      "optimized": "artifacts\\icon-semantic-poc\\onnx-community\\pipeline-vision-int8-reviewed\\optimized\\decoder_model.opt.onnx",
+      "int8": "artifacts\\icon-semantic-poc\\onnx-community\\pipeline-vision-int8-reviewed\\int8\\decoder_model.int8.onnx",
       "durations_seconds": {
-        "preprocess": 6.50428130000364,
-        "transformer_optimize": 3.6339295000070706,
-        "quantize": 8.933731899945997
+        "preprocess": 6.187676300000021,
+        "transformer_optimize": 3.262697499998467,
+        "quantize": 8.562377300000662
       },
       "fusion_statistics": {
         "EmbedLayerNormalization": 0,
@@ -121,13 +135,13 @@
     },
     "decoder_with_past_model": {
       "source": "artifacts\\icon-semantic-poc\\onnx-community\\onnx\\decoder_with_past_model.onnx",
-      "preprocessed": "artifacts\\icon-semantic-poc\\onnx-community\\pipeline-reviewed\\preprocessed\\decoder_with_past_model.pre.onnx",
-      "optimized": "artifacts\\icon-semantic-poc\\onnx-community\\pipeline-reviewed\\optimized\\decoder_with_past_model.opt.onnx",
-      "int8": "artifacts\\icon-semantic-poc\\onnx-community\\pipeline-reviewed\\int8\\decoder_with_past_model.int8.onnx",
+      "preprocessed": "artifacts\\icon-semantic-poc\\onnx-community\\pipeline-vision-int8-reviewed\\preprocessed\\decoder_with_past_model.pre.onnx",
+      "optimized": "artifacts\\icon-semantic-poc\\onnx-community\\pipeline-vision-int8-reviewed\\optimized\\decoder_with_past_model.opt.onnx",
+      "int8": "artifacts\\icon-semantic-poc\\onnx-community\\pipeline-vision-int8-reviewed\\int8\\decoder_with_past_model.int8.onnx",
       "durations_seconds": {
-        "preprocess": 6.091073699994013,
-        "transformer_optimize": 3.39139389997581,
-        "quantize": 7.935882700025104
+        "preprocess": 9.511543000000529,
+        "transformer_optimize": 3.589161599997169,
+        "quantize": 8.110560799999803
       },
       "fusion_statistics": {
         "EmbedLayerNormalization": 0,
@@ -163,6 +177,39 @@
         "int8": {
           "bytes": 93180940,
           "sha256": "19408c20229561a8bb11b6333acdd3cfeb16a829388e2eabada7eba104aa42f2"
+        }
+      }
+    },
+    "vision_encoder": {
+      "source": "artifacts\\icon-semantic-poc\\onnx-community\\onnx\\vision_encoder.onnx",
+      "preprocessed": "artifacts\\icon-semantic-poc\\onnx-community\\pipeline-vision-int8-reviewed\\preprocessed\\vision_encoder.pre.onnx",
+      "int8": "artifacts\\icon-semantic-poc\\onnx-community\\pipeline-vision-int8-reviewed\\int8\\vision_encoder.int8.onnx",
+      "durations_seconds": {
+        "preprocess": 7.909819200001948,
+        "quantize": 11.420155600000726
+      },
+      "quantization": {
+        "weight_type": "QInt8",
+        "op_types": [
+          "MatMul",
+          "Gemm"
+        ],
+        "per_channel": true,
+        "reduce_range": false,
+        "MatMulConstBOnly": true
+      },
+      "files": {
+        "source": {
+          "bytes": 365965528,
+          "sha256": "731e2a61276e681979ea5a6fca66da84e59877b045bf4b11299cf43f92817a2a"
+        },
+        "preprocessed": {
+          "bytes": 365958811,
+          "sha256": "e06d0969f53df255d0bbfa1868c8dc1c6a28b2f3741684f1b4194ad92bbe6f0f"
+        },
+        "int8": {
+          "bytes": 113029153,
+          "sha256": "dcc0424ab0ae8727f13bbdd080a5491b5a74a361f8248bd8de9ca01bb66696c2"
         }
       }
     }

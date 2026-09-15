@@ -157,6 +157,13 @@ try {
     New-Item -ItemType Directory -Path $smokeRoot | Out-Null
     New-Item -ItemType Directory -Path $stateDir | Out-Null
     New-Item -ItemType Directory -Path $privateAppData | Out-Null
+    $legacyVision = Join-Path $installDir (
+        "computer_server\models\omniparser_v2\" +
+        "icon_caption_onnx_community\onnx\vision_encoder.onnx"
+    )
+    New-Item -ItemType Directory -Path (Split-Path -Parent $legacyVision) -Force |
+        Out-Null
+    Set-Content -LiteralPath $legacyVision -Value "legacy fp32 vision graph"
 
     Invoke-NativeChecked -Command $resolvedSetup -Arguments @(
         "/VERYSILENT",
@@ -175,6 +182,16 @@ try {
     }
     if (-not (Test-Path -LiteralPath $uninstaller -PathType Leaf)) {
         throw "Installer did not create an uninstaller: $uninstaller"
+    }
+    if (Test-Path -LiteralPath $legacyVision -PathType Leaf) {
+        throw "Installer did not remove the legacy FP32 vision graph"
+    }
+    $int8Vision = Join-Path $installDir (
+        "computer_server\models\omniparser_v2\" +
+        "icon_caption_onnx_community\int8\vision_encoder.int8.onnx"
+    )
+    if (-not (Test-Path -LiteralPath $int8Vision -PathType Leaf)) {
+        throw "Installer did not install the INT8 vision graph"
     }
 
     $sourceFiles = @(

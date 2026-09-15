@@ -96,7 +96,7 @@ cua-pywin/
 下载。普通 Windows 用户优先使用安装器：
 
 ```powershell
-.\cua-win-0.3.0-win64-setup.exe
+.\cua-win-0.3.1-win64-setup.exe
 cua-win doctor
 ```
 
@@ -108,11 +108,11 @@ wheel 也内置 OmniParser V2 YOLO、Florence-2 和 RapidOCR 模型，适合 Pyt
 环境或开发验证：
 
 ```powershell
-pip install .\cua_pywin-0.3.0-py3-none-any.whl
+pip install .\cua_pywin-0.3.1-py3-none-any.whl
 cua-win doctor
 ```
 
-wheel 约 1 GB，因此不通过常规 PyPI 分发。wheel 安装过程仍可能从包索引下载
+wheel 约 660 MiB，因此不通过常规 PyPI 分发。wheel 安装过程仍可能从包索引下载
 Python 依赖；完整的开发者发布流程见 [`RELEASE.md`](RELEASE.md)。
 
 源码开发安装：
@@ -564,7 +564,7 @@ Download releases from
 Windows users should use the installer:
 
 ```powershell
-.\cua-win-0.3.0-win64-setup.exe
+.\cua-win-0.3.1-win64-setup.exe
 cua-win doctor
 ```
 
@@ -579,11 +579,11 @@ RapidOCR models, and is intended for Python environments or developer
 validation:
 
 ```powershell
-pip install .\cua_pywin-0.3.0-py3-none-any.whl
+pip install .\cua_pywin-0.3.1-py3-none-any.whl
 cua-win doctor
 ```
 
-The wheel is approximately 1 GB and is not distributed through normal PyPI.
+The wheel is approximately 660 MiB and is not distributed through normal PyPI.
 Wheel installation can still download Python dependencies from the package index.
 See [`RELEASE.md`](RELEASE.md) for the developer release process.
 
@@ -948,9 +948,10 @@ role, MIME type, dimensions, byte count, `content_index`, `window`,
 `som/weights/icon_detect/model.pt`. Icon semantics use only the bundled ONNX
 Community conversion of the fine-tuned OmniParser Florence-2 model at
 `computer_server/models/omniparser_v2/icon_caption_onnx_community/`: the
-vision encoder and token embeddings remain FP32, while the BART encoder and
-cached decoder graphs are generated through the ONNX Runtime preprocessing,
-Transformer optimization (including Python fusions), and dynamic per-channel `QInt8` pipeline. It runs
+token embeddings remain FP32 because they are Gather-only, while the vision
+encoder, BART encoder, and cached decoder graphs are generated through the ONNX
+Runtime preprocessing, Transformer optimization (including Python fusions), and
+dynamic per-channel `QInt8` pipeline. It runs
 with `CPUExecutionProvider`. The original PyTorch bundle is not shipped or
 loadable. Icon crops are
 resized to 64x64 and captioned in batches, matching the official V2 pipeline.
@@ -974,7 +975,7 @@ inference; YOLO and OCR nodes remain available when captioning fails.
 Batch size and generated-token limits are capped at 256 and 128 respectively to
 bound accidental memory growth.
 
-The selected INT8 icon-semantic bundle is approximately 733 MiB before wheel
+The selected INT8 icon-semantic bundle is approximately 481 MiB before wheel
 compression; YOLO and RapidOCR are bundled separately. Wheel size must be
 measured from the built artifact.
 This exceeds PyPI's normal per-file upload limit; distribute release wheels

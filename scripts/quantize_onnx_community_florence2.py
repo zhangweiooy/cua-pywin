@@ -1,10 +1,11 @@
 """Run the official ONNX Runtime pre-process/optimization/INT8 pipeline.
 
 The source graphs come from the ONNX Community conversion of the specialized
-OmniParser Florence-2 checkpoint.  Vision and token-embedding graphs remain
-FP32; the Transformer encoder and both decoder graphs use symbolic/ONNX shape
-pre-processing, the ONNX Runtime Transformer optimizer, then dynamic per-
-channel QInt8 quantization of MatMul/Gemm weights.
+OmniParser Florence-2 checkpoint.  The token-embedding graph remains FP32; the
+vision encoder uses ORT pre-processing followed by dynamic per-channel QInt8
+quantization, while the Transformer encoder and both decoder graphs use
+symbolic/ONNX shape pre-processing, the ONNX Runtime Transformer optimizer,
+then the same QInt8 MatMul/Gemm pipeline.
 """
 
 from __future__ import annotations
@@ -19,11 +20,12 @@ from pathlib import Path
 from typing import Any
 
 LOGGER = logging.getLogger("quantize_onnx_community_florence2")
-GRAPH_NAMES = (
+TRANSFORMER_GRAPH_NAMES = (
     "encoder_model",
     "decoder_model",
     "decoder_with_past_model",
 )
+VISION_GRAPH_NAME = "vision_encoder"
 
 
 def bundle_pipeline(source_dir: Path, pipeline_dir: Path, bundle_dir: Path) -> None:
@@ -41,19 +43,24 @@ def bundle_pipeline(source_dir: Path, pipeline_dir: Path, bundle_dir: Path) -> N
             "tokenizer.json",
             "tokenizer_config.json",
             "vocab.json",
-            "onnx/vision_encoder.onnx",
             "onnx/embed_tokens.onnx",
         )
     }
     files.update(
         {
             f"int8/{name}.int8.onnx": pipeline_dir / "int8" / f"{name}.int8.onnx"
-            for name in GRAPH_NAMES
+            for name in TRANSFORMER_GRAPH_NAMES
         }
+    )
+    files["int8/vision_encoder.int8.onnx"] = (
+        pipeline_dir / "int8" / "vision_encoder.int8.onnx"
     )
     files["processing_florence2.py"] = source_dir / "processing_florence2.py"
     files["LICENSE"] = source_dir / "LICENSE"
     files["pipeline_manifest.json"] = pipeline_dir / "pipeline_manifest.json"
+    stale_vision = bundle_dir / "onnx" / "vision_encoder.onnx"
+    if stale_vision.is_file():
+        stale_vision.unlink()
     for name, source in files.items():
         target = bundle_dir / name
         target.parent.mkdir(parents=True, exist_ok=True)
@@ -164,6 +171,68 @@ def _optimize_and_quantize(source: Path, output_dir: Path) -> dict[str, Any]:
     }
 
 
+def _quantize_vision(source: Path, output_dir: Path) -> dict[str, Any]:
+    """Run ORT pre-processing followed by dynamic INT8 quantization for vision."""
+    from onnxruntime.quantization import QuantType, quantize_dynamic
+    from onnxruntime.quantization.shape_inference import quant_pre_process
+
+    preprocessed_dir = output_dir / "preprocessed"
+    quantized_dir = output_dir / "int8"
+    for directory in (preprocessed_dir, quantized_dir):
+        directory.mkdir(parents=True, exist_ok=True)
+
+    stem = source.stem
+    preprocessed = preprocessed_dir / f"{stem}.pre.onnx"
+    quantized = quantized_dir / f"{stem}.int8.onnx"
+
+    started = time.perf_counter()
+    quant_pre_process(
+        source,
+        preprocessed,
+        skip_optimization=False,
+        skip_symbolic_shape=False,
+        skip_onnx_shape=False,
+    )
+    preprocess_seconds = time.perf_counter() - started
+
+    started = time.perf_counter()
+    quantize_dynamic(
+        preprocessed,
+        quantized,
+        op_types_to_quantize=["MatMul", "Gemm"],
+        per_channel=True,
+        reduce_range=False,
+        weight_type=QuantType.QInt8,
+        extra_options={"MatMulConstBOnly": True},
+    )
+    quantize_seconds = time.perf_counter() - started
+
+    return {
+        "source": str(source),
+        "preprocessed": str(preprocessed),
+        "int8": str(quantized),
+        "durations_seconds": {
+            "preprocess": preprocess_seconds,
+            "quantize": quantize_seconds,
+        },
+        "quantization": {
+            "weight_type": "QInt8",
+            "op_types": ["MatMul", "Gemm"],
+            "per_channel": True,
+            "reduce_range": False,
+            "MatMulConstBOnly": True,
+        },
+        "files": {
+            name: {"bytes": path.stat().st_size, "sha256": _sha256(path)}
+            for name, path in (
+                ("source", source),
+                ("preprocessed", preprocessed),
+                ("int8", quantized),
+            )
+        },
+    }
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument(
@@ -185,12 +254,17 @@ def main(argv: list[str] | None = None) -> int:
     logging.basicConfig(level=logging.INFO, format="%(levelname)s %(message)s")
 
     results: dict[str, Any] = {}
-    for name in GRAPH_NAMES:
+    for name in TRANSFORMER_GRAPH_NAMES:
         source = args.source_dir / f"{name}.onnx"
         if not source.is_file():
             raise FileNotFoundError(source)
         LOGGER.info("processing %s", source.name)
         results[name] = _optimize_and_quantize(source, args.output_dir)
+    vision_source = args.source_dir / f"{VISION_GRAPH_NAME}.onnx"
+    if not vision_source.is_file():
+        raise FileNotFoundError(vision_source)
+    LOGGER.info("processing %s", vision_source.name)
+    results[VISION_GRAPH_NAME] = _quantize_vision(vision_source, args.output_dir)
 
     manifest = {
         "source": {
@@ -214,6 +288,17 @@ def main(argv: list[str] | None = None) -> int:
             "per_channel": True,
             "reduce_range": False,
             "execution_provider": "CPUExecutionProvider",
+            "MatMulConstBOnly": True,
+            "vision": {
+                "preprocess": "onnxruntime.quantization.shape_inference.quant_pre_process",
+                "quantization": "onnxruntime.quantization.quantize_dynamic",
+                "weight_type": "QInt8",
+                "op_types": ["MatMul", "Gemm"],
+                "per_channel": True,
+                "reduce_range": False,
+                "MatMulConstBOnly": True,
+                "execution_provider": "CPUExecutionProvider",
+            },
         },
         "graphs": results,
     }

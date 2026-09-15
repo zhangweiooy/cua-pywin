@@ -1,0 +1,13 @@
+[
+  {"path":"search.png","expected":"search","icon":true,"high_frequency":true,"locale":"zh","theme":"light","scale":"native"},
+  {"path":"minimize.png","expected":"minimize","icon":true,"high_frequency":false,"locale":"zh","theme":"light","scale":"native"},
+  {"path":"maximize.png","expected":"maximize","icon":true,"high_frequency":false,"locale":"zh","theme":"light","scale":"native"},
+  {"path":"close.png","expected":"close","icon":true,"high_frequency":true,"locale":"zh","theme":"light","scale":"native"},
+  {"path":"overflow_menu.png","expected":"overflow menu","icon":true,"high_frequency":true,"locale":"zh","theme":"light","scale":"native"},
+  {"path":"call_or_mobile.png","expected":"call or mobile","icon":true,"high_frequency":false,"locale":"zh","theme":"light","scale":"native"},
+  {"path":"folder.png","expected":"folder","icon":true,"high_frequency":false,"locale":"zh","theme":"light","scale":"native"},
+  {"path":"cut.png","expected":"cut","icon":true,"high_frequency":false,"locale":"zh","theme":"light","scale":"native"},
+  {"path":"microphone.png","expected":"microphone","icon":true,"high_frequency":false,"locale":"zh","theme":"light","scale":"native"},
+  {"path":"menu.png","expected":"menu","icon":true,"high_frequency":false,"locale":"zh","theme":"light","scale":"native"},
+  {"path":"volume.png","expected":"volume","icon":true,"high_frequency":false,"locale":"zh","theme":"light","scale":"native"}
+]

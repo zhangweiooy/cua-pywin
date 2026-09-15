@@ -23,10 +23,12 @@ Source: `onnx-community/OmniParser-v2.0_icon_caption`, revision
 `0d28990c05ddeb50792d02b92f7e6e4d0f4bd086`, the community conversion of
 `microsoft/OmniParser-v2.0/icon_caption`.
 
-The quantization implementation uses ORT's `quant_pre_process`,
+The Transformer quantization implementation uses ORT's `quant_pre_process`,
 `optimize_model(model_type="bart", only_onnxruntime=False)` and dynamic
-per-channel QInt8 for constant-weight MatMul/Gemm. Vision and embedding graphs
-remain FP32. This is our application of official ORT APIs, not a Microsoft
+per-channel QInt8 for constant-weight MatMul/Gemm. The vision graph now uses
+the official `quant_pre_process` followed by `quantize_dynamic` with the same
+QInt8/per-channel/constant-B settings; the embedding graph remains FP32 because
+it is Gather-only. This is our application of official ORT APIs, not a Microsoft
 published end-to-end Florence export/serving pipeline.
 
 Actual fused operators: encoder has 13 SkipLayerNormalization and 6 BiasGelu;
@@ -35,9 +37,10 @@ counts are zero. The optimizer emitted non-fatal Concat removal warnings.
 Successful graph loading alone is not proof that all fusions succeeded.
 
 The controlled bundle contains the pipeline manifest, per-file SHA-256 and
-license notice. Actual CPU profiling executes MatMulIntegerToFloat and
-DynamicQuantizeMatMul in all three Transformer sessions; those graphs are not
-expanded wholesale into an FP32 model.
+license notice. Actual CPU profiling executes DynamicQuantizeMatMul in the
+vision session and MatMulIntegerToFloat/DynamicQuantizeMatMul in all three
+Transformer sessions; those graphs are not expanded wholesale into an FP32
+model.
 
 ## Verification scope
 
@@ -47,16 +50,24 @@ expanded wholesale into an FP32 model.
 - Identical batches repeat stably. Single-versus-batch output differs on one
   WeChat menu crop: `Center` vs `All Sheets`; neither matches the annotation.
   The report preserves this disagreement rather than claiming universal parity.
-- The reviewed 151-row run preserves INT8 Top-1 alias-match 38.4%, high-frequency
-  53.5%, WeChat 6/11. Community FP32 is 39.7%, 55.6%, and 6/11 respectively.
-  All 100 repeated first-crop calls are stable.
-- The measured INT8 peak RSS is about 1.97 GB and Private Bytes about 3.05 GB.
-  A profiling process overlapped part of this run: latency is exploratory and
-  must not be compared as a controlled speedup against earlier runs.
+- The reviewed 167-row run fixes the Transformer graphs at INT8 and changes
+  only the vision graph. INT8 vision Top-1 is 43.1%, high-frequency is 54.5%,
+  WeChat is 6/11, and Oryx is 11/16; the FP32-vision baseline is 40.7%,
+  54.5%, 6/11, and 10/16 respectively. Top-3 is 61.1% versus 60.5% for FP32
+  vision. Twenty-two captions changed.
+  All 100 repeated first-crop calls are stable. Both paths label all eight
+  decorative synthetic samples, so the measured non-icon false-positive rate
+  remains 100%; this remains a quality limitation, not a resolved acceptance
+  criterion.
+- The measured INT8-vision peak RSS is about 1.58 GiB, effectively unchanged
+  from this run's FP32-vision baseline; peak Private Bytes falls by about
+  240 MiB to 2.59 GiB. First inference and 16-image batch latency improve by
+  about 50% and 46%. These are exploratory CPU measurements, not production
+  SLOs.
 
 Remaining evaluation limitations: the synthetic en/zh rows duplicate the same
 pixels and do not test localized UI; scale changes stroke width rather than OS
-DPI; only 11 real crops are labelled. The alias matcher misses synonyms such as
+DPI; only 27 real crops are labelled. The alias matcher misses synonyms such as
 `Find`/`search` and `Mic`/`microphone`. The eight decorative samples all receive
 non-unknown Florence labels. Top-3 uses experimental cumulative-score beam
 search rather than verified Hugging Face beam equivalence. These figures must
@@ -65,10 +76,12 @@ The original requirement for a broad desktop corpus remains an evaluation task.
 
 ## Reproduction
 
-Local checks: 470 tests passed; Ruff, compileall, doctor and source model hashes
-passed. A local wheel was built and its internal nested model hashes validated;
-PoC resources and development scripts were absent. PowerShell build/smoke
-scripts were syntax checked; a new standalone installer has not been built.
+Local checks: the 0.3.1 bundle update must pass the full test, Ruff,
+compileall, doctor, source-model-hash, wheel, standalone, and installer gates
+before publication. The checked-in release fixture contains 140 synthetic rows,
+11 real WeChat crops, and 16 manually labelled crops from a WGC capture of Oryx
+Desktop 0.19.1. The release-grade run requires at least eight samples from each
+real source and records `release_ready=false` if either source falls below it.
 
 An isolated source daemon started within the existing 90-second timeout and
 served `computer_get_screen_size` successfully. Its log records detector/OCR
@@ -79,16 +92,16 @@ Run from the repository with locally acquired source graphs; runtime never
 downloads models.
 
 ```powershell
-uv run --no-sync --with onnx python scripts/quantize_onnx_community_florence2.py --output-dir artifacts/icon-semantic-poc/onnx-community/pipeline-reviewed --bundle-dir computer_server/models/omniparser_v2/icon_caption_onnx_community
-uv run --no-sync python scripts/benchmark_onnx_community_florence2.py --pipeline-dir artifacts/icon-semantic-poc/onnx-community/pipeline-reviewed --output-dir artifacts/icon-semantic-poc/onnx-community/benchmark-reviewed
+uv run --no-sync --with onnx python scripts/quantize_onnx_community_florence2.py --output-dir artifacts/icon-semantic-poc/onnx-community/pipeline-vision-int8-reviewed --bundle-dir computer_server/models/omniparser_v2/icon_caption_onnx_community
+uv run --no-sync python scripts/benchmark_onnx_community_florence2.py --pipeline-dir artifacts/icon-semantic-poc/onnx-community/pipeline-vision-int8-reviewed --output-dir artifacts/icon-semantic-poc/onnx-community/benchmark-vision-int8-reviewed
 uv run --no-sync python scripts/verify_florence2_runtime.py
 uv run --no-sync pytest -q
 uv run --no-sync ruff check .
-uv run --no-sync python scripts/validate_release.py --version 0.3.0
+uv run --no-sync python scripts/validate_release.py --version 0.3.1
 ```
 
-The historical benchmark automatically includes the local
-`artifacts/wechat-som-20260801/wechat-window.png` when available; otherwise
-it has 140 synthetic rows, not 151. Private screenshots are not bundled.
+The curated WeChat and Oryx crops live under `tests/fixtures/icon_semantics` so
+a clean checkout exercises the same real-source gate. The Oryx full-window
+fixture also makes the frozen-runtime SOM smoke independent of foreground UI.
 Commit/push, version bump, published release and installed-daemon replacement
 are separate delivery steps. This review does not change an existing release tag.

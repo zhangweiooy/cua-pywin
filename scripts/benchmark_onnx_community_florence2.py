@@ -28,6 +28,41 @@ from scripts.benchmark_icon_semantics import (
     _private_bytes,
 )
 
+REQUIRED_RELEASE_SOURCE_MINIMUMS = {"wechat": 8, "oryx": 8}
+
+
+def _fixture_coverage(rows: list[dict[str, Any]]) -> dict[str, Any]:
+    counts: dict[str, int] = {}
+    for row in rows:
+        source = str(row.get("source") or "unknown").lower()
+        counts[source] = counts.get(source, 0) + 1
+    missing = sorted(
+        source
+        for source, minimum in REQUIRED_RELEASE_SOURCE_MINIMUMS.items()
+        if counts.get(source, 0) < minimum
+    )
+    return {
+        "source_counts": counts,
+        "required_release_source_minimums": dict(
+            sorted(REQUIRED_RELEASE_SOURCE_MINIMUMS.items())
+        ),
+        "missing_release_sources": missing,
+        "release_ready": not missing,
+    }
+
+
+class VisionBenchmarkRunner(BenchmarkFlorence2Runner):
+    """Keep Transformer INT8 fixed while selecting the vision graph."""
+
+    def __init__(self, *args, int8_vision: bool, **kwargs) -> None:
+        self.int8_vision = int8_vision
+        super().__init__(*args, quantized=True, **kwargs)
+
+    def _vision_graph_path(self, source_onnx: Path) -> Path:
+        if self.int8_vision:
+            return super()._vision_graph_path(source_onnx)
+        return source_onnx / "vision_encoder.onnx"
+
 
 def _worker(args: argparse.Namespace) -> int:
     import psutil
@@ -37,10 +72,10 @@ def _worker(args: argparse.Namespace) -> int:
         Image.open(args.manifest.parent / row["path"]).convert("RGB") for row in rows
     ]
     process = psutil.Process()
-    runner = BenchmarkFlorence2Runner(
+    runner = VisionBenchmarkRunner(
         args.source_dir,
         args.pipeline_dir,
-        quantized=args.quantized,
+        int8_vision=args.int8_vision,
         batch_size=64,
         max_new_tokens=20,
     )
@@ -90,10 +125,13 @@ def _worker(args: argparse.Namespace) -> int:
         for caption, candidates in zip(captions, top3_candidates)
     ]
     result = {
-        "backend": "florence2_int8_community"
-        if args.quantized
-        else "florence2_onnx_community_fp32",
-        "quantized": args.quantized,
+        "backend": (
+            "florence2_int8_community"
+            if args.int8_vision
+            else "florence2_int8_transformers_fp32_vision"
+        ),
+        "transformer_quantized": True,
+        "vision_quantized": args.int8_vision,
         "torch_imported": "torch" in sys.modules,
         "top3_method": "experimental cumulative-logprob beam search; not HF beam parity",
         "dataset_samples": len(rows),
@@ -132,16 +170,30 @@ def _worker(args: argparse.Namespace) -> int:
 
 
 def _parent(args: argparse.Namespace) -> int:
-    fixture = args.output_dir / "fixture"
-    _make_fixture(fixture)
+    if args.fixture_manifest is None:
+        fixture = args.output_dir / "fixture"
+        rows = _make_fixture(fixture)
+        manifest = fixture / "manifest.json"
+    else:
+        manifest = args.fixture_manifest.resolve()
+        rows = json.loads(manifest.read_text(encoding="utf-8"))
+        fixture = manifest.parent
+    coverage = _fixture_coverage(rows)
+    if not coverage["release_ready"] and not args.allow_incomplete_real_fixture:
+        print(
+            "release fixture is missing required real sources: "
+            + ", ".join(coverage["missing_release_sources"]),
+            file=sys.stderr,
+        )
+        return 2
     results: dict[str, Any] = {}
-    for quantized in (False, True):
+    for int8_vision in (False, True):
         command = [
             sys.executable,
             str(Path(__file__).resolve()),
             "--worker",
             "--manifest",
-            str((fixture / "manifest.json").resolve()),
+            str(manifest.resolve()),
             "--source-dir",
             str(args.source_dir.resolve()),
             "--pipeline-dir",
@@ -149,8 +201,8 @@ def _parent(args: argparse.Namespace) -> int:
             "--repeat-count",
             str(args.repeat_count),
         ]
-        if quantized:
-            command.append("--quantized")
+        if int8_vision:
+            command.append("--int8-vision")
         environment = dict(os.environ)
         environment["TRANSFORMERS_OFFLINE"] = "1"
         completed = subprocess.run(
@@ -162,7 +214,7 @@ def _parent(args: argparse.Namespace) -> int:
         )
         if completed.returncode != 0:
             print(
-                f"community worker failed (quantized={quantized})\n"
+                f"community worker failed (int8_vision={int8_vision})\n"
                 f"{completed.stdout}\n{completed.stderr}",
                 file=sys.stderr,
             )
@@ -173,6 +225,7 @@ def _parent(args: argparse.Namespace) -> int:
         "fixture": str(fixture.resolve()),
         "source_dir": str(args.source_dir.resolve()),
         "pipeline_dir": str(args.pipeline_dir.resolve()),
+        "coverage": coverage,
         "results": results,
     }
     args.output_dir.mkdir(parents=True, exist_ok=True)
@@ -187,8 +240,10 @@ def _parent(args: argparse.Namespace) -> int:
 def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser()
     parser.add_argument("--worker", action="store_true")
-    parser.add_argument("--quantized", action="store_true")
+    parser.add_argument("--int8-vision", action="store_true")
     parser.add_argument("--manifest", type=Path)
+    parser.add_argument("--fixture-manifest", type=Path)
+    parser.add_argument("--allow-incomplete-real-fixture", action="store_true")
     parser.add_argument(
         "--source-dir",
         type=Path,

@@ -26,6 +26,7 @@ class ModelBundle:
     source_dir: Path
     wheel_dir: PurePosixPath
     required_files: tuple[str, ...]
+    forbidden_files: tuple[str, ...] = ()
 
 
 MODEL_BUNDLES = (
@@ -73,9 +74,10 @@ MODEL_BUNDLES = (
             "int8/encoder_model.int8.onnx",
             "int8/decoder_model.int8.onnx",
             "int8/decoder_with_past_model.int8.onnx",
+            "int8/vision_encoder.int8.onnx",
             "onnx/embed_tokens.onnx",
-            "onnx/vision_encoder.onnx",
         ),
+        forbidden_files=("onnx/vision_encoder.onnx",),
     ),
 )
 
@@ -169,6 +171,12 @@ def _validate_hash_entries(
     available_files: Iterable[str],
 ) -> None:
     available = set(available_files)
+    forbidden = set(bundle.forbidden_files) & available
+    if forbidden:
+        raise ReleaseValidationError(
+            f"{bundle.name} contains forbidden files: "
+            f"{', '.join(sorted(forbidden))}"
+        )
     missing = set(bundle.required_files) - available
     if missing:
         raise ReleaseValidationError(

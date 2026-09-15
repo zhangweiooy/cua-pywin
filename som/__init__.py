@@ -1,6 +1,6 @@
 """SOM - Computer Vision and OCR library for detecting and analyzing UI elements."""
 
-__version__ = "0.3.0"
+__version__ = "0.3.1"
 
 from .detect import OmniParser
 from .models import (

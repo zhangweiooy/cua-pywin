@@ -205,38 +205,23 @@ def _make_fixture(root: Path) -> list[dict[str, Any]]:
                 }
             )
             index += 1
-    screenshot_path = Path("artifacts/wechat-som-20260801/wechat-window.png")
-    if screenshot_path.is_file():
-        screenshot = Image.open(screenshot_path).convert("RGB")
-        real_crops = (
-            ("search", (108, 61, 145, 100)),
-            ("minimize", (1098, 4, 1138, 42)),
-            ("maximize", (1162, 4, 1202, 42)),
-            ("close", (1225, 4, 1265, 42)),
-            ("overflow_menu", (1210, 60, 1250, 101)),
-            ("call_or_mobile", (1158, 60, 1200, 101)),
-            ("folder", (565, 852, 606, 902)),
-            ("cut", (620, 852, 660, 902)),
-            ("microphone", (745, 852, 785, 902)),
-            ("menu", (24, 853, 67, 906)),
-            ("volume", (1081, 852, 1123, 901)),
-        )
-        for label, box in real_crops:
-            filename = f"{index:04d}_wechat_{label}.png"
-            screenshot.crop(box).resize((64, 64), Image.Resampling.LANCZOS).save(
-                image_dir / filename
-            )
+    curated_root = (
+        Path(__file__).resolve().parents[1] / "tests/fixtures/icon_semantics"
+    )
+    for source in ("wechat", "oryx"):
+        curated_manifest = curated_root / source / "manifest.json"
+        curated_rows = json.loads(curated_manifest.read_text(encoding="utf-8"))
+        for curated_row in curated_rows:
+            source_path = curated_manifest.parent / curated_row["path"]
+            filename = f"{index:04d}_{source}_{source_path.name}"
+            Image.open(source_path).convert("RGB").resize(
+                (64, 64), Image.Resampling.LANCZOS
+            ).save(image_dir / filename)
             rows.append(
                 {
+                    **curated_row,
                     "path": str(Path("images") / filename),
-                    "expected": label.replace("_", " "),
-                    "icon": True,
-                    "high_frequency": label in HIGH_FREQUENCY
-                    or label in {"search", "close"},
-                    "locale": "zh",
-                    "theme": "light",
-                    "scale": "native",
-                    "source": "wechat",
+                    "source": source,
                 }
             )
             index += 1
@@ -287,8 +272,19 @@ def _match(expected: str, predicted: str | None) -> bool:
     normalized = predicted.casefold().replace("_", " ")
     aliases = {
         "arrow left": ("arrow left", "back", "left arrow"),
+        "app window": ("app", "window", "browser", "tab"),
+        "automation": ("automation", "calendar", "schedule", "timer", "clock"),
+        "edit": ("edit", "new", "compose", "pencil"),
+        "factory": ("factory", "skill"),
+        "forward": ("forward", "right arrow", "arrow right"),
+        "globe": ("globe", "web", "internet", "world", "domain"),
+        "graduation": ("graduation", "education", "teach", "school"),
+        "grid": ("grid", "apps", "dashboard"),
+        "knowledge": ("knowledge", "brain", "brainstorm"),
         "reply or send": ("reply or send", "send", "paper plane"),
         "save or download": ("save or download", "download", "save"),
+        "scan": ("scan", "scanner", "vision"),
+        "shield": ("shield", "security", "protect"),
         "profile avatar or user": (
             "profile avatar or user",
             "profile",

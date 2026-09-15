@@ -1884,6 +1884,16 @@ def test_florence2_community_doctor_verifies_nested_bundle(
                     "weight_type": "QInt8",
                     "execution_provider": "CPUExecutionProvider",
                     "per_channel": True,
+                    "MatMulConstBOnly": True,
+                    "vision": {
+                        "preprocess": "onnxruntime.quantization.shape_inference.quant_pre_process",
+                        "quantization": "onnxruntime.quantization.quantize_dynamic",
+                        "weight_type": "QInt8",
+                        "op_types": ["MatMul", "Gemm"],
+                        "per_channel": True,
+                        "MatMulConstBOnly": True,
+                        "execution_provider": "CPUExecutionProvider",
+                    },
                 },
                 "sha256": hashes,
             }
@@ -1897,8 +1907,14 @@ def test_florence2_community_doctor_verifies_nested_bundle(
     assert check.status == "ok"
     assert check.details["verified_files"] == len(hashes)
 
+    legacy_vision = model_dir / "onnx" / "vision_encoder.onnx"
+    legacy_vision.parent.mkdir(parents=True, exist_ok=True)
+    legacy_vision.write_bytes(b"deprecated fp32 graph")
+    assert tool_cli._check_florence2_community_bundle().status == "fail"
+    legacy_vision.unlink()
+
     manifest_path = model_dir / "model_manifest.json"
     manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
-    del manifest["sha256"]["onnx/vision_encoder.onnx"]
+    del manifest["sha256"]["int8/vision_encoder.int8.onnx"]
     manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
     assert tool_cli._check_florence2_community_bundle().status == "fail"

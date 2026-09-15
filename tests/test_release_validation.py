@@ -139,6 +139,9 @@ def test_nuitka_bundles_clean_environment_comtypes_uia_bindings() -> None:
     assert '$env:CUA_OCR_TIMEOUT_SECONDS = "60"' in som_smoke
     assert "without changing the runtime default" in som_smoke
     assert "force_som = $true" in som_smoke
+    assert "oryx-window-0.19.1.png" in som_smoke
+    assert "fixture-hwnd.txt" in som_smoke
+    assert "targetable HWND" in som_smoke
     assert 'icon_semantic_status -ne "ready"' in som_smoke
     assert "[int]$vision.num_text -lt 1" in som_smoke
     assert '"--include-package=comtypes.gen"' in script
@@ -187,6 +190,13 @@ def test_installer_build_requires_clean_environment_lifecycle() -> None:
     assert "Refusing to replace an existing cua-win installation" in validator
     assert "Uninstaller did not remove the installation directory" in validator
     assert "changed the current user's PATH" in validator
+    assert "[InstallDelete]" in installer_script
+    assert "[UninstallDelete]" in installer_script
+    assert 'Type: dirifempty; Name: "{app}"' in installer_script
+    assert "icon_caption_onnx_community\\onnx\\vision_encoder.onnx" in installer_script
+    assert "legacy fp32 vision graph" in validator
+    assert "Installer did not remove the legacy FP32 vision graph" in validator
+    assert "Installer did not install the INT8 vision graph" in validator
     assert "FirstOutput: Boolean;" in installer_script
     assert "if not FirstOutput then" in installer_script
     assert "until not HasMore;" in installer_script
@@ -239,3 +249,36 @@ def test_nested_bundle_validates_source_and_wheel(monkeypatch, tmp_path):
         archive.writestr("computer_server/models/omniparser_v2/icon_caption_int8/model.int8.onnx", content)
     with pytest.raises(ReleaseValidationError, match="development-only"):
         validate_wheel(wheel, "0.3.0", tmp_path)
+
+
+def test_validate_wheel_rejects_bundle_forbidden_file(monkeypatch, tmp_path):
+    import zipfile
+    from scripts.validate_release import validate_wheel
+
+    content = b"quantized test graph"
+    model_dir = tmp_path / "models"
+    (model_dir / "int8").mkdir(parents=True)
+    (model_dir / "int8/model.onnx").write_bytes(content)
+    manifest = {
+        "sha256": {"int8/model.onnx": hashlib.sha256(content).hexdigest()}
+    }
+    (model_dir / "model_manifest.json").write_text(
+        json.dumps(manifest), encoding="utf-8"
+    )
+    bundle = ModelBundle(
+        "nested",
+        Path("models"),
+        PurePosixPath("models"),
+        ("int8/model.onnx", "model_manifest.json"),
+        ("onnx/vision_encoder.onnx",),
+    )
+    monkeypatch.setattr(release_validation, "MODEL_BUNDLES", (bundle,))
+    wheel = tmp_path / "test.whl"
+    with zipfile.ZipFile(wheel, "w") as archive:
+        archive.writestr("test.dist-info/METADATA", "Version: 0.3.1")
+        archive.writestr("models/model_manifest.json", json.dumps(manifest))
+        archive.writestr("models/int8/model.onnx", content)
+        archive.writestr("models/onnx/vision_encoder.onnx", b"fp32")
+
+    with pytest.raises(ReleaseValidationError, match="forbidden files"):
+        validate_wheel(wheel, "0.3.1", tmp_path)

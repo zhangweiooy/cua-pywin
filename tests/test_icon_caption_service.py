@@ -73,6 +73,25 @@ def test_remote_model_identifier_is_rejected_without_download():
     assert "must be a local directory" in service.status["failure"]
 
 
+def test_missing_int8_vision_marks_semantics_failed(monkeypatch, tmp_path):
+    from computer_server.services.community_florence2_service import (
+        CommunityFlorence2Runner,
+    )
+
+    (tmp_path / "generation_config.json").write_text("{}", encoding="utf-8")
+    monkeypatch.setattr(
+        CommunityFlorence2Runner,
+        "_load_processor",
+        lambda _runner: object(),
+    )
+    service = IconCaptionService(model_name_or_path=str(tmp_path), enabled=True)
+
+    assert service.ensure_ready() is False
+    assert service.status["state"] == "failed"
+    assert "int8" in service.status["failure"]
+    assert "vision_encoder.int8.onnx" in service.status["failure"]
+
+
 def test_caption_limits_are_bounded(monkeypatch):
     monkeypatch.setenv("CUA_FLORENCE2_BATCH_SIZE", "9999")
     monkeypatch.setenv("CUA_FLORENCE2_MAX_NEW_TOKENS", "9999")

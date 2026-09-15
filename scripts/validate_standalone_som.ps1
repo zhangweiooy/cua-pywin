@@ -2,7 +2,9 @@ param(
     [Parameter(Mandatory = $true)]
     [string]$ExePath,
 
-    [int]$TimeoutSeconds = 300
+    [int]$TimeoutSeconds = 300,
+
+    [string]$FixtureImagePath = ""
 )
 
 Set-StrictMode -Version Latest
@@ -17,6 +19,23 @@ if ($null -ne $nativeErrorPreference) {
 }
 
 $resolvedExe = (Resolve-Path -LiteralPath $ExePath).Path
+if (-not $FixtureImagePath) {
+    $FixtureImagePath = Join-Path $PSScriptRoot (
+        "..\tests\fixtures\icon_semantics\oryx\oryx-window-0.19.1.png"
+    )
+}
+$resolvedFixtureImage = (Resolve-Path -LiteralPath $FixtureImagePath).Path
+$bundleRoot = Join-Path (
+    Split-Path -Parent $resolvedExe
+) "computer_server\models\omniparser_v2\icon_caption_onnx_community"
+$int8VisionPath = Join-Path $bundleRoot "int8\vision_encoder.int8.onnx"
+$fp32VisionPath = Join-Path $bundleRoot "onnx\vision_encoder.onnx"
+if (-not (Test-Path -LiteralPath $int8VisionPath -PathType Leaf)) {
+    throw "Standalone bundle is missing the INT8 vision graph: $int8VisionPath"
+}
+if (Test-Path -LiteralPath $fp32VisionPath -PathType Leaf) {
+    throw "Standalone bundle contains the deprecated FP32 vision graph: $fp32VisionPath"
+}
 $tempRoot = [System.IO.Path]::GetFullPath($env:TEMP)
 $stateRoot = Join-Path $tempRoot (
     "cua-win-som-smoke-" +
@@ -52,6 +71,7 @@ foreach ($name in $environmentNames) {
 }
 
 $daemonPid = $null
+$fixtureProcess = $null
 $failure = $null
 $cleanupFailure = $null
 
@@ -100,12 +120,54 @@ try {
     $env:PYTHONIOENCODING = "utf-8"
     $env:TRANSFORMERS_OFFLINE = "1"
 
-    $getWindowArgsPath = Join-Path $stateRoot "get-active-window.json"
-    @{
-        active = $true
-    } | ConvertTo-Json -Depth 10 | Set-Content `
-        -LiteralPath $getWindowArgsPath `
-        -Encoding utf8
+    $fixtureTitle = "cua-win-som-fixture-" + [DateTime]::UtcNow.ToString(
+        "yyyyMMddHHmmssfff"
+    )
+    $fixtureScriptPath = Join-Path $stateRoot "show-fixture.ps1"
+    @'
+param([string]$ImagePath, [string]$WindowTitle, [string]$HandlePath)
+Add-Type -AssemblyName System.Drawing
+Add-Type -AssemblyName System.Windows.Forms
+Add-Type @"
+using System;
+using System.Runtime.InteropServices;
+public static class CuaFixtureWindow {
+    [DllImport("user32.dll")]
+    public static extern bool ShowWindow(IntPtr handle, int command);
+}
+"@
+$image = [System.Drawing.Image]::FromFile($ImagePath)
+try {
+    $form = New-Object System.Windows.Forms.Form
+    $form.Text = $WindowTitle
+    $form.StartPosition = "CenterScreen"
+    $form.ClientSize = New-Object System.Drawing.Size(1280, 861)
+    $picture = New-Object System.Windows.Forms.PictureBox
+    $picture.Dock = "Fill"
+    $picture.Image = $image
+    $picture.SizeMode = "Zoom"
+    $form.Controls.Add($picture)
+    $form.Show()
+    [void][CuaFixtureWindow]::ShowWindow($form.Handle, 5)
+    [string][int64]$form.Handle | Set-Content -LiteralPath $HandlePath -Encoding ascii
+    [System.Windows.Forms.Application]::Run($form)
+}
+finally {
+    $image.Dispose()
+}
+'@ | Set-Content -LiteralPath $fixtureScriptPath -Encoding utf8
+    $fixtureHandlePath = Join-Path $stateRoot "fixture-hwnd.txt"
+    $fixtureProcess = Start-Process `
+        -FilePath "$env:SystemRoot\System32\WindowsPowerShell\v1.0\powershell.exe" `
+        -ArgumentList @(
+            "-NoProfile", "-Sta", "-ExecutionPolicy", "Bypass",
+            "-File", $fixtureScriptPath,
+            "-ImagePath", $resolvedFixtureImage,
+            "-WindowTitle", $fixtureTitle,
+            "-HandlePath", $fixtureHandlePath
+        ) `
+        -WindowStyle Hidden `
+        -PassThru
 
     $daemon = Invoke-CuaJson -Arguments @(
         "start",
@@ -118,23 +180,33 @@ try {
     }
     $daemonPid = [int]$daemon.pid
 
-    $windowResult = Invoke-CuaJson -Arguments @(
-        "call",
-        "computer_get_window",
-        ("@" + $getWindowArgsPath),
-        "--json",
-        "--timeout",
-        [string]$TimeoutSeconds
-    )
-    if (-not $windowResult.success -or $null -eq $windowResult.data.window) {
-        throw "SOM smoke could not resolve the active window"
+    $fixtureWindow = $null
+    $fixtureDeadline = [DateTime]::UtcNow.AddSeconds(30)
+    while ($null -eq $fixtureWindow -and [DateTime]::UtcNow -lt $fixtureDeadline) {
+        if ($fixtureProcess.HasExited) {
+            throw "SOM fixture window process exited before exposing a window"
+        }
+        if (Test-Path -LiteralPath $fixtureHandlePath -PathType Leaf) {
+            $fixtureHandle = [int64](
+                Get-Content -LiteralPath $fixtureHandlePath -Raw
+            ).Trim()
+            $fixtureWindow = @{
+                id = $fixtureHandle
+                pid = [int]$fixtureProcess.Id
+            }
+            break
+        }
+        Start-Sleep -Milliseconds 250
+    }
+    if ($null -eq $fixtureWindow) {
+        throw "SOM smoke fixture process did not expose a targetable HWND"
     }
 
     $windowStateArgsPath = Join-Path $stateRoot "window-state.json"
     @{
         window = @{
-            id = [int64]$windowResult.data.window.id
-            pid = [int]$windowResult.data.window.pid
+            id = [int64]$fixtureWindow.id
+            pid = [int]$fixtureWindow.pid
         }
         force_som = $true
         max_nodes = 20
@@ -231,6 +303,20 @@ finally {
             }
             if (Get-Process -Id $daemonPid -ErrorAction SilentlyContinue) {
                 throw "Standalone daemon process did not exit: $daemonPid"
+            }
+        }
+        if ($null -ne $fixtureProcess -and -not $fixtureProcess.HasExited) {
+            [void]$fixtureProcess.CloseMainWindow()
+            Wait-Process `
+                -Id $fixtureProcess.Id `
+                -Timeout 5 `
+                -ErrorAction SilentlyContinue
+            if (Get-Process -Id $fixtureProcess.Id -ErrorAction SilentlyContinue) {
+                Stop-Process -Id $fixtureProcess.Id -Force
+                Wait-Process `
+                    -Id $fixtureProcess.Id `
+                    -Timeout 10 `
+                    -ErrorAction SilentlyContinue
             }
         }
         if (Test-Path -LiteralPath $stateRoot) {

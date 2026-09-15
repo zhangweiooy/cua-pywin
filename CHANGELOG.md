@@ -4,6 +4,15 @@ All notable changes to this project will be documented in this file.
 
 ## Unreleased
 
+## 0.3.1 - 2026-09-15
+
+### Changed
+
+- Quantize the OmniParser Florence-2 vision encoder with the official ONNX
+  Runtime INT8 pipeline; keep only the Gather-based token embeddings in FP32.
+- Use the INT8 vision graph in production and reject stale FP32 vision graphs
+  from the model bundle and release validation.
+
 ## 0.3.0 - 2026-09-14
 
 ### Changed

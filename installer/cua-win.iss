@@ -46,6 +46,17 @@ Name: "addtopath"; Description: "Add cua-win to the current user's PATH"; GroupD
 [Files]
 Source: "{#SourceDir}\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
 
+[InstallDelete]
+Type: files; Name: "{app}\computer_server\models\omniparser_v2\icon_caption_onnx_community\onnx\vision_encoder.onnx"
+
+[UninstallDelete]
+Type: dirifempty; Name: "{app}\computer_server\models\omniparser_v2\icon_caption_onnx_community\onnx"
+Type: dirifempty; Name: "{app}\computer_server\models\omniparser_v2\icon_caption_onnx_community"
+Type: dirifempty; Name: "{app}\computer_server\models\omniparser_v2"
+Type: dirifempty; Name: "{app}\computer_server\models"
+Type: dirifempty; Name: "{app}\computer_server"
+Type: dirifempty; Name: "{app}"
+
 [Icons]
 Name: "{autoprograms}\cua-win\cua-win"; Filename: "{app}\cua-win.exe"; WorkingDir: "{app}"
 Name: "{autoprograms}\cua-win\cua-win doctor"; Filename: "{app}\cua-win.exe"; Parameters: "doctor"; WorkingDir: "{app}"

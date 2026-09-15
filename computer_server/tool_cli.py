@@ -147,8 +147,8 @@ FLORENCE2_COMMUNITY_REQUIRED_FILES = (
     "int8/encoder_model.int8.onnx",
     "int8/decoder_model.int8.onnx",
     "int8/decoder_with_past_model.int8.onnx",
+    "int8/vision_encoder.int8.onnx",
     "onnx/embed_tokens.onnx",
-    "onnx/vision_encoder.onnx",
 )
 OMNIPARSER_YOLO_DIR = (
     Path(__file__).resolve().parents[1]
@@ -1645,12 +1645,23 @@ def _check_omniparser_weight() -> DoctorCheck:
 
 def _check_florence2_community_bundle() -> DoctorCheck:
     model_dir = FLORENCE2_COMMUNITY_MODEL_DIR
+    legacy_vision = model_dir / "onnx" / "vision_encoder.onnx"
     missing = [
         name
         for name in FLORENCE2_COMMUNITY_REQUIRED_FILES
         if not (model_dir / Path(name)).is_file()
     ]
     check_name = "model:omniparser_florence2_int8_community"
+    if legacy_vision.is_file():
+        return DoctorCheck(
+            name=check_name,
+            status="fail",
+            message=(
+                "OmniParser Florence-2 ONNX Community bundle contains the "
+                "deprecated FP32 vision graph"
+            ),
+            details={"path": str(legacy_vision)},
+        )
     if missing:
         return DoctorCheck(
             name=check_name,
@@ -1676,6 +1687,18 @@ def _check_florence2_community_bundle() -> DoctorCheck:
             or pipeline.get("weight_type") != "QInt8"
             or pipeline.get("execution_provider") != "CPUExecutionProvider"
             or pipeline.get("per_channel") is not True
+            or pipeline.get("MatMulConstBOnly") is not True
+            or not isinstance(pipeline.get("vision"), dict)
+            or pipeline["vision"].get("preprocess")
+            != "onnxruntime.quantization.shape_inference.quant_pre_process"
+            or pipeline["vision"].get("quantization")
+            != "onnxruntime.quantization.quantize_dynamic"
+            or pipeline["vision"].get("weight_type") != "QInt8"
+            or pipeline["vision"].get("op_types") != ["MatMul", "Gemm"]
+            or pipeline["vision"].get("per_channel") is not True
+            or pipeline["vision"].get("MatMulConstBOnly") is not True
+            or pipeline["vision"].get("execution_provider")
+            != "CPUExecutionProvider"
             or not isinstance(expected_hashes, dict)
             or not (set(FLORENCE2_COMMUNITY_REQUIRED_FILES) - {"model_manifest.json"}).issubset(expected_hashes)
         ):
