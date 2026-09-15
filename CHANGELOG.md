@@ -4,6 +4,14 @@ All notable changes to this project will be documented in this file.
 
 ## Unreleased
 
+### Fixed
+
+- `force_som=true` now performs one bounded recovery attempt when SOM or its
+  Florence-2 semantic warm-up has failed; ordinary requests remain retry-free.
+- Run SOM off the event loop and publish snapshot caches only from the current
+  request, preventing cancelled or superseded workers from overwriting newer
+  window elements and coordinates.
+
 ## 0.3.3 - 2026-09-15
 
 ### Changed

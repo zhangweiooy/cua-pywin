@@ -165,6 +165,7 @@ _parser_condition = threading.Condition(_parser_lock)
 _parse_lock = threading.Lock()
 _parser_state = "idle"  # idle | loading | ready | failed
 _parser_failure: Optional[str] = None
+_parser_recovery_attempted = False
 _som_available: Optional[bool] = None
 _som_available_lock = threading.Lock()
 _latest_warmup_id: Optional[str] = None
@@ -270,6 +271,152 @@ def _start_icon_semantic_warmup(warmup_id: str) -> None:
         logger.warning("Could not schedule optional icon semantics", exc_info=True)
 
 
+def _run_warm_up(warmup_id: str) -> None:
+    global _parser_recovery_attempted
+    warmup_started = time.perf_counter()
+    logger.info(
+        "event=som_warmup_start warmup_id=%s pid=%d",
+        warmup_id,
+        os.getpid(),
+    )
+
+    try:
+        if not is_available():
+            _set_parser_state("idle")
+            _log_complete(
+                event="som_warmup_complete",
+                trace_field="warmup_id",
+                trace_id=warmup_id,
+                started=warmup_started,
+                status="unavailable",
+            )
+            return
+
+        from concurrent.futures import ThreadPoolExecutor
+
+        parser = _timed_stage(
+            event="som_warmup_stage",
+            trace_field="warmup_id",
+            trace_id=warmup_id,
+            stage="parser",
+            operation=_get_parser,
+        )
+
+        with _parse_lock:
+            ocr_backend = str(getattr(parser.ocr, "backend", "unknown"))
+            ocr_details = f" backend={ocr_backend}"
+            if ocr_backend == "rapidocr":
+                model_dir = parser.ocr._rapidocr_model_dir()
+                model_root_source = (
+                    "override" if os.getenv("CUA_RAPIDOCR_MODEL_DIR") else "bundled"
+                )
+                ocr_details += (
+                    f" model_root_source={model_root_source}"
+                    f" model_root_exists={str(model_dir.is_dir()).lower()}"
+                )
+            with ThreadPoolExecutor(max_workers=2) as ex:
+                f_yolo = ex.submit(
+                    _timed_stage,
+                    event="som_warmup_stage",
+                    trace_field="warmup_id",
+                    trace_id=warmup_id,
+                    stage="yolo",
+                    operation=parser.detector.load_model,
+                )
+                f_ocr = ex.submit(
+                    _timed_stage,
+                    event="som_warmup_stage",
+                    trace_field="warmup_id",
+                    trace_id=warmup_id,
+                    stage="rapidocr",
+                    operation=parser.ocr._ensure_reader,
+                    details=ocr_details,
+                )
+                f_yolo.result()
+                f_ocr.result()
+
+        with _parser_condition:
+            _parser_recovery_attempted = False
+        _set_parser_state("ready")
+        _log_complete(
+            event="som_warmup_complete",
+            trace_field="warmup_id",
+            trace_id=warmup_id,
+            started=warmup_started,
+            status="ready",
+            details=" captions=scheduled",
+        )
+        _start_icon_semantic_warmup(warmup_id)
+    except Exception as exc:
+        _set_parser_state("failed", str(exc))
+        _log_complete(
+            event="som_warmup_complete",
+            trace_field="warmup_id",
+            trace_id=warmup_id,
+            started=warmup_started,
+            status="failed",
+            level=logging.WARNING,
+            details=_failure_fields(exc),
+        )
+
+
+def _schedule_warm_up(*, retry_failed: bool = False) -> bool:
+    global _latest_warmup_id, _parser_recovery_attempted
+    schedule_started = time.perf_counter()
+    warmup_id = _trace_id()
+    with _parser_condition:
+        state = _parser_state
+        if state in {"loading", "ready"}:
+            _log_complete(
+                event="som_warmup_complete",
+                trace_field="warmup_id",
+                trace_id=warmup_id,
+                started=schedule_started,
+                status="skipped",
+                details=f" parser_state={state}",
+            )
+            return False
+        if state == "failed":
+            if not retry_failed or _parser_recovery_attempted:
+                reason = (
+                    "already_attempted"
+                    if _parser_recovery_attempted
+                    else "retry_not_requested"
+                )
+                _log_complete(
+                    event="som_warmup_complete",
+                    trace_field="warmup_id",
+                    trace_id=warmup_id,
+                    started=schedule_started,
+                    status="skipped",
+                    details=f" parser_state=failed recovery_skip_reason={reason}",
+                )
+                return False
+            _parser_recovery_attempted = True
+        _set_parser_state("loading")
+        _latest_warmup_id = warmup_id
+
+    try:
+        threading.Thread(
+            target=lambda: _run_warm_up(warmup_id),
+            name="som-warmup",
+            daemon=True,
+        ).start()
+    except Exception as exc:
+        _set_parser_state("failed", str(exc))
+        _log_complete(
+            event="som_warmup_complete",
+            trace_field="warmup_id",
+            trace_id=warmup_id,
+            started=schedule_started,
+            status="failed",
+            level=logging.WARNING,
+            details=_failure_fields(exc),
+        )
+        return False
+    return True
+
+
 def warm_up() -> None:
     """Pre-initialize OmniParser in a background thread at server startup.
 
@@ -291,109 +438,12 @@ def warm_up() -> None:
     for library output to corrupt.
     """
 
-    def _init() -> None:
-        global _latest_warmup_id
-        warmup_id = _trace_id()
-        warmup_started = time.perf_counter()
-        logger.info(
-            "event=som_warmup_start warmup_id=%s pid=%d",
-            warmup_id,
-            os.getpid(),
-        )
+    _schedule_warm_up()
 
-        try:
-            if not is_available():
-                _log_complete(
-                    event="som_warmup_complete",
-                    trace_field="warmup_id",
-                    trace_id=warmup_id,
-                    started=warmup_started,
-                    status="unavailable",
-                )
-                return
-            with _parser_condition:
-                if _parser_state in ("loading", "ready"):
-                    _log_complete(
-                        event="som_warmup_complete",
-                        trace_field="warmup_id",
-                        trace_id=warmup_id,
-                        started=warmup_started,
-                        status="skipped",
-                        details=f" parser_state={_parser_state}",
-                    )
-                    return
-                _set_parser_state("loading")
-                _latest_warmup_id = warmup_id
 
-            from concurrent.futures import ThreadPoolExecutor
-
-            parser = _timed_stage(
-                event="som_warmup_stage",
-                trace_field="warmup_id",
-                trace_id=warmup_id,
-                stage="parser",
-                operation=_get_parser,
-            )
-
-            with _parse_lock:
-                ocr_backend = str(getattr(parser.ocr, "backend", "unknown"))
-                ocr_details = f" backend={ocr_backend}"
-                if ocr_backend == "rapidocr":
-                    model_dir = parser.ocr._rapidocr_model_dir()
-                    model_root_source = (
-                        "override" if os.getenv("CUA_RAPIDOCR_MODEL_DIR") else "bundled"
-                    )
-                    ocr_details += (
-                        f" model_root_source={model_root_source}"
-                        f" model_root_exists={str(model_dir.is_dir()).lower()}"
-                    )
-                with ThreadPoolExecutor(max_workers=2) as ex:
-                    f_yolo = ex.submit(
-                        _timed_stage,
-                        event="som_warmup_stage",
-                        trace_field="warmup_id",
-                        trace_id=warmup_id,
-                        stage="yolo",
-                        operation=parser.detector.load_model,
-                    )
-                    f_ocr = ex.submit(
-                        _timed_stage,
-                        event="som_warmup_stage",
-                        trace_field="warmup_id",
-                        trace_id=warmup_id,
-                        stage="rapidocr",
-                        operation=parser.ocr._ensure_reader,
-                        details=ocr_details,
-                    )
-                    f_yolo.result()
-                    f_ocr.result()
-
-            _set_parser_state("ready")
-            _log_complete(
-                event="som_warmup_complete",
-                trace_field="warmup_id",
-                trace_id=warmup_id,
-                started=warmup_started,
-                status="ready",
-                details=(
-                    " captions=scheduled"
-                ),
-            )
-            _start_icon_semantic_warmup(warmup_id)
-        except Exception as exc:
-            _set_parser_state("failed", str(exc))
-            _log_complete(
-                event="som_warmup_complete",
-                trace_field="warmup_id",
-                trace_id=warmup_id,
-                started=warmup_started,
-                status="failed",
-                level=logging.WARNING,
-                details=_failure_fields(exc),
-            )
-
-    t = threading.Thread(target=_init, name="som-warmup", daemon=True)
-    t.start()
+def retry_failed_warm_up() -> bool:
+    """Retry one failed SOM warm-up when explicitly requested by force_som."""
+    return _schedule_warm_up(retry_failed=True)
 
 
 # ---------------------------------------------------------------------------
@@ -519,11 +569,12 @@ def _label_icon_elements(
     raw_elements: List[Any],
     screen_width: int,
     screen_height: int,
+    *,
+    retry_failed_warmup: bool = False,
 ) -> tuple[Dict[int, IconCaption], str]:
     """Batch-caption all icon crops and return captions by raw element position."""
     try:
         from computer_server.services.icon_caption_service import (
-            caption_icons,
             get_icon_caption_service,
         )
 
@@ -535,8 +586,11 @@ def _label_icon_elements(
         )
         if not crops:
             return {}, "not_run"
-        captions = caption_icons(crops)
-        status = str(get_icon_caption_service().status.get("state") or "unknown")
+        service = get_icon_caption_service()
+        if retry_failed_warmup:
+            service.start_background_warm_up(retry_failed=True)
+        captions = service.caption_icons(crops)
+        status = str(service.status.get("state") or "unknown")
         return (
             {
                 pos: caption
@@ -564,6 +618,8 @@ def _convert_parse_result(
     screen_width: int,
     screen_height: int,
     vision_index_start: int,
+    *,
+    retry_failed_warmup: bool = False,
 ) -> VisionResult:
     raw_elements = list(getattr(result, "elements", []) or [])
     stage_start = time.perf_counter()
@@ -572,6 +628,7 @@ def _convert_parse_result(
         raw_elements,
         screen_width,
         screen_height,
+        retry_failed_warmup=retry_failed_warmup,
     )
     icon_semantic_latency = time.perf_counter() - stage_start
 
@@ -796,6 +853,8 @@ def detect_sync(
     box_threshold: float = 0.3,
     use_ocr: bool = True,
     vision_index_start: int = 10000,
+    *,
+    retry_failed_warmup: bool = False,
 ) -> Optional[VisionResult]:
     """Synchronous SOM detection — safe to run in ``loop.run_in_executor``.
 
@@ -805,15 +864,18 @@ def detect_sync(
     heavy ML imports off the event-loop thread.
     """
     detect_id = _trace_id()
-    correlated_warmup_id = _latest_warmup_id or "none"
     detect_started = time.perf_counter()
+    available = is_available()
+    if retry_failed_warmup and available:
+        retry_failed_warm_up()
+    correlated_warmup_id = _latest_warmup_id or "none"
     logger.info(
         "event=som_detect_sync_start detect_id=%s warmup_id=%s pid=%d",
         detect_id,
         correlated_warmup_id,
         os.getpid(),
     )
-    if not is_available():
+    if not available:
         _log_complete(
             event="som_detect_sync_complete",
             trace_field="detect_id",
@@ -922,6 +984,7 @@ def detect_sync(
                 screen_width,
                 screen_height,
                 vision_index_start,
+                retry_failed_warmup=retry_failed_warmup,
             ),
         )
         _log_complete(

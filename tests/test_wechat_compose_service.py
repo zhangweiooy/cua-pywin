@@ -273,7 +273,7 @@ def test_existing_semantic_edit_suppresses_synthetic_duplicate():
     assert result.element is None
 
 
-def test_merge_adds_compose_to_cache_and_preserves_public_projection(
+def test_merge_returns_cacheable_compose_and_preserves_public_projection(
     monkeypatch,
     caplog,
 ):
@@ -290,14 +290,6 @@ def test_merge_adds_compose_to_cache_and_preserves_public_projection(
         )(),
     )
 
-    class FakeCache:
-        def append_vision_elements(self, pid, window_id, cached_elements):
-            self.elements = list(cached_elements)
-
-        def set_quality(self, pid, window_id, quality):
-            self.quality = quality
-
-    cache = FakeCache()
     caplog.set_level(logging.INFO, logger=window_state_service.__name__)
     result = window_state_service.merge_som_vision(
         image,
@@ -308,14 +300,13 @@ def test_merge_adds_compose_to_cache_and_preserves_public_projection(
         compression_ratio=2.0,
         crop_origin_window_x=4,
         crop_origin_window_y=6,
-        cache=cache,
-        uia_quality="poor",
         target_family="wechat",
         existing_nodes=[],
     )
 
     edit_node = next(node for node in result["nodes"] if node["control_type"] == "edit")
-    cached_edit = next(element for element in cache.elements if element.control_type == "edit")
+    cached = window_state_service.build_cached_elements(result["nodes"])
+    cached_edit = next(element for element in cached if element.control_type == "edit")
     assert edit_node["element_index"] == cached_edit.element_index
     assert "compose_region_count" not in result["vision_metadata"]
     assert (

@@ -19,6 +19,8 @@ logger = logging.getLogger(__name__)
 T = TypeVar("T")
 DEFAULT_RETURNED_NODE_LIMIT = 100
 PUBLIC_FLOAT_DECIMALS = 2
+_snapshot_requests: Dict[Tuple[int, int], object] = {}
+_snapshot_requests_lock = threading.Lock()
 
 _COMPACT_WINDOW_STATE_OMIT_FIELDS = frozenset({
     "accessibility_hint",
@@ -1602,13 +1604,12 @@ def merge_som_vision(
     compression_ratio: float,
     crop_origin_window_x: int,
     crop_origin_window_y: int,
-    cache: Any,
-    uia_quality: str,
     *,
     target_family: str = "",
     existing_nodes: Optional[List[Dict[str, Any]]] = None,
+    retry_failed_warmup: bool = False,
 ) -> Dict[str, Any]:
-    """Run SOM detection and merge vision nodes into the element cache."""
+    """Return SOM nodes without mutating shared snapshot state."""
     try:
         from computer_server.handlers.som_bridge import detect_sync
 
@@ -1621,6 +1622,7 @@ def merge_som_vision(
             0.3,
             True,
             10000,
+            retry_failed_warmup=retry_failed_warmup,
         )
         if vision_result is None or not vision_result.elements:
             return {"nodes": [], "vision_node_count": 0, "vision_quality": "empty"}
@@ -1669,7 +1671,6 @@ def merge_som_vision(
                 int(el.bbox[2] * z) + crop_origin_window_x,
                 int(el.bbox[3] * z) + crop_origin_window_y,
             )
-        cache.append_vision_elements(pid, window_id, vision_result.elements)
 
         nodes = []
         for el in vision_result.elements:
@@ -1706,7 +1707,6 @@ def merge_som_vision(
                         "icon_label_confidence_provenance"
                     )
             nodes.append(node)
-        cache.set_quality(pid, window_id, uia_quality)
         return {
             "nodes": nodes,
             "vision_node_count": len(vision_result.elements),
@@ -2100,6 +2100,11 @@ async def get_window_state_snapshot(
     if seen_popovers is None:
         seen_popovers = {}
 
+    request_key = (pid, window_id)
+    request_token = object()
+    with _snapshot_requests_lock:
+        _snapshot_requests[request_key] = request_token
+
     try:
         capture_result = await capture_window_snapshot_image(
             automation_handler,
@@ -2125,7 +2130,6 @@ async def get_window_state_snapshot(
         zoom_metadata = zoom_metadata if zoom_metadata is not None else {}
         zoom_entry = geometry.to_zoom_metadata()
         zoom_entry["capture_backend"] = capture_metadata.get("capture_backend")
-        zoom_metadata[(pid, window_id)] = zoom_entry
 
         related_window_candidates = list_related_transient_windows(pid, window_id)
         related_screenshots = await capture_related_window_screenshots(
@@ -2135,12 +2139,6 @@ async def get_window_state_snapshot(
         )
 
         cache = get_element_cache()
-        cache.set_window_origin(
-            pid,
-            window_id,
-            geometry.window_origin_x,
-            geometry.window_origin_y,
-        )
 
         uia_data = await collect_uia_nodes(
             pid,
@@ -2190,8 +2188,6 @@ async def get_window_state_snapshot(
             if msaa_node_count > 0:
                 tree_quality = _best_tree_quality(uia_quality, msaa_quality)
 
-        cache.update(pid, window_id, build_cached_elements(nodes))
-        cache.set_quality(pid, window_id, tree_quality)
 
         popover_candidates_text = detect_popover_candidates(
             pid,
@@ -2206,7 +2202,8 @@ async def get_window_state_snapshot(
                 if target_profile.family == "wechat"
                 else []
             )
-            vision_data = merge_som_vision(
+            vision_data = await asyncio.to_thread(
+                merge_som_vision,
                 img,
                 pid,
                 window_id,
@@ -2215,10 +2212,9 @@ async def get_window_state_snapshot(
                 geometry.compression_ratio,
                 geometry.crop_origin_window_x,
                 geometry.crop_origin_window_y,
-                cache,
-                tree_quality,
                 target_family=target_profile.family,
                 existing_nodes=existing_nodes_for_compose,
+                retry_failed_warmup=force_som,
             )
             nodes.extend(vision_data["nodes"])
             vision_node_count = vision_data["vision_node_count"]
@@ -2227,6 +2223,22 @@ async def get_window_state_snapshot(
             vision_metadata = vision_data.get("vision_metadata", {})
         else:
             vision_metadata = {}
+
+        # No await between ownership validation and publishing this snapshot.
+        # Cancelled workers only return nodes; a superseded caller cannot commit.
+        with _snapshot_requests_lock:
+            if _snapshot_requests.get(request_key) is not request_token:
+                return {
+                    "success": False,
+                    "code": "STALE_OBSERVATION",
+                    "error": "A newer window snapshot superseded this request",
+                }
+            cache.update(pid, window_id, build_cached_elements(nodes))
+            cache.set_quality(pid, window_id, tree_quality)
+            cache.set_window_origin(
+                pid, window_id, geometry.window_origin_x, geometry.window_origin_y,
+            )
+            zoom_metadata[request_key] = zoom_entry
 
         nodes = enrich_nodes_with_action_hints(nodes)
         filtered_nodes = filter_nodes_by_query(nodes, query, include_all_nodes)
@@ -2314,6 +2326,10 @@ async def get_window_state_snapshot(
     except Exception as e:
         logger.exception("get_window_state_snapshot failed")
         return {"success": False, "error": str(e)}
+    finally:
+        with _snapshot_requests_lock:
+            if _snapshot_requests.get(request_key) is request_token:
+                del _snapshot_requests[request_key]
 
 
 async def create_zoom_image(

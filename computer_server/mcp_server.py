@@ -4477,7 +4477,11 @@ def create_mcp_server() -> FastMCP:
             window: Canonical window object from list/get_window_state output.
             query: Optional substring filter for the debug tree markdown and returned nodes.
             max_image_dimension: Maximum dimension for the screenshot (default 1280).
-            force_som: When True, run SOM vision detection regardless of tree quality.
+            force_som: Defaults to False. Normally omit it: SOM runs automatically
+                only when the UIA/MSAA tree is poor or empty. Set it to True when
+                visual detection is needed despite a usable tree. This also allows
+                one bounded retry after a failed SOM warm-up; it may add model
+                loading latency and returns degraded results if recovery fails.
             include_all_nodes: When True, return all nodes even if query is set.
             max_nodes: Maximum number of highest-priority nodes to return. Default 100;
                 use 0 or null to return all nodes.

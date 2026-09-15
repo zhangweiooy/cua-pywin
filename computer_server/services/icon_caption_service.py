@@ -147,6 +147,7 @@ class IconCaptionService:
         self._state = "idle" if enabled else "disabled"
         self._failure: Optional[str] = None
         self._inference_failure: Optional[str] = None
+        self._failed_retry_attempted = False
         self._background_thread: Optional[threading.Thread] = None
         self._community_runner: Any = None
         self._inference_lock = threading.Lock()
@@ -220,6 +221,7 @@ class IconCaptionService:
         with self._condition:
             self._state = "ready"
             self._failure = None
+            self._failed_retry_attempted = False
             self._condition.notify_all()
         logger.info(
             "Icon semantic backend ready: backend=%s duration_ms=%.2f model=%s",
@@ -229,18 +231,25 @@ class IconCaptionService:
         )
         return True
 
-    def start_background_warm_up(self) -> bool:
+    def start_background_warm_up(self, *, retry_failed: bool = False) -> bool:
         """Schedule loading without making CUA detection wait for semantics."""
         if not self.enabled:
             return False
         with self._condition:
-            if self._state in {"loading", "ready", "failed", "disabled"}:
+            if self._state in {"loading", "ready", "disabled"}:
                 return False
             if (
                 self._background_thread is not None
                 and self._background_thread.is_alive()
             ):
                 return False
+            if self._state == "failed":
+                if not retry_failed or self._failed_retry_attempted:
+                    return False
+                self._failed_retry_attempted = True
+                self._state = "idle"
+                self._failure = None
+                self._inference_failure = None
             thread = threading.Thread(
                 target=self.ensure_ready,
                 kwargs={"wait": True},

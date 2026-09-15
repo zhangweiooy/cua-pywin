@@ -114,3 +114,39 @@ def test_convert_parse_result_keeps_icons_when_captioning_fails(monkeypatch):
     assert converted.elements[0].actions == ["click"]
     assert converted.metadata["icon_caption_count"] == 0
     assert converted.metadata["icon_semantic_status"] == "inference_failed"
+
+
+def test_force_som_requests_florence_recovery_during_conversion(monkeypatch):
+    image = Image.new("RGB", (20, 20), "white")
+    buf = BytesIO()
+    image.save(buf, format="PNG")
+    icon = SimpleNamespace(
+        type="icon",
+        bbox=_bbox(0.1, 0.1, 0.4, 0.4),
+        confidence=0.9,
+    )
+    result = SimpleNamespace(
+        elements=[icon],
+        annotated_image_base64=None,
+        metadata=SimpleNamespace(stage_timings={}),
+    )
+    retry_flags = []
+
+    def fake_label(*args, **kwargs):
+        retry_flags.append(kwargs["retry_failed_warmup"])
+        return {}, "loading"
+
+    monkeypatch.setattr(som_bridge, "_label_icon_elements", fake_label)
+
+    converted = som_bridge._convert_parse_result(
+        result,
+        buf.getvalue(),
+        screen_width=20,
+        screen_height=20,
+        vision_index_start=10000,
+        retry_failed_warmup=True,
+    )
+
+    assert retry_flags == [True]
+    assert converted.elements[0].name is None
+    assert converted.metadata["icon_semantic_status"] == "loading"

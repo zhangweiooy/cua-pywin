@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from types import SimpleNamespace
+
 import pytest
 from PIL import Image
 
@@ -21,6 +23,20 @@ class FakeCommunityRunner:
     def caption_images(self, images):
         self.calls += 1
         return self.captions
+
+
+class ImmediateThread:
+    def __init__(self, *, target, kwargs=None, name, daemon):
+        self._target = target
+        self._kwargs = kwargs or {}
+        self.name = name
+        self.daemon = daemon
+
+    def start(self):
+        self._target(**self._kwargs)
+
+    def is_alive(self):
+        return False
 
 
 def test_icon_caption_service_uses_selected_community_backend():
@@ -71,6 +87,30 @@ def test_remote_model_identifier_is_rejected_without_download():
     assert service.ensure_ready() is False
     assert service.status["state"] == "failed"
     assert "must be a local directory" in service.status["failure"]
+
+
+def test_failed_semantic_warmup_retries_once(monkeypatch):
+    service = IconCaptionService(enabled=True)
+    service._state = "failed"
+    service._failure = "initial failure"
+    attempts = []
+
+    def fail_load():
+        attempts.append(True)
+        raise RuntimeError("retry failed")
+
+    monkeypatch.setattr(service, "_load_backend", fail_load)
+    monkeypatch.setattr(
+        "computer_server.services.icon_caption_service.threading",
+        SimpleNamespace(Thread=ImmediateThread),
+    )
+
+    assert service.start_background_warm_up(retry_failed=True) is True
+    assert service.status["state"] == "failed"
+    assert service.status["failure"] == "retry failed"
+    assert len(attempts) == 1
+    assert service.start_background_warm_up(retry_failed=True) is False
+    assert len(attempts) == 1
 
 
 def test_missing_int8_vision_marks_semantics_failed(monkeypatch, tmp_path):

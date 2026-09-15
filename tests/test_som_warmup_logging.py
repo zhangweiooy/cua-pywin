@@ -121,6 +121,69 @@ def test_warmup_logs_rapidocr_root_failure_without_exception_text(
     assert som_bridge.parser_status()["state"] == "failed"
 
 
+def test_force_retry_restarts_failed_warmup_once(monkeypatch):
+    attempts = []
+
+    def failed_retry(warmup_id):
+        attempts.append(warmup_id)
+        som_bridge._set_parser_state("failed", "retry failed")
+
+    monkeypatch.setattr(
+        som_bridge,
+        "threading",
+        SimpleNamespace(Thread=_ImmediateThread),
+    )
+    monkeypatch.setattr(som_bridge, "_run_warm_up", failed_retry)
+    monkeypatch.setattr(som_bridge, "_parser_state", "failed")
+    monkeypatch.setattr(som_bridge, "_parser_failure", "initial failure")
+    monkeypatch.setattr(som_bridge, "_parser_recovery_attempted", False)
+
+    assert som_bridge.retry_failed_warm_up() is True
+    assert len(attempts) == 1
+    assert som_bridge.parser_status() == {
+        "state": "failed",
+        "failure": "retry failed",
+    }
+    assert som_bridge.retry_failed_warm_up() is False
+    assert len(attempts) == 1
+
+
+def test_force_som_detection_recovers_failed_warmup(monkeypatch):
+    attempts = []
+    parser = SimpleNamespace(
+        parse=lambda *args, **kwargs: SimpleNamespace(elements=[]),
+    )
+    converted = som_bridge.VisionResult(elements=[], metadata={})
+
+    def successful_retry(warmup_id):
+        attempts.append(warmup_id)
+        som_bridge._set_parser_state("ready")
+
+    monkeypatch.setattr(
+        som_bridge,
+        "threading",
+        SimpleNamespace(Thread=_ImmediateThread),
+    )
+    monkeypatch.setattr(som_bridge, "_run_warm_up", successful_retry)
+    monkeypatch.setattr(som_bridge, "is_available", lambda: True)
+    monkeypatch.setattr(som_bridge, "_parser_state", "failed")
+    monkeypatch.setattr(som_bridge, "_parser_failure", "initial failure")
+    monkeypatch.setattr(som_bridge, "_parser_recovery_attempted", False)
+    monkeypatch.setattr(som_bridge, "_wait_if_loading", lambda timeout: True)
+    monkeypatch.setattr(som_bridge, "_get_parser", lambda: parser)
+    monkeypatch.setattr(som_bridge, "_convert_parse_result", lambda *args, **kwargs: converted)
+
+    result = som_bridge.detect_sync(
+        b"private-image-bytes",
+        20,
+        20,
+        retry_failed_warmup=True,
+    )
+
+    assert result is converted
+    assert len(attempts) == 1
+
+
 def test_skipped_warmup_keeps_last_completed_correlation_id(monkeypatch, caplog):
     monkeypatch.setattr(
         som_bridge,

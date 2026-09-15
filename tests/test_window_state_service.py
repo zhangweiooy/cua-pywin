@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import asyncio
 import base64
 from io import BytesIO
+import threading
 from types import SimpleNamespace
 
 import pytest
@@ -565,13 +567,6 @@ def test_merge_som_vision_exposes_confidence_on_nodes(monkeypatch):
         ),
     )
 
-    class FakeCache:
-        def append_vision_elements(self, pid, window_id, elements):
-            self.elements = elements
-
-        def set_quality(self, pid, window_id, quality):
-            self.quality = quality
-
     result = window_state_service.merge_som_vision(
         Image.new("RGB", (100, 50), "white"),
         pid=1,
@@ -581,8 +576,6 @@ def test_merge_som_vision_exposes_confidence_on_nodes(monkeypatch):
         compression_ratio=2.0,
         crop_origin_window_x=3,
         crop_origin_window_y=4,
-        cache=FakeCache(),
-        uia_quality="poor",
     )
 
     node = result["nodes"][0]
@@ -1179,6 +1172,151 @@ async def test_msaa_without_indexed_nodes_does_not_suppress_vision(monkeypatch):
     assert "MSAA Fallback" not in result["tree_markdown"]
     assert result["tree_markdown"] == 'Button "确定"'
     assert vision_called is True
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("cancel_old", [False, True])
+async def test_late_som_result_cannot_overwrite_new_snapshot(monkeypatch, cancel_old):
+    from computer_server.handlers import som_bridge
+    from computer_server.handlers.element_cache import get_element_cache
+
+    entered = threading.Event()
+    release = threading.Event()
+    finished = threading.Event()
+    calls = 0
+    cache = get_element_cache()
+    pid, window_id = 123, 987654
+    cache.clear_window(pid, window_id)
+    monkeypatch.setattr(cache, "_is_window_valid", lambda hwnd: True)
+
+    async def collect_uia(*args, **kwargs):
+        return {
+            "nodes": [], "total_elements": 0, "uia_node_count": 0,
+            "tree_markdown": "", "uia_quality": "ok", "tree_quality": "ok",
+        }
+
+    def detect(*args, **kwargs):
+        nonlocal calls
+        calls += 1
+        first = calls == 1
+        if first:
+            entered.set()
+            assert release.wait(5)
+        element = CachedElement(
+            10000, "vision", 5 if first else 15, 10, (0, 0, 20, 20),
+            name="old" if first else "new", actions=["click"],
+        )
+        return som_bridge.VisionResult(elements=[element], metadata={})
+
+    original_merge = window_state_service.merge_som_vision
+
+    def merge(*args, **kwargs):
+        result = original_merge(*args, **kwargs)
+        if result["nodes"] and result["nodes"][0]["name"] == "old":
+            finished.set()
+        return result
+
+    monkeypatch.setattr(som_bridge, "detect_sync", detect)
+    monkeypatch.setattr(window_state_service, "merge_som_vision", merge)
+    monkeypatch.setattr(window_state_service, "collect_uia_nodes", collect_uia)
+    monkeypatch.setattr(window_state_service, "should_collect_msaa", lambda *args: False)
+    monkeypatch.setattr(window_state_service, "detect_popover_candidates", lambda *args: "")
+    monkeypatch.setattr(window_state_service, "save_window_state_screenshot", lambda *args: "shot.jpg")
+    old_task = asyncio.create_task(
+        get_window_state_snapshot(_FakeAutomationHandler(), pid, window_id, force_som=True)
+    )
+    try:
+        assert await asyncio.to_thread(entered.wait, 2)
+        if cancel_old:
+            old_task.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await old_task
+        fresh = await get_window_state_snapshot(
+            _FakeAutomationHandler(), pid, window_id, force_som=True,
+        )
+        assert fresh["success"] is True
+        assert fresh["nodes"][0]["name"] == "new"
+        release.set()
+        assert await asyncio.to_thread(finished.wait, 2)
+        if not cancel_old:
+            stale = await old_task
+            assert stale["success"] is False
+            assert stale["code"] == "STALE_OBSERVATION"
+        assert cache.get_element(pid, window_id, 10000).name == "new"
+        assert cache.get_center(pid, window_id, 10000) == (15, 10)
+        assert len(cache.get_elements(pid, window_id)) == 1
+        assert (pid, window_id) not in window_state_service._snapshot_requests
+    finally:
+        release.set()
+        if not old_task.done():
+            old_task.cancel()
+        await asyncio.gather(old_task, return_exceptions=True)
+        cache.clear_window(pid, window_id)
+
+
+@pytest.mark.asyncio
+async def test_force_som_recovery_runs_off_event_loop(monkeypatch):
+    entered = threading.Event()
+    release = threading.Event()
+    heartbeat = asyncio.Event()
+    merge_kwargs = {}
+
+    async def fake_collect_uia_nodes(*args, **kwargs):
+        return {
+            "nodes": [],
+            "total_elements": 0,
+            "uia_node_count": 0,
+            "tree_markdown": "",
+            "uia_quality": "ok",
+            "tree_quality": "ok",
+        }
+
+    async def fake_collect_msaa_nodes(*args, **kwargs):
+        return {
+            "nodes": [],
+            "total_elements": 0,
+            "msaa_node_count": 0,
+            "tree_markdown": "",
+            "msaa_quality": "empty",
+        }
+
+    def blocking_merge(*args, **kwargs):
+        merge_kwargs.update(kwargs)
+        entered.set()
+        assert release.wait(timeout=2)
+        return {
+            "nodes": [],
+            "vision_node_count": 0,
+            "vision_quality": "empty",
+            "vision_metadata": {},
+        }
+
+    async def mark_heartbeat():
+        heartbeat.set()
+
+    monkeypatch.setattr(window_state_service, "collect_uia_nodes", fake_collect_uia_nodes)
+    monkeypatch.setattr(window_state_service, "collect_msaa_nodes", fake_collect_msaa_nodes)
+    monkeypatch.setattr(window_state_service, "merge_som_vision", blocking_merge)
+    monkeypatch.setattr(window_state_service, "detect_popover_candidates", lambda *args: "")
+    monkeypatch.setattr(window_state_service, "save_window_state_screenshot", lambda *args: "shot.jpg")
+
+    task = asyncio.create_task(
+        get_window_state_snapshot(
+            _FakeAutomationHandler(),
+            pid=123,
+            window_id=456,
+            force_som=True,
+        )
+    )
+    assert await asyncio.to_thread(entered.wait, 1)
+    asyncio.create_task(mark_heartbeat())
+    await asyncio.wait_for(heartbeat.wait(), timeout=0.2)
+    release.set()
+
+    result = await task
+
+    assert result["success"] is True
+    assert merge_kwargs["retry_failed_warmup"] is True
 
 
 @pytest.mark.asyncio
