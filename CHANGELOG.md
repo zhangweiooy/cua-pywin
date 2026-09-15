@@ -4,6 +4,16 @@ All notable changes to this project will be documented in this file.
 
 ## Unreleased
 
+## 0.3.3 - 2026-09-15
+
+### Changed
+
+- Bound RapidOCR ONNX Runtime sessions to four intra-op threads and one
+  inter-op thread.
+- Disable the CPU memory arena for YOLO and Florence-2 sessions while retaining
+  memory-pattern reuse, reducing retained inference memory without changing
+  model outputs.
+
 ## 0.3.2 - 2026-09-15
 
 ### Changed

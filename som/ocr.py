@@ -110,6 +110,9 @@ class OCRProcessor:
         params["Global.log_level"] = os.getenv(
             "CUA_RAPIDOCR_LOG_LEVEL", "error"
         ).strip().lower()
+        params["EngineConfig.onnxruntime.intra_op_num_threads"] = 4
+        params["EngineConfig.onnxruntime.inter_op_num_threads"] = 1
+        params["EngineConfig.onnxruntime.enable_cpu_mem_arena"] = False
         return params
 
     @staticmethod

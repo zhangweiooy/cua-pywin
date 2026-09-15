@@ -443,12 +443,16 @@ The OmniParser V2 YOLO detector is bundled as
 NumPy/OpenCV with ONNX Runtime CPU. PyTorch, Torchvision, and Ultralytics are
 allowed only in the export/benchmark dependency group and must not appear in
 the wheel, standalone, installer, or production process.
+The detector uses four intra-op threads, one inter-op thread, disables the CPU
+memory arena, and keeps memory-pattern reuse enabled.
 
 RapidOCR det/cls/rec ONNX models and the Chinese character dictionary are
 bundled under `computer_server/models/rapidocr_ppocrv4/`. Runtime initialization
 passes these paths explicitly, so OCR does not depend on RapidOCR's package
 layout, default model selection, cache, or network download. The ONNX files are
 tracked with Git LFS; `cua-win doctor` verifies their SHA-256 hashes.
+RapidOCR fixes ONNX Runtime to four intra-op threads and one inter-op thread;
+its CPU arena remains disabled.
 
 The fine-tuned Florence-2 icon-caption model runs from the bundled community
 ONNX conversion under
@@ -458,6 +462,8 @@ remains FP32. The lightweight runner does not import the upstream custom
 processor module, which is retained only as a test fixture for parity checks.
 Runtime model download is disabled entirely, and `cua-win doctor` rejects
 missing, invalid, or unresolved Git LFS model files.
+Florence-2 sessions use one intra-op and one inter-op thread, disable the CPU
+memory arena, and retain memory-pattern reuse.
 
 Florence-2 runs over 64x64 YOLO icon crops in batches of up to 64 by default.
 Do not call it once per crop. RapidOCR remains responsible for visible text.
@@ -532,14 +538,6 @@ Vision text nodes propagate OCR confidence as `confidence`,
 delete visible single-character detections because `+`, `O`, `0`, and Chinese
 characters can be valid UI labels. Keep deletion-style rules behind explicit
 `CUA_OCR_DENOISE=strict`.
-
-### OCR Fallback: RapidOCR -> EasyOCR
-
-The PP-OCRv4 ONNX files are bundled and loaded through explicit local paths.
-Offline/package verification is enforced by `cua-win doctor` and wheel smoke
-tests.
-Use EasyOCR only as an explicit developer comparison path. EasyOCR runtime
-downloads are disabled.
 
 ### Detection Fallback: OmniParser -> Grounding DINO
 

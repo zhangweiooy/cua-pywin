@@ -141,6 +141,8 @@ class DetectionProcessor:
         options.graph_optimization_level = ort.GraphOptimizationLevel.ORT_ENABLE_ALL
         options.intra_op_num_threads = self.intra_op_num_threads
         options.inter_op_num_threads = 1
+        options.enable_cpu_mem_arena = False
+        options.enable_mem_pattern = True
         try:
             session = ort.InferenceSession(
                 str(self.model_path),

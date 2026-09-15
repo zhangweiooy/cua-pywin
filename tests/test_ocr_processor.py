@@ -221,6 +221,9 @@ def test_rapidocr_uses_explicit_bundled_model_paths(monkeypatch, tmp_path):
         assert captured[key] == str(tmp_path / name)
     assert captured["Global.model_root_dir"] == str(tmp_path)
     assert captured["Global.log_level"] == "error"
+    assert captured["EngineConfig.onnxruntime.intra_op_num_threads"] == 4
+    assert captured["EngineConfig.onnxruntime.inter_op_num_threads"] == 1
+    assert captured["EngineConfig.onnxruntime.enable_cpu_mem_arena"] is False
 
 
 def test_rapidocr_missing_bundled_model_fails_closed(monkeypatch, tmp_path):

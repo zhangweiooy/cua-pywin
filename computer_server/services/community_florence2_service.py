@@ -53,6 +53,8 @@ class CommunityFlorence2Runner:
         options.graph_optimization_level = ort.GraphOptimizationLevel.ORT_ENABLE_ALL
         options.intra_op_num_threads = 1
         options.inter_op_num_threads = 1
+        options.enable_cpu_mem_arena = False
+        options.enable_mem_pattern = True
         return ort.InferenceSession(
             str(path),
             sess_options=options,

@@ -104,6 +104,8 @@ def test_session_uses_bounded_cpu_threading(monkeypatch, tmp_path):
         graph_optimization_level = None
         intra_op_num_threads = None
         inter_op_num_threads = None
+        enable_cpu_mem_arena = None
+        enable_mem_pattern = None
 
     class FakeOrt:
         SessionOptions = Options
@@ -125,6 +127,8 @@ def test_session_uses_bounded_cpu_threading(monkeypatch, tmp_path):
     assert captured["options"].graph_optimization_level == "all"
     assert captured["options"].intra_op_num_threads == 1
     assert captured["options"].inter_op_num_threads == 1
+    assert captured["options"].enable_cpu_mem_arena is False
+    assert captured["options"].enable_mem_pattern is True
     assert captured["providers"] == ["CPUExecutionProvider"]
 
 

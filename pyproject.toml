@@ -4,7 +4,7 @@ build-backend = "pdm.backend"
 
 [project]
 name = "cua-pywin"
-version = "0.3.2"
+version = "0.3.3"
 
 description = "Windows UI automation MCP server for AI agents — screenshots, clicks, typing, UIA tree walking, vision (SOM), recording/replay, and learning"
 authors = [
@@ -121,12 +121,13 @@ api = "cua-win serve"
 extend-exclude = [
     "computer_server/models/omniparser_v2/icon_caption_onnx_community",
     "artifacts/icon-semantic-poc/onnx-community",
+    "dist-nuitka-*",
     "tests/fixtures/florence2/processing_florence2.py",
 ]
 
 [tool.pytest.ini_options]
 testpaths = ["tests", "som/tests"]
-norecursedirs = [".git", ".venv", ".claude", "build", "dist", "dist-nuitka"]
+norecursedirs = [".git", ".venv", ".claude", "build", "dist", "dist-nuitka", "dist-nuitka-*"]
 
 [tool.ruff.lint.per-file-ignores]
 "computer_server/handlers/windows.py" = ["E402"]

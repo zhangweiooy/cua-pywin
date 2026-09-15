@@ -96,7 +96,7 @@ cua-pywin/
 下载。普通 Windows 用户优先使用安装器：
 
 ```powershell
-.\cua-win-0.3.2-win64-setup.exe
+.\cua-win-0.3.3-win64-setup.exe
 cua-win doctor
 ```
 
@@ -108,7 +108,7 @@ wheel 也内置 OmniParser V2 YOLO、Florence-2 和 RapidOCR 模型，适合 Pyt
 环境或开发验证：
 
 ```powershell
-pip install .\cua_pywin-0.3.2-py3-none-any.whl
+pip install .\cua_pywin-0.3.3-py3-none-any.whl
 cua-win doctor
 ```
 
@@ -563,7 +563,7 @@ Download releases from
 Windows users should use the installer:
 
 ```powershell
-.\cua-win-0.3.2-win64-setup.exe
+.\cua-win-0.3.3-win64-setup.exe
 cua-win doctor
 ```
 
@@ -578,7 +578,7 @@ RapidOCR models, and is intended for Python environments or developer
 validation:
 
 ```powershell
-pip install .\cua_pywin-0.3.2-py3-none-any.whl
+pip install .\cua_pywin-0.3.3-py3-none-any.whl
 cua-win doctor
 ```
 
@@ -946,7 +946,8 @@ role, MIME type, dimensions, byte count, `content_index`, `window`,
 **Bundled OmniParser V2 pipeline** — The YOLO detector is bundled at
 `som/weights/icon_detect/model.onnx` and runs directly through ONNX Runtime with
 NumPy/OpenCV preprocessing and NMS. PyTorch, Torchvision, and Ultralytics are
-export-time dependencies only and are not shipped. Icon semantics use only the bundled ONNX
+export-time dependencies only and are not shipped. The YOLO CPU arena is
+disabled while memory-pattern reuse remains enabled. Icon semantics use only the bundled ONNX
 Community conversion of the fine-tuned OmniParser Florence-2 model at
 `computer_server/models/omniparser_v2/icon_caption_onnx_community/`: the
 token embeddings remain FP32 because they are Gather-only, while the vision
@@ -957,6 +958,9 @@ with `CPUExecutionProvider`. The original PyTorch bundle is not shipped or
 loadable. Icon crops are
 resized to 64x64 and captioned in batches, matching the official V2 pipeline.
 RapidOCR remains responsible for visible text.
+RapidOCR uses four intra-op threads and one inter-op thread. Florence-2 uses
+one intra-op and one inter-op thread with the CPU arena disabled and memory
+patterns retained.
 
 Florence-2 output is exposed as `raw_caption` plus a conservative
 `normalized_label`. It has no calibrated confidence score, so nodes explicitly

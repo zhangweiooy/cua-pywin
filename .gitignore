@@ -13,6 +13,7 @@ develop-eggs/
 dist/
 dist-installer/
 dist-nuitka/
+dist-nuitka-*/
 downloads/
 eggs/
 .eggs/
