@@ -96,7 +96,7 @@ cua-pywin/
 下载。普通 Windows 用户优先使用安装器：
 
 ```powershell
-.\cua-win-0.3.3-win64-setup.exe
+.\cua-win-0.3.4-win64-setup.exe
 cua-win doctor
 ```
 
@@ -108,7 +108,7 @@ wheel 也内置 OmniParser V2 YOLO、Florence-2 和 RapidOCR 模型，适合 Pyt
 环境或开发验证：
 
 ```powershell
-pip install .\cua_pywin-0.3.3-py3-none-any.whl
+pip install .\cua_pywin-0.3.4-py3-none-any.whl
 cua-win doctor
 ```
 
@@ -563,7 +563,7 @@ Download releases from
 Windows users should use the installer:
 
 ```powershell
-.\cua-win-0.3.3-win64-setup.exe
+.\cua-win-0.3.4-win64-setup.exe
 cua-win doctor
 ```
 
@@ -578,7 +578,7 @@ RapidOCR models, and is intended for Python environments or developer
 validation:
 
 ```powershell
-pip install .\cua_pywin-0.3.3-py3-none-any.whl
+pip install .\cua_pywin-0.3.4-py3-none-any.whl
 cua-win doctor
 ```
 
