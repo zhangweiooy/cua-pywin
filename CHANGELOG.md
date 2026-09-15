@@ -4,6 +4,18 @@ All notable changes to this project will be documented in this file.
 
 ## Unreleased
 
+## 0.3.2 - 2026-09-15
+
+### Changed
+
+- Run the OmniParser icon detector directly through ONNX Runtime CPU with
+  NumPy/OpenCV LetterBox, decoding, and deterministic NMS.
+- Remove PyTorch, Torchvision, Ultralytics, and EasyOCR from production
+  dependencies and release artifacts; retain export tooling only in a
+  development dependency group.
+- Remove the unused Florence-2 Python processor from the production model
+  bundle while retaining its parity fixture in tests.
+
 ## 0.3.1 - 2026-09-15
 
 ### Changed

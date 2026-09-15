@@ -63,7 +63,12 @@ def verify(bundle: Path, fixture: Path, output: Path) -> dict:
     from transformers import BartTokenizerFast, CLIPImageProcessor
 
     spec = importlib.util.spec_from_file_location(
-        "reference_processor", bundle / "processing_florence2.py"
+        "reference_processor",
+        Path(__file__).resolve().parents[1]
+        / "tests"
+        / "fixtures"
+        / "florence2"
+        / "processing_florence2.py",
     )
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)

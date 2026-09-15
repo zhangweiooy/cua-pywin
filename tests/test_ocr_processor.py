@@ -16,6 +16,12 @@ def _reset_ocr_processor():
     OCRProcessor._shared_key = None
 
 
+def test_removed_backend_environment_cannot_enable_easyocr(monkeypatch):
+    monkeypatch.setenv("CUA_OCR_BACKEND", "easyocr")
+
+    assert OCRProcessor().backend == "rapidocr"
+
+
 def test_default_ocr_timeout_allows_cold_cpu_initialization():
     assert DEFAULT_OCR_TIMEOUT_SECONDS == 20.0
 
@@ -45,8 +51,6 @@ def test_rapidocr_object_result_is_normalized(monkeypatch):
         "rapidocr",
         types.SimpleNamespace(RapidOCR=lambda **_kwargs: FakeRapidOCR()),
     )
-    monkeypatch.setenv("CUA_OCR_BACKEND", "rapidocr")
-
     result = OCRProcessor().detect_text(Image.new("RGB", (200, 100), "white"))
 
     assert result == [
@@ -74,8 +78,6 @@ def test_rapidocr_list_result_is_supported(monkeypatch):
         "rapidocr",
         types.SimpleNamespace(RapidOCR=lambda **_kwargs: FakeRapidOCR()),
     )
-    monkeypatch.setenv("CUA_OCR_BACKEND", "rapidocr")
-
     result = OCRProcessor().detect_text(Image.new("RGB", (200, 100), "white"))
 
     assert result[0]["content"] == "搜索"
@@ -101,8 +103,6 @@ def test_rapidocr_default_denoise_keeps_single_character_detections(monkeypatch)
         "rapidocr",
         types.SimpleNamespace(RapidOCR=lambda **_kwargs: FakeRapidOCR()),
     )
-    monkeypatch.setenv("CUA_OCR_BACKEND", "rapidocr")
-
     result = OCRProcessor().detect_text(Image.new("RGB", (200, 100), "white"))
 
     assert [item["content"] for item in result] == ["#", "O", "口", "搜索", "OK"]
@@ -126,7 +126,6 @@ def test_rapidocr_strict_denoise_filters_isolated_artifacts(monkeypatch):
         "rapidocr",
         types.SimpleNamespace(RapidOCR=lambda **_kwargs: FakeRapidOCR()),
     )
-    monkeypatch.setenv("CUA_OCR_BACKEND", "rapidocr")
     monkeypatch.setenv("CUA_OCR_DENOISE", "strict")
 
     result = OCRProcessor().detect_text(Image.new("RGB", (200, 100), "white"))
@@ -148,8 +147,6 @@ def test_rapidocr_normalizes_search_icon_artifact(monkeypatch):
         "rapidocr",
         types.SimpleNamespace(RapidOCR=lambda **_kwargs: FakeRapidOCR()),
     )
-    monkeypatch.setenv("CUA_OCR_BACKEND", "rapidocr")
-
     result = OCRProcessor().detect_text(Image.new("RGB", (200, 100), "white"))
 
     assert result[0]["content"] == "搜索"
@@ -169,7 +166,6 @@ def test_ocr_denoise_can_be_disabled(monkeypatch):
         "rapidocr",
         types.SimpleNamespace(RapidOCR=lambda **_kwargs: FakeRapidOCR()),
     )
-    monkeypatch.setenv("CUA_OCR_BACKEND", "rapidocr")
     monkeypatch.setenv("CUA_OCR_DENOISE", "0")
 
     result = OCRProcessor().detect_text(Image.new("RGB", (200, 100), "white"))
@@ -188,8 +184,6 @@ def test_rapidocr_import_failure_returns_empty(monkeypatch):
 
     monkeypatch.delitem(sys.modules, "rapidocr", raising=False)
     monkeypatch.setattr(builtins, "__import__", fake_import)
-    monkeypatch.setenv("CUA_OCR_BACKEND", "rapidocr")
-
     assert OCRProcessor().detect_text(Image.new("RGB", (10, 10), "white")) == []
 
 
@@ -248,23 +242,3 @@ def test_rapidocr_missing_bundled_model_fails_closed(monkeypatch, tmp_path):
         OCRProcessor()._create_rapidocr_reader()
 
     assert constructor_called is False
-
-
-def test_easyocr_developer_fallback_disables_download(monkeypatch):
-    captured = {}
-
-    class FakeReader:
-        def __init__(self, languages, **kwargs):
-            captured["languages"] = languages
-            captured.update(kwargs)
-
-    monkeypatch.setitem(
-        sys.modules,
-        "easyocr",
-        types.SimpleNamespace(Reader=FakeReader),
-    )
-
-    reader = OCRProcessor(backend="easyocr")._create_easyocr_reader()
-
-    assert isinstance(reader, FakeReader)
-    assert captured["download_enabled"] is False

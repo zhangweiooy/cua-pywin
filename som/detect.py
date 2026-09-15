@@ -16,7 +16,7 @@ _DLL_DIRECTORY_HANDLES = []
 def _add_packaged_dll_paths() -> None:
     bases = [Path(__file__).resolve().parents[1], Path(sys.executable).resolve().parent]
     for base in bases:
-        for relative in ("cv2", "numpy.libs", "scipy.libs", "torch/lib", "onnxruntime/capi"):
+        for relative in ("cv2", "numpy.libs", "scipy.libs", "onnxruntime/capi"):
             path = base / relative
             if not path.exists():
                 continue
@@ -32,8 +32,7 @@ _add_packaged_dll_paths()
 
 # Heavy C-extension imports must happen after packaged DLL directories are
 # registered for the standalone Nuitka runtime.
-import torch
-import torchvision.ops
+import numpy as np
 from PIL import Image
 
 from .detection import DetectionProcessor
@@ -45,6 +44,7 @@ from .models import (
     TextElement,
     UIElement,
 )
+from .nms import nms
 from .ocr import OCRProcessor
 from .visualization import BoxAnnotator
 
@@ -197,6 +197,7 @@ class OmniParser:
         self.visualizer = BoxAnnotator()
         self._last_stage_timings: Dict[str, float] = {}
         self._last_collision_diagnostics: Dict[str, int] = {}
+        self._last_detection_error: Optional[str] = None
 
     def process_image(
         self,
@@ -223,9 +224,21 @@ class OmniParser:
 
             # Detect icons
             stage_start = time.perf_counter()
-            icon_detections = self.detector.detect_icons(
-                image=image, box_threshold=box_threshold, iou_threshold=iou_threshold
-            )
+            self._last_detection_error = None
+            try:
+                icon_detections = self.detector.detect_icons(
+                    image=image,
+                    box_threshold=box_threshold,
+                    iou_threshold=iou_threshold,
+                )
+            except Exception as exc:
+                self._last_detection_error = str(exc)
+                icon_detections = []
+                logger.warning(
+                    "Icon detection failed; continuing with OCR only: %s",
+                    exc,
+                    exc_info=True,
+                )
             stage_timings["yolo_latency"] = time.perf_counter() - stage_start
             logger.info(f"Found {len(icon_detections)} interactive elements")
             self._last_collision_diagnostics = {
@@ -293,10 +306,15 @@ class OmniParser:
 
                     # Merge detections using NMS
                     all_elements = elements + text_elements
-                    boxes = torch.tensor([elem.bbox.coordinates for elem in all_elements])
-                    scores = torch.tensor([elem.confidence for elem in all_elements])
-                    keep_indices = torchvision.ops.nms(boxes, scores, iou_threshold)
-                    kept_positions = {int(i) for i in keep_indices}
+                    boxes = np.asarray(
+                        [elem.bbox.coordinates for elem in all_elements],
+                        dtype=np.float32,
+                    )
+                    scores = np.asarray(
+                        [elem.confidence for elem in all_elements],
+                        dtype=np.float32,
+                    )
+                    kept_positions = set(nms(boxes, scores, iou_threshold))
                     kept_positions.update(
                         i for i, elem in enumerate(all_elements) if id(elem) in protected_ids
                     )
@@ -454,6 +472,7 @@ class OmniParser:
                     ocr_enabled=use_ocr,
                     latency=latency,
                     stage_timings=stage_timings,
+                    icon_detection_error=self._last_detection_error,
                     **self._last_collision_diagnostics,
                 ),
             )

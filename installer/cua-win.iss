@@ -48,6 +48,17 @@ Source: "{#SourceDir}\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs 
 
 [InstallDelete]
 Type: files; Name: "{app}\computer_server\models\omniparser_v2\icon_caption_onnx_community\onnx\vision_encoder.onnx"
+Type: files; Name: "{app}\som\weights\icon_detect\model.pt"
+Type: filesandordirs; Name: "{app}\easyocr"
+Type: filesandordirs; Name: "{app}\easyocr-*.dist-info"
+Type: filesandordirs; Name: "{app}\torch"
+Type: filesandordirs; Name: "{app}\torch-*.dist-info"
+Type: filesandordirs; Name: "{app}\torchvision"
+Type: filesandordirs; Name: "{app}\torchvision-*.dist-info"
+Type: filesandordirs; Name: "{app}\ultralytics"
+Type: filesandordirs; Name: "{app}\ultralytics-*.dist-info"
+Type: filesandordirs; Name: "{app}\ultralytics_thop"
+Type: filesandordirs; Name: "{app}\ultralytics_thop-*.dist-info"
 
 [UninstallDelete]
 Type: dirifempty; Name: "{app}\computer_server\models\omniparser_v2\icon_caption_onnx_community\onnx"

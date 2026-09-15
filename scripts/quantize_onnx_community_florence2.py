@@ -55,7 +55,6 @@ def bundle_pipeline(source_dir: Path, pipeline_dir: Path, bundle_dir: Path) -> N
     files["int8/vision_encoder.int8.onnx"] = (
         pipeline_dir / "int8" / "vision_encoder.int8.onnx"
     )
-    files["processing_florence2.py"] = source_dir / "processing_florence2.py"
     files["LICENSE"] = source_dir / "LICENSE"
     files["pipeline_manifest.json"] = pipeline_dir / "pipeline_manifest.json"
     stale_vision = bundle_dir / "onnx" / "vision_encoder.onnx"

@@ -28,14 +28,14 @@ _LIGHTWEIGHT_MCP_IMPORT = os.environ.get("CUA_LIGHTWEIGHT_MCP_IMPORT") == "1"
 #
 # Must be imported before the anyio event loop starts.  First-time
 # C-extension imports from inside a tool handler deadlock permanently.
-# torch + cv2 + ultralytics add ~4-9 s to startup; warm_up() loads
-# the actual model weights in the background after that.
+# NumPy, OpenCV, and ONNX Runtime are imported before FastMCP starts; warm_up()
+# loads the actual model weights in the background after that.
 if not _LIGHTWEIGHT_MCP_IMPORT:
     import numpy as np  # noqa: F401
 
     try:
         from computer_server.handlers.som_bridge import is_available as _pre_som_avail
-        _pre_som_avail()  # triggers from som.detect import OmniParser → torch + cv2 + ultralytics
+        _pre_som_avail()  # imports the ONNX/NumPy SOM runtime before the event loop
     except Exception:
         pass
     try:

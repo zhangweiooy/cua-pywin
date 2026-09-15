@@ -1,7 +1,10 @@
-# ruff: noqa: E402
-import logging
+"""PyTorch-free ONNX Runtime icon detection for OmniParser V2."""
+
+from __future__ import annotations
+
 import os
 import sys
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
@@ -11,7 +14,7 @@ _DLL_DIRECTORY_HANDLES = []
 def _add_packaged_dll_paths() -> None:
     bases = [Path(__file__).resolve().parents[1], Path(sys.executable).resolve().parent]
     for base in bases:
-        for relative in ("cv2", "numpy.libs", "scipy.libs", "torch/lib", "onnxruntime/capi"):
+        for relative in ("cv2", "numpy.libs", "scipy.libs", "onnxruntime/capi"):
             path = base / relative
             if not path.exists():
                 continue
@@ -25,85 +28,137 @@ def _add_packaged_dll_paths() -> None:
 
 _add_packaged_dll_paths()
 
-# Heavy C-extension imports must happen after packaged DLL directories are
-# registered for the standalone Nuitka runtime.
-import torch
-import torchvision
-from PIL import Image
+import cv2  # noqa: E402
+import numpy as np  # noqa: E402
+import onnxruntime as ort  # noqa: E402
+from PIL import Image  # noqa: E402
 
-logger = logging.getLogger(__name__)
+from .nms import nms  # noqa: E402
+
+_TARGET_SIZE = 1280
+_MODEL_STRIDE = 32
+_MAX_NMS_CANDIDATES = 30_000
+_MAX_DETECTIONS = 1_000
+_ORT_INTRA_OP_THREADS = 4
+
+
+@dataclass(frozen=True)
+class LetterBoxTransform:
+    ratio: float
+    left: int
+    top: int
+    input_width: int
+    input_height: int
+    original_width: int
+    original_height: int
+
+
+def letterbox(
+    image: Image.Image,
+    *,
+    target_size: int = _TARGET_SIZE,
+    stride: int = _MODEL_STRIDE,
+) -> tuple[np.ndarray, LetterBoxTransform]:
+    """Match Ultralytics minimum-rectangle LetterBox for one RGB image."""
+    rgb = np.asarray(image.convert("RGB"))
+    original_height, original_width = rgb.shape[:2]
+    ratio = min(target_size / original_height, target_size / original_width)
+    resized_width = round(original_width * ratio)
+    resized_height = round(original_height * ratio)
+    pad_width = (target_size - resized_width) % stride
+    pad_height = (target_size - resized_height) % stride
+    half_width = pad_width / 2
+    half_height = pad_height / 2
+    left = round(half_width - 0.1)
+    right = round(half_width + 0.1)
+    top = round(half_height - 0.1)
+    bottom = round(half_height + 0.1)
+
+    if (resized_width, resized_height) != (original_width, original_height):
+        rgb = cv2.resize(
+            rgb,
+            (resized_width, resized_height),
+            interpolation=cv2.INTER_LINEAR,
+        )
+    rgb = cv2.copyMakeBorder(
+        rgb,
+        top,
+        bottom,
+        left,
+        right,
+        cv2.BORDER_CONSTANT,
+        value=(114, 114, 114),
+    )
+    tensor = np.ascontiguousarray(rgb.transpose(2, 0, 1)[None], dtype=np.float32)
+    tensor /= 255.0
+    return tensor, LetterBoxTransform(
+        ratio=ratio,
+        left=left,
+        top=top,
+        input_width=rgb.shape[1],
+        input_height=rgb.shape[0],
+        original_width=original_width,
+        original_height=original_height,
+    )
 
 
 class DetectionProcessor:
-    """Class for handling YOLO-based icon detection."""
+    """Run the bundled single-class YOLO ONNX graph on CPU."""
 
     def __init__(
         self,
         model_path: Optional[Path] = None,
         force_device: Optional[str] = None,
-    ):
-        """Initialize the detection processor.
-
-        Args:
-            model_path: Path to YOLOv8 model
-            force_device: Force specific device (cuda, cpu, mps)
-        """
+        intra_op_num_threads: int = _ORT_INTRA_OP_THREADS,
+    ) -> None:
+        if force_device not in {None, "cpu"}:
+            raise ValueError("The production ONNX icon detector supports CPU only")
         self.model_path = model_path
-        self.model = None  # type: Any  # Will be set to YOLO model in load_model
-
-        # Set device
+        self.model: Optional[ort.InferenceSession] = None
+        self.input_name = ""
+        self.output_name = ""
         self.device = "cpu"
-        if torch.cuda.is_available() and force_device != "cpu":
-            self.device = "cuda"
-        elif (
-            hasattr(torch, "backends")
-            and hasattr(torch.backends, "mps")
-            and torch.backends.mps.is_available()
-            and force_device != "cpu"
-        ):
-            self.device = "mps"
-
-        if force_device:
-            self.device = force_device
-
-        logger.info(f"Using device: {self.device}")
+        if intra_op_num_threads < 1:
+            raise ValueError("intra_op_num_threads must be positive")
+        self.intra_op_num_threads = intra_op_num_threads
 
     def load_model(self) -> None:
-        """Load the bundled YOLO model without network fallback."""
+        """Load the bundled ONNX model without network or PyTorch fallback."""
+        if self.model is not None:
+            return
+        if self.model_path is None:
+            self.model_path = (
+                Path(__file__).parent / "weights" / "icon_detect" / "model.onnx"
+            )
+        if not self.model_path.is_file():
+            raise RuntimeError(
+                "Bundled OmniParser YOLO ONNX model is missing: "
+                f"{self.model_path}. Reinstall cua-pywin or use a complete "
+                "developer build; runtime model download is disabled."
+            )
+
+        options = ort.SessionOptions()
+        options.graph_optimization_level = ort.GraphOptimizationLevel.ORT_ENABLE_ALL
+        options.intra_op_num_threads = self.intra_op_num_threads
+        options.inter_op_num_threads = 1
         try:
-            if self.model_path is None:
-                self.model_path = Path(__file__).parent / "weights" / "icon_detect" / "model.pt"
-
-            if not self.model_path.exists():
-                raise FileNotFoundError(
-                    "Bundled OmniParser YOLO model is missing: "
-                    f"{self.model_path}. Reinstall cua-pywin or use a complete "
-                    "developer build; runtime model download is disabled."
-                )
-
-            # If model is already loaded, skip reloading
-            if self.model is not None:
-                logger.info("Model already loaded, skipping reload")
-                return
-
-            logger.info(f"Loading YOLOv8 model from {self.model_path}")
-            from ultralytics import YOLO
-
-            self.model = YOLO(str(self.model_path))  # Convert Path to string for compatibility
-
-            # Verify model loaded successfully
-            if self.model is None:
-                raise ValueError("Model failed to initialize but didn't raise an exception")
-
-            if self.device in ["cuda", "mps"]:
-                self.model.to(self.device)
-
-            logger.info(f"Model loaded successfully with device: {self.device}")
-        except Exception as e:
-            logger.error(f"Failed to load model: {str(e)}")
-            # Re-raise with more informative message but preserve the model as None
+            session = ort.InferenceSession(
+                str(self.model_path),
+                sess_options=options,
+                providers=["CPUExecutionProvider"],
+            )
+            inputs = session.get_inputs()
+            outputs = session.get_outputs()
+            if len(inputs) != 1 or len(outputs) != 1:
+                raise ValueError("detector graph must have exactly one input and output")
+            self.input_name = inputs[0].name
+            self.output_name = outputs[0].name
+            self.model = session
+        except Exception as exc:
             self.model = None
-            raise RuntimeError(f"Failed to initialize detection model: {str(e)}") from e
+            raise RuntimeError(
+                f"Failed to initialize detection model: {exc}"
+            ) from exc
 
     def detect_icons(
         self,
@@ -112,111 +167,60 @@ class DetectionProcessor:
         iou_threshold: float = 0.1,
         multi_scale: bool = True,
     ) -> List[Dict[str, Any]]:
-        """Detect icons in an image using YOLO.
+        """Return normalized icon detections in the existing SOM contract."""
+        del multi_scale
+        self.load_model()
+        assert self.model is not None
 
-        Args:
-            image: PIL Image to process
-            box_threshold: Confidence threshold for detection
-            iou_threshold: IOU threshold for NMS
-            multi_scale: Whether to use multi-scale detection
-
-        Returns:
-            List of icon detection dictionaries
-        """
-        # Load model if not already loaded
-        if self.model is None:
-            self.load_model()
-
-        # Double-check the model was successfully loaded
-        if self.model is None:
-            logger.error("Model failed to load and is still None")
-            return []  # Return empty list instead of crashing
-
-        img_width, img_height = image.size
-        all_detections = []
-
-        # Define detection scales
-        scales = (
-            [{"size": 1280, "conf": box_threshold}]  # Single scale for CPU
-            if self.device == "cpu"
-            else [
-                {"size": 640, "conf": box_threshold},  # Base scale
-                {"size": 1280, "conf": box_threshold},  # Medium scale
-                {"size": 1920, "conf": box_threshold},  # Large scale
-            ]
+        tensor, transform = letterbox(image)
+        raw = np.asarray(
+            self.model.run([self.output_name], {self.input_name: tensor})[0],
+            dtype=np.float32,
         )
+        if raw.ndim != 3 or raw.shape[0] != 1:
+            raise ValueError(f"unexpected detector output shape: {raw.shape}")
+        predictions = raw[0]
+        if predictions.shape[0] < predictions.shape[1]:
+            predictions = predictions.T
+        if predictions.ndim != 2 or predictions.shape[1] < 5:
+            raise ValueError(f"unexpected detector output shape: {raw.shape}")
 
-        if not multi_scale:
-            scales = [scales[0]]
+        scores = predictions[:, 4:].max(axis=1)
+        selected = np.flatnonzero(scores > box_threshold)
+        if not selected.size:
+            return []
+        score_order = np.argsort(-scores[selected], kind="stable")
+        selected = selected[score_order[:_MAX_NMS_CANDIDATES]]
+        selected_scores = scores[selected]
 
-        # Run detection at each scale
-        for scale in scales:
-            try:
-                if self.model is None:
-                    logger.error("Model is None, skipping detection")
-                    continue
+        xywh = predictions[selected, :4]
+        boxes = np.empty_like(xywh)
+        boxes[:, 0] = xywh[:, 0] - xywh[:, 2] / 2
+        boxes[:, 1] = xywh[:, 1] - xywh[:, 3] / 2
+        boxes[:, 2] = xywh[:, 0] + xywh[:, 2] / 2
+        boxes[:, 3] = xywh[:, 1] + xywh[:, 3] / 2
+        kept = nms(boxes, selected_scores, iou_threshold)[:_MAX_DETECTIONS]
+        boxes = boxes[kept]
+        selected_scores = selected_scores[kept]
 
-                results = self.model.predict(
-                    source=image,
-                    conf=scale["conf"],
-                    iou=iou_threshold,
-                    max_det=1000,
-                    verbose=False,
-                    augment=self.device != "cpu",
-                    agnostic_nms=True,
-                    imgsz=scale["size"],
-                    device=self.device,
-                )
+        boxes[:, [0, 2]] -= transform.left
+        boxes[:, [1, 3]] -= transform.top
+        boxes /= transform.ratio
+        boxes[:, [0, 2]] = boxes[:, [0, 2]].clip(0, transform.original_width)
+        boxes[:, [1, 3]] = boxes[:, [1, 3]].clip(0, transform.original_height)
+        boxes[:, [0, 2]] /= transform.original_width
+        boxes[:, [1, 3]] /= transform.original_height
+        final_kept = nms(boxes, selected_scores, iou_threshold)
+        boxes = boxes[final_kept]
+        selected_scores = selected_scores[final_kept]
 
-                # Process results
-                for r in results:
-                    boxes = r.boxes
-                    if not hasattr(boxes, "conf") or not hasattr(boxes, "xyxy"):
-                        logger.warning("Boxes object missing expected attributes")
-                        continue
-
-                    confidences = boxes.conf
-                    coords = boxes.xyxy
-
-                    # Handle different types of tensors (PyTorch, NumPy, etc.)
-                    if hasattr(confidences, "cpu"):
-                        confidences = confidences.cpu()
-                    if hasattr(coords, "cpu"):
-                        coords = coords.cpu()
-
-                    for conf, bbox in zip(confidences, coords):
-                        # Normalize coordinates
-                        x1, y1, x2, y2 = bbox.tolist()
-                        norm_bbox = [
-                            x1 / img_width,
-                            y1 / img_height,
-                            x2 / img_width,
-                            y2 / img_height,
-                        ]
-
-                        all_detections.append(
-                            {
-                                "type": "icon",
-                                "confidence": conf.item(),
-                                "bbox": norm_bbox,
-                                "scale": scale["size"],
-                                "interactivity": True,
-                            }
-                        )
-
-            except Exception as e:
-                logger.warning(f"Detection failed at scale {scale['size']}: {str(e)}")
-                continue
-
-        # Merge detections using NMS
-        if len(all_detections) > 0:
-            boxes = torch.tensor([d["bbox"] for d in all_detections])
-            scores = torch.tensor([d["confidence"] for d in all_detections])
-
-            keep_indices = torchvision.ops.nms(boxes, scores, iou_threshold)
-
-            merged_detections = [all_detections[i] for i in keep_indices]
-        else:
-            merged_detections = []
-
-        return merged_detections
+        return [
+            {
+                "type": "icon",
+                "confidence": float(score),
+                "bbox": [float(value) for value in box],
+                "scale": _TARGET_SIZE,
+                "interactivity": True,
+            }
+            for box, score in zip(boxes, selected_scores)
+        ]

@@ -164,6 +164,20 @@ try {
     New-Item -ItemType Directory -Path (Split-Path -Parent $legacyVision) -Force |
         Out-Null
     Set-Content -LiteralPath $legacyVision -Value "legacy fp32 vision graph"
+    $legacyYolo = Join-Path $installDir "som\weights\icon_detect\model.pt"
+    New-Item -ItemType Directory -Path (Split-Path -Parent $legacyYolo) -Force |
+        Out-Null
+    Set-Content -LiteralPath $legacyYolo -Value "legacy PyTorch YOLO weight"
+    $legacyEasyOcrPackage = Join-Path $installDir "easyocr"
+    $legacyEasyOcrMetadata = Join-Path $installDir "easyocr-1.7.2.dist-info"
+    New-Item -ItemType Directory -Path $legacyEasyOcrPackage -Force | Out-Null
+    New-Item -ItemType Directory -Path $legacyEasyOcrMetadata -Force | Out-Null
+    Set-Content `
+        -LiteralPath (Join-Path $legacyEasyOcrPackage "__init__.py") `
+        -Value "legacy EasyOCR package"
+    Set-Content `
+        -LiteralPath (Join-Path $legacyEasyOcrMetadata "METADATA") `
+        -Value "Name: easyocr"
 
     Invoke-NativeChecked -Command $resolvedSetup -Arguments @(
         "/VERYSILENT",
@@ -185,6 +199,15 @@ try {
     }
     if (Test-Path -LiteralPath $legacyVision -PathType Leaf) {
         throw "Installer did not remove the legacy FP32 vision graph"
+    }
+    if (Test-Path -LiteralPath $legacyYolo -PathType Leaf) {
+        throw "Installer did not remove the legacy PyTorch YOLO weight"
+    }
+    if (
+        (Test-Path -LiteralPath $legacyEasyOcrPackage) -or
+        (Test-Path -LiteralPath $legacyEasyOcrMetadata)
+    ) {
+        throw "Installer did not remove the legacy EasyOCR runtime"
     }
     $int8Vision = Join-Path $installDir (
         "computer_server\models\omniparser_v2\" +

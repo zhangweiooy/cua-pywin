@@ -83,6 +83,10 @@ class ParserMetadata(BaseModel):
         default_factory=dict,
         description="Per-stage latency timings in seconds",
     )
+    icon_detection_error: Optional[str] = Field(
+        default=None,
+        description="Detector failure retained when OCR continued without icons",
+    )
     raw_icon_count: int = Field(default=0, description="YOLO candidates before OCR arbitration")
     raw_text_count: int = Field(default=0, description="OCR candidates before arbitration")
     ocr_icon_collision_count: int = Field(default=0, description="Overlapping OCR/icon pairs")

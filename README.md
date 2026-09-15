@@ -96,7 +96,7 @@ cua-pywin/
 下载。普通 Windows 用户优先使用安装器：
 
 ```powershell
-.\cua-win-0.3.1-win64-setup.exe
+.\cua-win-0.3.2-win64-setup.exe
 cua-win doctor
 ```
 
@@ -108,7 +108,7 @@ wheel 也内置 OmniParser V2 YOLO、Florence-2 和 RapidOCR 模型，适合 Pyt
 环境或开发验证：
 
 ```powershell
-pip install .\cua_pywin-0.3.1-py3-none-any.whl
+pip install .\cua_pywin-0.3.2-py3-none-any.whl
 cua-win doctor
 ```
 
@@ -430,7 +430,7 @@ type/key，以及明确 canonical window 的 type/key/manage 不要求 observati
 
 **树质量 + SOM 回退** — `tree_quality: rich(>50) / ok(16-50)` 跳过 SOM，`poor(1-15) / empty(0)` 启用 SOM 视觉检测。`uia_quality` 与 `vision_quality` 单独报告，不互相覆盖。
 
-**PaddleOCR ONNX 后端** — OCR 默认使用 RapidOCR + ONNXRuntime，也就是 PaddleOCR PP-OCRv4 mobile ONNX 模型。det/cls/rec 模型和中文字符字典固定内置在 `computer_server/models/rapidocr_ppocrv4/`，运行时显式传入本地路径，不支持模型下载或自动更新。模型升级只随开发者发布的新版本交付。`cua-win doctor` 校验文件 SHA-256，并拒绝未拉取的 Git LFS 指针。`CUA_RAPIDOCR_MODEL_DIR` 仅用于开发者本地验证；`CUA_OCR_BACKEND=easyocr` 是可选开发对比路径（需安装 `ocr-easy` extra），同样禁用运行时下载。`CUA_OCR_TIMEOUT_SECONDS` 覆盖单次 OCR timeout；`CUA_RAPIDOCR_DEVICE=cpu` 是 v1 支持的运行方式。OCR 文本结果会透传 `confidence` / `ocr_confidence` 到 vision nodes。默认去噪只做空文本过滤和确定性误读修正；删除孤立符号、微小 ASCII 和已知图标形状误读需显式设置 `CUA_OCR_DENOISE=strict`，`CUA_OCR_DENOISE=0` 可关闭修正。
+**PaddleOCR ONNX 后端** — OCR 使用 RapidOCR + ONNXRuntime，也就是 PaddleOCR PP-OCRv4 mobile ONNX 模型。det/cls/rec 模型和中文字符字典固定内置在 `computer_server/models/rapidocr_ppocrv4/`，运行时显式传入本地路径，不支持模型下载或自动更新。模型升级只随开发者发布的新版本交付。`cua-win doctor` 校验文件 SHA-256，并拒绝未拉取的 Git LFS 指针。`CUA_RAPIDOCR_MODEL_DIR` 仅用于开发者本地验证。`CUA_OCR_TIMEOUT_SECONDS` 覆盖单次 OCR timeout；`CUA_RAPIDOCR_DEVICE=cpu` 是 v1 支持的运行方式。OCR 文本结果会透传 `confidence` / `ocr_confidence` 到 vision nodes。默认去噪只做空文本过滤和确定性误读修正；删除孤立符号、微小 ASCII 和已知图标形状误读需显式设置 `CUA_OCR_DENOISE=strict`，`CUA_OCR_DENOISE=0` 可关闭修正。
 
 **录制 vs 学习** — 录制是 agent 视角（MCP 工具调用回放），学习是人类视角（pynput + UIA 标注 + OCR 增强）。两者通过 `capture_service / ocr_service / uia_service / window_identity_service` 共享底层能力。
 
@@ -447,7 +447,6 @@ type/key，以及明确 canonical window 的 type/key/manage 不要求 observati
 - **SOM 检测仍在工具路径同步运行**：warm-up 会预加载模型，但每帧检测仍会增加 `computer_get_window_state` 的尾延迟
 - **录制截图仍有动作内成本**：turn 写盘已进入有界 writer 线程，但每个被采样动作的截图捕获通常仍增加约 50-200 ms
 - **SOM OCR 遮挡噪音**：WGC window capture 可避免大多数重叠窗口污染；screen crop 回退会在 `capture.capture_metadata.occlusion_risk=true` 中显式标记
-- **SOM YOLO/OCR 并行收益有限**：2026-06-01 EasyOCR CPU 基准（1280x830 WGC screenshot）串行 3.31s、`ThreadPoolExecutor` 并行 3.07s，仅约 8% 提升；RapidOCR 后端需重新基准后再决定是否并行
 - **学习 IME 对终端无效**：PowerShell/CMD 无 UIA ValuePattern，回退拼音 + OCR
 - **录制坐标绝对化**：回放时窗口位置变化导致错位。`window_ref` 机制在窗口存活时可重算坐标，窗口过期则按进程名/标题重新搜索
 - **GBK 编码**：子进程必须设置 `PYTHONIOENCODING=utf-8`
@@ -564,7 +563,7 @@ Download releases from
 Windows users should use the installer:
 
 ```powershell
-.\cua-win-0.3.1-win64-setup.exe
+.\cua-win-0.3.2-win64-setup.exe
 cua-win doctor
 ```
 
@@ -579,7 +578,7 @@ RapidOCR models, and is intended for Python environments or developer
 validation:
 
 ```powershell
-pip install .\cua_pywin-0.3.1-py3-none-any.whl
+pip install .\cua_pywin-0.3.2-py3-none-any.whl
 cua-win doctor
 ```
 
@@ -945,7 +944,9 @@ role, MIME type, dimensions, byte count, `content_index`, `window`,
 **Tree quality + SOM fallback** — `rich(>50) / ok(16-50)` skip SOM; `poor(1-15) / empty(0)` enable SOM vision. `uia_quality` and `vision_quality` are reported separately and do not overwrite each other.
 
 **Bundled OmniParser V2 pipeline** — The YOLO detector is bundled at
-`som/weights/icon_detect/model.pt`. Icon semantics use only the bundled ONNX
+`som/weights/icon_detect/model.onnx` and runs directly through ONNX Runtime with
+NumPy/OpenCV preprocessing and NMS. PyTorch, Torchvision, and Ultralytics are
+export-time dependencies only and are not shipped. Icon semantics use only the bundled ONNX
 Community conversion of the fine-tuned OmniParser Florence-2 model at
 `computer_server/models/omniparser_v2/icon_caption_onnx_community/`: the
 token embeddings remain FP32 because they are Gather-only, while the vision
@@ -993,9 +994,8 @@ See [iteration review and verification](docs/icon-semantic-int8-review.md) for
 the exact provenance, reproduction commands, and quality limitations. The small
 fixture is exploratory and is not a general desktop-UI accuracy certification.
 
-**PaddleOCR ONNX backend** — OCR defaults to RapidOCR + ONNXRuntime with
-PaddleOCR PP-OCRv4 mobile models. `CUA_OCR_BACKEND=easyocr` enables the optional
-EasyOCR fallback when installed with the `ocr-easy` extra. `CUA_OCR_TIMEOUT_SECONDS`
+**PaddleOCR ONNX backend** — OCR uses RapidOCR + ONNXRuntime with
+PaddleOCR PP-OCRv4 mobile models. `CUA_OCR_TIMEOUT_SECONDS`
 overrides per-call OCR timeout, and `CUA_RAPIDOCR_DEVICE=cpu` is the supported v1
 runtime. The det/cls/rec models and Chinese character dictionary are bundled under
 `computer_server/models/rapidocr_ppocrv4/` and passed to RapidOCR explicitly, so
@@ -1023,7 +1023,6 @@ known icon-shape misreads requires `CUA_OCR_DENOISE=strict`. Set
 - **SOM detection remains synchronous in the tool path**: warm-up preloads models, but per-frame detection still contributes to `computer_get_window_state` tail latency
 - **Recording capture still has an in-action cost**: turn writes use a bounded writer thread, but each sampled action's screenshot capture typically adds about 50-200 ms
 - **SOM OCR occlusion noise**: WGC window capture avoids most overlapping-window pollution; screen-crop fallback marks `capture.capture_metadata.occlusion_risk=true`
-- **Limited SOM YOLO/OCR parallelism gain**: the 2026-06-01 EasyOCR CPU benchmark on a 1280x830 WGC screenshot measured 3.31s serial vs 3.07s with `ThreadPoolExecutor` parallelism, about 8% faster; re-benchmark with RapidOCR before enabling parallelism
 - **Learning IME not supported in terminals**: PowerShell/CMD lack UIA ValuePattern. Falls back to pinyin + OCR
 - **Recording coordinates are absolute**: window position changes break replay. `window_ref` recalculates if window is alive; falls back to process-name/title search for stale IDs
 - **GBK encoding**: set `PYTHONIOENCODING=utf-8` in subprocess environments.

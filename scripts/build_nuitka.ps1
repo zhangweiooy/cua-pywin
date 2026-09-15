@@ -469,7 +469,6 @@ for _relative in (
     "cv2",
     "numpy.libs",
     "scipy.libs",
-    "torch/lib",
     "onnxruntime/capi",
 ):
     _path = _BASE / _relative
@@ -649,10 +648,7 @@ try {
         "screeninfo",
         "starlette",
         "tokenizers",
-        "torch",
-        "torchvision",
         "uiautomation",
-        "ultralytics",
         "uvicorn",
         "websockets",
         "win32api",
@@ -701,7 +697,6 @@ try {
         "--nofollow-import-to=numpy.tests",
         "--nofollow-import-to=som.tests",
         "--nofollow-import-to=pytest",
-        "--nofollow-import-to=torch.testing",
         "scripts/nuitka_entry.py"
     )
     if ($Profile -eq "hybrid") {
@@ -720,9 +715,6 @@ try {
             "--include-package=rapidocr",
             "--include-package=onnxruntime",
             "--include-package=tokenizers",
-            "--include-package=torch",
-            "--include-package=torchvision",
-            "--include-package=ultralytics",
             "--include-package=winrt",
             "--include-module=pythoncom",
             "--include-module=pywintypes",

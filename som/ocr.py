@@ -39,21 +39,16 @@ class OCRProcessor:
     _shared_lock = threading.Lock()
     _ocr_executor = None
 
-    def __init__(self, languages: Optional[List[str]] = None, backend: Optional[str] = None):
+    def __init__(self, languages: Optional[List[str]] = None):
         """Initialize the OCR processor.
 
         Args:
-            languages: Language hints. RapidOCR uses its bundled Chinese+English
-                PP-OCR model; EasyOCR fallback uses this list directly.
-            backend: ``rapidocr`` (default) or ``easyocr``. Can also be set via
-                ``CUA_OCR_BACKEND``.
+            languages: Language hints retained for the shared OCR contract.
+                RapidOCR uses its bundled Chinese+English PP-OCR model.
         """
         self.reader = None
         self.languages = languages or ["ch_sim", "en"]
-        self.backend = (backend or os.getenv("CUA_OCR_BACKEND", "rapidocr")).strip().lower()
-        if self.backend not in {"rapidocr", "easyocr"}:
-            logger.warning("Unknown OCR backend %r; falling back to rapidocr", self.backend)
-            self.backend = "rapidocr"
+        self.backend = "rapidocr"
         if OCRProcessor._ocr_executor is None:
             OCRProcessor._ocr_executor = ThreadPoolExecutor(max_workers=1)
         logger.info("OCR processor initialized with backend=%s", self.backend)
@@ -76,10 +71,7 @@ class OCRProcessor:
                 self.reader = OCRProcessor._shared_reader
                 return
 
-            if self.backend == "easyocr":
-                reader = self._create_easyocr_reader()
-            else:
-                reader = self._create_rapidocr_reader()
+            reader = self._create_rapidocr_reader()
 
             OCRProcessor._shared_reader = reader
             OCRProcessor._shared_key = cache_key
@@ -132,20 +124,6 @@ class OCRProcessor:
             / "rapidocr_ppocrv4"
         )
 
-    def _create_easyocr_reader(self):
-        try:
-            import easyocr
-            import torch
-
-            use_gpu = bool(torch.cuda.is_available())
-            return easyocr.Reader(
-                self.languages,
-                gpu=use_gpu,
-                download_enabled=False,
-            )
-        except Exception as exc:
-            raise RuntimeError(f"EasyOCR initialization failed: {exc}") from exc
-
     def detect_text(
         self,
         image: Image.Image,
@@ -154,9 +132,8 @@ class OCRProcessor:
     ) -> List[Dict[str, Any]]:
         """Detect text in an image.
 
-        Returns a list of dictionaries compatible with the previous EasyOCR
-        implementation: normalized bbox, text content, confidence, and
-        ``interactivity=False``.
+        Returns normalized bbox, text content, confidence, and
+        ``interactivity=False`` dictionaries.
         """
         try:
             try:
@@ -172,19 +149,11 @@ class OCRProcessor:
             image_np = np.array(image.convert("RGB"))
             threshold = float(confidence_threshold)
             timeout = self._effective_timeout(timeout_seconds)
-            if self.backend == "easyocr":
-                future = OCRProcessor._ocr_executor.submit(
-                    self.reader.readtext,
-                    image_np,
-                    paragraph=False,
-                    text_threshold=threshold,
-                )
-            else:
-                future = OCRProcessor._ocr_executor.submit(
-                    self.reader,
-                    image_np,
-                    text_score=threshold,
-                )
+            future = OCRProcessor._ocr_executor.submit(
+                self.reader,
+                image_np,
+                text_score=threshold,
+            )
 
             try:
                 raw_results = future.result(timeout=timeout)
@@ -298,7 +267,7 @@ class OCRProcessor:
         return True
 
     def _iter_raw_results(self, raw_results: Any) -> Iterable[Tuple[Any, Any, Any]]:
-        """Yield ``(box, text, score)`` triples from RapidOCR/EasyOCR formats."""
+        """Yield ``(box, text, score)`` triples from RapidOCR result formats."""
         boxes = getattr(raw_results, "boxes", None)
         txts = getattr(raw_results, "txts", None)
         scores = getattr(raw_results, "scores", None)

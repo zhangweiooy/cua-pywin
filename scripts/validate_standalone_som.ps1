@@ -25,9 +25,35 @@ if (-not $FixtureImagePath) {
     )
 }
 $resolvedFixtureImage = (Resolve-Path -LiteralPath $FixtureImagePath).Path
-$bundleRoot = Join-Path (
-    Split-Path -Parent $resolvedExe
-) "computer_server\models\omniparser_v2\icon_caption_onnx_community"
+$standaloneRoot = Split-Path -Parent $resolvedExe
+$forbiddenRuntimeNames = @(
+    "easyocr",
+    "torch",
+    "torchvision",
+    "ultralytics",
+    "ultralytics_thop"
+)
+$removedRuntimePaths = @(
+    Get-ChildItem -LiteralPath $standaloneRoot -Recurse -Force -ErrorAction Stop |
+        Where-Object {
+            $canonicalName = $_.Name.ToLowerInvariant().Replace("-", "_")
+            @(
+                $forbiddenRuntimeNames | Where-Object {
+                    $canonicalName -eq $_ -or
+                    $canonicalName -like "$_`_*.dist_info"
+                }
+            ).Count -gt 0
+        }
+)
+if ($removedRuntimePaths.Count -ne 0) {
+    throw (
+        "Standalone bundle contains forbidden model runtime paths: " +
+        (($removedRuntimePaths.FullName | Select-Object -First 10) -join ", ")
+    )
+}
+$bundleRoot = Join-Path $standaloneRoot (
+    "computer_server\models\omniparser_v2\icon_caption_onnx_community"
+)
 $int8VisionPath = Join-Path $bundleRoot "int8\vision_encoder.int8.onnx"
 $fp32VisionPath = Join-Path $bundleRoot "onnx\vision_encoder.onnx"
 if (-not (Test-Path -LiteralPath $int8VisionPath -PathType Leaf)) {

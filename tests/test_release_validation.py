@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import hashlib
 import json
+import tomllib
+import zipfile
 from pathlib import Path
 from pathlib import PurePosixPath
 
@@ -196,7 +198,13 @@ def test_installer_build_requires_clean_environment_lifecycle() -> None:
     assert "icon_caption_onnx_community\\onnx\\vision_encoder.onnx" in installer_script
     assert "legacy fp32 vision graph" in validator
     assert "Installer did not remove the legacy FP32 vision graph" in validator
+    assert 'Type: files; Name: "{app}\\som\\weights\\icon_detect\\model.pt"' in installer_script
+    assert "legacy PyTorch YOLO weight" in validator
+    assert "Installer did not remove the legacy PyTorch YOLO weight" in validator
     assert "Installer did not install the INT8 vision graph" in validator
+    assert 'Type: filesandordirs; Name: "{app}\\easyocr"' in installer_script
+    assert 'Type: filesandordirs; Name: "{app}\\easyocr-*.dist-info"' in installer_script
+    assert "Installer did not remove the legacy EasyOCR runtime" in validator
     assert "FirstOutput: Boolean;" in installer_script
     assert "if not FirstOutput then" in installer_script
     assert "until not HasMore;" in installer_script
@@ -252,7 +260,6 @@ def test_nested_bundle_validates_source_and_wheel(monkeypatch, tmp_path):
 
 
 def test_validate_wheel_rejects_bundle_forbidden_file(monkeypatch, tmp_path):
-    import zipfile
     from scripts.validate_release import validate_wheel
 
     content = b"quantized test graph"
@@ -281,4 +288,37 @@ def test_validate_wheel_rejects_bundle_forbidden_file(monkeypatch, tmp_path):
         archive.writestr("models/onnx/vision_encoder.onnx", b"fp32")
 
     with pytest.raises(ReleaseValidationError, match="forbidden files"):
+        validate_wheel(wheel, "0.3.1", tmp_path)
+
+
+def test_removed_easyocr_is_absent_from_project_and_lock() -> None:
+    root = Path(__file__).resolve().parents[1]
+    with (root / "pyproject.toml").open("rb") as handle:
+        pyproject = tomllib.load(handle)
+    declared = list(pyproject["project"].get("dependencies", ()))
+    for dependencies in pyproject["project"].get(
+        "optional-dependencies", {}
+    ).values():
+        declared.extend(dependencies)
+    assert not any(
+        dependency.lower().startswith("easyocr") for dependency in declared
+    )
+
+    with (root / "uv.lock").open("rb") as handle:
+        lock = tomllib.load(handle)
+    assert "easyocr" not in {package["name"].lower() for package in lock["package"]}
+
+
+def test_validate_wheel_rejects_removed_easyocr_dependency(monkeypatch, tmp_path):
+    from scripts.validate_release import validate_wheel
+
+    monkeypatch.setattr(release_validation, "MODEL_BUNDLES", ())
+    wheel = tmp_path / "test.whl"
+    with zipfile.ZipFile(wheel, "w") as archive:
+        archive.writestr(
+            "test.dist-info/METADATA",
+            "Version: 0.3.1\nRequires-Dist: EasyOCR>=1.7\n",
+        )
+
+    with pytest.raises(ReleaseValidationError, match="removed runtime dependencies"):
         validate_wheel(wheel, "0.3.1", tmp_path)

@@ -3,9 +3,30 @@
     "repository": "microsoft/OmniParser-v2.0",
     "revision": "6600256cb0f1b07651e3bc86166196307bad7e2d",
     "path": "icon_detect/model.pt",
-    "license": "MIT"
+    "license": "AGPL-3.0",
+    "sha256": "dab3d4351ad00b035db829909a4db98354d5a90f6990e4ac00222a9a95d4bf57",
+    "bytes": 40623819
+  },
+  "export": {
+    "ultralytics_version": "8.4.53",
+    "torch_version": "2.12.0+cpu",
+    "onnx_version": "1.22.0",
+    "onnxslim_version": "0.1.96",
+    "imgsz": 1280,
+    "dynamic": true,
+    "simplify": true,
+    "opset": 17,
+    "nms": false,
+    "batch": 1
+  },
+  "runtime": {
+    "input": {"name": "images", "type": "tensor(float)", "shape": ["batch", 3, "height", "width"]},
+    "output": {"name": "output0", "type": "tensor(float)", "shape": ["batch", 5, "anchors"]},
+    "coordinate_format": "raw xywh plus one class score",
+    "stride": 32,
+    "classes": {"0": "icon"}
   },
   "sha256": {
-    "model.pt": "dab3d4351ad00b035db829909a4db98354d5a90f6990e4ac00222a9a95d4bf57"
+    "model.onnx": "67bb5832112502a17a56a6326d024ba6e0b5a287348285afeaf9073aa3a37e3e"
   }
 }

@@ -1735,7 +1735,7 @@ def test_yolo_doctor_verifies_manifest_hash(monkeypatch, tmp_path) -> None:
     model_dir = tmp_path / "icon_detect"
     model_dir.mkdir()
     content = b"bundled-yolo"
-    (model_dir / "model.pt").write_bytes(content)
+    (model_dir / "model.onnx").write_bytes(content)
     (model_dir / "model_manifest.json").write_text(
         json.dumps(
             {
@@ -1744,7 +1744,7 @@ def test_yolo_doctor_verifies_manifest_hash(monkeypatch, tmp_path) -> None:
                     "revision": "test-revision",
                 },
                 "sha256": {
-                    "model.pt": hashlib.sha256(content).hexdigest(),
+                    "model.onnx": hashlib.sha256(content).hexdigest(),
                 },
             }
         ),
@@ -1765,7 +1765,7 @@ def test_yolo_doctor_rejects_checksum_mismatch(monkeypatch, tmp_path) -> None:
 
     model_dir = tmp_path / "icon_detect"
     model_dir.mkdir()
-    (model_dir / "model.pt").write_bytes(b"unexpected")
+    (model_dir / "model.onnx").write_bytes(b"unexpected")
     (model_dir / "model_manifest.json").write_text(
         json.dumps(
             {
@@ -1773,7 +1773,7 @@ def test_yolo_doctor_rejects_checksum_mismatch(monkeypatch, tmp_path) -> None:
                     "repository": "microsoft/OmniParser-v2.0",
                     "revision": "test-revision",
                 },
-                "sha256": {"model.pt": "0" * 64},
+                "sha256": {"model.onnx": "0" * 64},
             }
         ),
         encoding="utf-8",

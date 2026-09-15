@@ -14,6 +14,9 @@ from typing import BinaryIO, Iterable
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 LFS_POINTER_PREFIX = b"version https://git-lfs.github.com/spec/v1"
+FORBIDDEN_RUNTIME_DISTRIBUTIONS = frozenset(
+    {"easyocr", "torch", "torchvision", "ultralytics", "ultralytics-thop"}
+)
 
 
 class ReleaseValidationError(RuntimeError):
@@ -34,7 +37,8 @@ MODEL_BUNDLES = (
         name="OmniParser V2 YOLO",
         source_dir=Path("som/weights/icon_detect"),
         wheel_dir=PurePosixPath("som/weights/icon_detect"),
-        required_files=("model.pt", "model_manifest.json"),
+        required_files=("model.onnx", "model_manifest.json"),
+        forbidden_files=("model.pt",),
     ),
     ModelBundle(
         name="RapidOCR PP-OCRv4",
@@ -66,7 +70,6 @@ MODEL_BUNDLES = (
             "model_manifest.json",
             "pipeline_manifest.json",
             "preprocessor_config.json",
-            "processing_florence2.py",
             "special_tokens_map.json",
             "tokenizer.json",
             "tokenizer_config.json",
@@ -77,7 +80,7 @@ MODEL_BUNDLES = (
             "int8/vision_encoder.int8.onnx",
             "onnx/embed_tokens.onnx",
         ),
-        forbidden_files=("onnx/vision_encoder.onnx",),
+        forbidden_files=("onnx/vision_encoder.onnx", "processing_florence2.py"),
     ),
 )
 
@@ -241,7 +244,7 @@ def validate_source_models(root: Path = PROJECT_ROOT) -> None:
                 )
 
 
-def _wheel_metadata_version(archive: zipfile.ZipFile) -> str:
+def _wheel_metadata_text(archive: zipfile.ZipFile) -> str:
     metadata_names = [
         name
         for name in archive.namelist()
@@ -251,11 +254,31 @@ def _wheel_metadata_version(archive: zipfile.ZipFile) -> str:
         raise ReleaseValidationError(
             f"wheel must contain exactly one METADATA file, found {len(metadata_names)}"
         )
-    text = archive.read(metadata_names[0]).decode("utf-8")
-    match = re.search(r"^Version:\s*(.+)$", text, flags=re.MULTILINE)
+    return archive.read(metadata_names[0]).decode("utf-8")
+
+
+def _wheel_metadata_version(metadata_text: str) -> str:
+    match = re.search(r"^Version:\s*(.+)$", metadata_text, flags=re.MULTILINE)
     if match is None:
         raise ReleaseValidationError("wheel METADATA has no Version field")
     return match.group(1).strip()
+
+
+def _validate_wheel_runtime_dependencies(metadata_text: str) -> None:
+    dependencies = {
+        match.group(1).lower().replace("_", "-")
+        for match in re.finditer(
+            r"^Requires-Dist:\s*([A-Za-z0-9_.-]+)",
+            metadata_text,
+            flags=re.MULTILINE,
+        )
+    }
+    forbidden = dependencies & FORBIDDEN_RUNTIME_DISTRIBUTIONS
+    if forbidden:
+        raise ReleaseValidationError(
+            "wheel declares removed runtime dependencies: "
+            + ", ".join(sorted(forbidden))
+        )
 
 
 def validate_wheel(
@@ -266,11 +289,13 @@ def validate_wheel(
     if not wheel_path.is_file():
         raise ReleaseValidationError(f"wheel not found: {wheel_path}")
     with zipfile.ZipFile(wheel_path) as archive:
-        wheel_version = _wheel_metadata_version(archive)
+        metadata_text = _wheel_metadata_text(archive)
+        wheel_version = _wheel_metadata_version(metadata_text)
         if wheel_version != expected_version:
             raise ReleaseValidationError(
                 f"wheel version mismatch: expected {expected_version}, got {wheel_version}"
             )
+        _validate_wheel_runtime_dependencies(metadata_text)
         names = set(archive.namelist())
         forbidden = (
             "computer_server/models/omniparser_v2/icon_caption_int8/",

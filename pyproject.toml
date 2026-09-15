@@ -4,7 +4,7 @@ build-backend = "pdm.backend"
 
 [project]
 name = "cua-pywin"
-version = "0.3.1"
+version = "0.3.2"
 
 description = "Windows UI automation MCP server for AI agents — screenshots, clicks, typing, UIA tree walking, vision (SOM), recording/replay, and learning"
 authors = [
@@ -36,12 +36,9 @@ dependencies = [
     "screeninfo>=0.8.1",
     # SOM vision / OCR
     "numpy>=1.26",
-    "torch>=2.2",
-    "torchvision>=0.17",
     "rapidocr>=3.8.1,<4",
     "onnxruntime>=1.18",
     "opencv-python-headless>=4.11",
-    "ultralytics>=8.1",
     "supervision>=0.25",
     "tokenizers>=0.20,<0.21",
     # Windows.Graphics.Capture target-window capture backend
@@ -60,9 +57,6 @@ windows = [
 ]
 cdp = [
     "websockets>=12.0",
-]
-ocr-easy = [
-    "easyocr>=1.7",
 ]
 
 [project.urls]
@@ -91,7 +85,7 @@ computer_server = [
     "models/omniparser_v2/icon_caption_onnx_community/onnx/*",
     "models/rapidocr_ppocrv4/*",
 ]
-som = ["weights/icon_detect/model.pt", "weights/icon_detect/model_manifest.json"]
+som = ["weights/icon_detect/model.onnx", "weights/icon_detect/model_manifest.json"]
 
 [dependency-groups]
 test = [
@@ -112,6 +106,13 @@ build = [
     "ordered-set>=4.1",
     "zstandard>=0.23",
 ]
+export = [
+    "torch==2.12.0",
+    "torchvision==0.27.0",
+    "ultralytics==8.4.53",
+    "onnx==1.22.0",
+    "onnxslim==0.1.96",
+]
 
 [tool.pdm.scripts]
 api = "cua-win serve"
@@ -120,6 +121,7 @@ api = "cua-win serve"
 extend-exclude = [
     "computer_server/models/omniparser_v2/icon_caption_onnx_community",
     "artifacts/icon-semantic-poc/onnx-community",
+    "tests/fixtures/florence2/processing_florence2.py",
 ]
 
 [tool.pytest.ini_options]

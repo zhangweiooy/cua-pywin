@@ -112,10 +112,8 @@ DEPENDENCY_CHECKS = (
     ("mss", "mss", "screen capture"),
     ("psutil", "psutil", "process inspection"),
     ("cv2", "opencv-python-headless", "SOM image processing"),
-    ("torch", "torch", "vision model runtime"),
     ("rapidocr", "rapidocr", "OCR"),
-    ("onnxruntime", "onnxruntime", "OCR runtime"),
-    ("ultralytics", "ultralytics", "OmniParser YOLO"),
+    ("onnxruntime", "onnxruntime", "vision and OCR runtime"),
     ("winrt.windows.graphics.capture", "winrt-windows-graphics-capture", "WGC window capture"),
     (
         "winrt.windows.graphics.capture.interop",
@@ -139,7 +137,6 @@ FLORENCE2_COMMUNITY_REQUIRED_FILES = (
     "model_manifest.json",
     "pipeline_manifest.json",
     "preprocessor_config.json",
-    "processing_florence2.py",
     "special_tokens_map.json",
     "tokenizer.json",
     "tokenizer_config.json",
@@ -1582,8 +1579,16 @@ def _check_screenshot_capture() -> DoctorCheck:
 
 def _check_omniparser_weight() -> DoctorCheck:
     model_dir = OMNIPARSER_YOLO_DIR
-    path = model_dir / "model.pt"
+    path = model_dir / "model.onnx"
+    legacy_path = model_dir / "model.pt"
     manifest_path = model_dir / "model_manifest.json"
+    if legacy_path.exists():
+        return DoctorCheck(
+            name="model:omniparser_yolo",
+            status="fail",
+            message=f"Deprecated PyTorch YOLO weight is still present: {legacy_path}",
+            details={"path": str(legacy_path)},
+        )
     if not path.exists():
         return DoctorCheck(
             name="model:omniparser_yolo",
@@ -1602,7 +1607,7 @@ def _check_omniparser_weight() -> DoctorCheck:
     try:
         manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
         source = manifest["source"]
-        expected_hash = manifest["sha256"]["model.pt"]
+        expected_hash = manifest["sha256"]["model.onnx"]
         if (
             not isinstance(source.get("repository"), str)
             or not isinstance(source.get("revision"), str)

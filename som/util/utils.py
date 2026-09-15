@@ -37,7 +37,6 @@ def check_ocr_box(
     display_img=True,
     output_bb_format="xywh",
     goal_filtering=None,
-    easyocr_args=None,
     use_paddleocr=False,
 ) -> Tuple[Tuple[List[str], List[Tuple[float, float, float, float]]], Optional[Any]]:
     """Check OCR box using the shared OCRProcessor.
@@ -47,7 +46,6 @@ def check_ocr_box(
         display_img: Whether to display the annotated image
         output_bb_format: Format for bounding boxes ('xywh' or 'xyxy')
         goal_filtering: Optional filtering of results
-        easyocr_args: Ignored; kept for backward compatibility
         use_paddleocr: Ignored (kept for backward compatibility)
 
     Returns:
@@ -66,9 +64,6 @@ def check_ocr_box(
         image_source = image_source.convert("RGB")
     w, h = image_source.size
     logger.info(f"Image size: {w}x{h}")
-
-    if easyocr_args:
-        logger.info("Ignoring legacy easyocr_args with OCRProcessor backend: %s", easyocr_args)
 
     try:
         logger.info("Starting OCR detection with 5 second timeout...")

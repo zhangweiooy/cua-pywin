@@ -276,7 +276,7 @@ def warm_up() -> None:
     Bundled YOLO model load and OCR reader init run in parallel to
     minimize wall-clock time.  Fire-and-forget — does not block server startup.
 
-    ALL heavy imports (torch, cv2, ultralytics, ...) are pushed into the
+    All heavy imports (NumPy, OpenCV, ONNX Runtime, ...) are pushed into the
     background thread so the MCP server can start accepting requests
     immediately.
 
@@ -361,7 +361,7 @@ def warm_up() -> None:
                         event="som_warmup_stage",
                         trace_field="warmup_id",
                         trace_id=warmup_id,
-                        stage="rapidocr" if ocr_backend == "rapidocr" else "easyocr",
+                        stage="rapidocr",
                         operation=parser.ocr._ensure_reader,
                         details=ocr_details,
                     )
@@ -697,6 +697,7 @@ def _build_metadata(result: Any) -> Dict[str, Any]:
         "latency": getattr(md, "latency", None),
         "device": getattr(md, "device", None),
         "stage_timings": dict(getattr(md, "stage_timings", {}) or {}),
+        "icon_detection_error": getattr(md, "icon_detection_error", None),
         "raw_icon_count": int(getattr(md, "raw_icon_count", num_icons) or 0),
         "raw_text_count": int(getattr(md, "raw_text_count", num_text) or 0),
         "ocr_icon_collision_count": int(

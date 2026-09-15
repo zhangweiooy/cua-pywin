@@ -24,7 +24,7 @@ def test_lightweight_processor_matches_official_florence_processor() -> None:
     bundle = Path(BUNDLED_FLORENCE2_COMMUNITY_ONNX_DIR)
     spec = importlib.util.spec_from_file_location(
         "official_florence2_processing_for_test",
-        bundle / "processing_florence2.py",
+        Path(__file__).parent / "fixtures" / "florence2" / "processing_florence2.py",
     )
     assert spec is not None and spec.loader is not None
     module = importlib.util.module_from_spec(spec)

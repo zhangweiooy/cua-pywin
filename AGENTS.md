@@ -437,9 +437,12 @@ Perf: CPU 2-5s/frame, GPU <1s/frame
 Risk: OmniParser is trained on modern Web/mobile UI; old Win32 recall may vary
 ```
 
-The OmniParser V2 YOLO detector is bundled at
-`som/weights/icon_detect/model.pt` from `microsoft/OmniParser-v2.0`; package
-builds include the `som` package and this weight file.
+The OmniParser V2 YOLO detector is bundled as
+`som/weights/icon_detect/model.onnx` from the current specialized
+`microsoft/OmniParser-v2.0` weight. Runtime preprocessing, decoding, and NMS use
+NumPy/OpenCV with ONNX Runtime CPU. PyTorch, Torchvision, and Ultralytics are
+allowed only in the export/benchmark dependency group and must not appear in
+the wheel, standalone, installer, or production process.
 
 RapidOCR det/cls/rec ONNX models and the Chinese character dictionary are
 bundled under `computer_server/models/rapidocr_ppocrv4/`. Runtime initialization
@@ -447,17 +450,14 @@ passes these paths explicitly, so OCR does not depend on RapidOCR's package
 layout, default model selection, cache, or network download. The ONNX files are
 tracked with Git LFS; `cua-win doctor` verifies their SHA-256 hashes.
 
-The fine-tuned Florence-2 icon-caption model, processor, tokenizer, and custom
-model code are bundled under
-`computer_server/models/omniparser_v2/icon_caption/`. The 1.08 GB
-`model.safetensors` is tracked with Git LFS. Runtime model download is disabled
-entirely. Missing or invalid model files must fail explicitly; model updates are
-made only in the repository and shipped in a new release. `transformers` is
-pinned to 4.46.x because later 4.x and 5.x
-releases are incompatible with the official OmniParser V2 custom model code.
-The resulting wheel is about 1.00 GB and cannot use the normal PyPI file-size
-limit; publish it through GitHub Releases, an installer, or another artifact
-store. `cua-win doctor` must reject unresolved Git LFS pointer files.
+The fine-tuned Florence-2 icon-caption model runs from the bundled community
+ONNX conversion under
+`computer_server/models/omniparser_v2/icon_caption_onnx_community/`. The vision
+encoder, BART encoder, decoder, and cached decoder are INT8; token embedding
+remains FP32. The lightweight runner does not import the upstream custom
+processor module, which is retained only as a test fixture for parity checks.
+Runtime model download is disabled entirely, and `cua-win doctor` rejects
+missing, invalid, or unresolved Git LFS model files.
 
 Florence-2 runs over 64x64 YOLO icon crops in batches of up to 64 by default.
 Do not call it once per crop. RapidOCR remains responsible for visible text.
@@ -499,8 +499,6 @@ phone, pin, mute, and application-specific icons can still be misidentified.
 
 Relevant controls:
 
-- `CUA_OCR_BACKEND=rapidocr|easyocr` selects OCR backend. RapidOCR is default;
-  EasyOCR is optional and requires the `ocr-easy` extra.
 - `CUA_OCR_TIMEOUT_SECONDS` overrides per-call OCR timeout.
 - `CUA_RAPIDOCR_DEVICE=cpu` is the supported RapidOCR runtime in v1.
 - `CUA_RAPIDOCR_MODEL_DIR` is a developer-only local bundle override. It must
