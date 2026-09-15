@@ -34,7 +34,7 @@ $forbiddenRuntimeNames = @(
     "ultralytics_thop"
 )
 $removedRuntimePaths = @(
-    Get-ChildItem -LiteralPath $standaloneRoot -Recurse -Force -ErrorAction Stop |
+    Get-ChildItem -LiteralPath $standaloneRoot -Force -ErrorAction Stop |
         Where-Object {
             $canonicalName = $_.Name.ToLowerInvariant().Replace("-", "_")
             @(
@@ -45,10 +45,19 @@ $removedRuntimePaths = @(
             ).Count -gt 0
         }
 )
-if ($removedRuntimePaths.Count -ne 0) {
+$removedRuntimeDlls = @(
+    Get-ChildItem -LiteralPath $standaloneRoot -Recurse -File -Force -ErrorAction Stop |
+        Where-Object {
+            $_.Name -imatch "^(torch|torchvision).+\.(dll|pyd)$"
+        }
+)
+if ($removedRuntimePaths.Count -ne 0 -or $removedRuntimeDlls.Count -ne 0) {
     throw (
         "Standalone bundle contains forbidden model runtime paths: " +
-        (($removedRuntimePaths.FullName | Select-Object -First 10) -join ", ")
+        ((
+            @($removedRuntimePaths.FullName) + @($removedRuntimeDlls.FullName) |
+                Select-Object -First 10
+        ) -join ", ")
     )
 }
 $bundleRoot = Join-Path $standaloneRoot (

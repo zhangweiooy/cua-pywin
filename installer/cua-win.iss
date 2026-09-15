@@ -66,6 +66,9 @@ Type: dirifempty; Name: "{app}\computer_server\models\omniparser_v2\icon_caption
 Type: dirifempty; Name: "{app}\computer_server\models\omniparser_v2"
 Type: dirifempty; Name: "{app}\computer_server\models"
 Type: dirifempty; Name: "{app}\computer_server"
+Type: dirifempty; Name: "{app}\som\weights\icon_detect"
+Type: dirifempty; Name: "{app}\som\weights"
+Type: dirifempty; Name: "{app}\som"
 Type: dirifempty; Name: "{app}"
 
 [Icons]
@@ -221,5 +224,6 @@ begin
   if CurUninstallStep = usPostUninstall then
   begin
     RemoveFromUserPath(ExpandConstant('{app}'));
+    RemoveDir(ExpandConstant('{app}'));
   end;
 end;

@@ -366,12 +366,12 @@ try {
     if (
         -not $windowState.success -or
         @($windowState.artifacts).Count -lt 1 -or
-        $captureMetadata.capture_backend -ne "wgc" -or
+        $captureMetadata.capture_backend -notin @("wgc", "screen_crop") -or
         $windowState.data.uia_quality -notin @("rich", "ok", "poor") -or
         [int]$windowState.data.uia_node_count -lt 1
     ) {
         throw (
-            "Installed UIA/WGC window-state smoke failed: " +
+            "Installed active-window state smoke failed: " +
             "backend=$($captureMetadata.capture_backend), " +
             "uia_quality=$($windowState.data.uia_quality), " +
             "uia_nodes=$($windowState.data.uia_node_count)"

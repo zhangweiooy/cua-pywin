@@ -106,6 +106,9 @@ def test_nuitka_uses_a_pruned_production_runtime_staging() -> None:
     assert '"--include-package=pydoc_data"' in script
     assert '"--include-module=pstats"' in script
     assert '"--include-module=profile"' in script
+    for package in ("onnx", "onnxslim", "torch", "torchvision", "transformers", "ultralytics"):
+        assert f'"{package}",' in script
+        assert f'"--include-package={package}"' not in script
 
 
 def test_nuitka_bundles_clean_environment_comtypes_uia_bindings() -> None:
@@ -184,7 +187,7 @@ def test_installer_build_requires_clean_environment_lifecycle() -> None:
     assert "foreach ($capturePass in 1..3)" in validator
     assert '"computer_screenshot"' in validator
     assert '"computer_get_window_state"' in validator
-    assert 'capture_backend -ne "wgc"' in validator
+    assert 'capture_backend -notin @("wgc", "screen_crop")' in validator
     assert 'uia_quality -notin @("rich", "ok", "poor")' in validator
     assert '"list-tools"' in validator
     assert "@($tools.tools).Count -ne 25" in validator
@@ -195,6 +198,8 @@ def test_installer_build_requires_clean_environment_lifecycle() -> None:
     assert "[InstallDelete]" in installer_script
     assert "[UninstallDelete]" in installer_script
     assert 'Type: dirifempty; Name: "{app}"' in installer_script
+    assert 'Type: dirifempty; Name: "{app}\\som\\weights\\icon_detect"' in installer_script
+    assert "RemoveDir(ExpandConstant('{app}'))" in installer_script
     assert "icon_caption_onnx_community\\onnx\\vision_encoder.onnx" in installer_script
     assert "legacy fp32 vision graph" in validator
     assert "Installer did not remove the legacy FP32 vision graph" in validator
