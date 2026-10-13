@@ -47,12 +47,20 @@ Recording, replay, and learning:
 
 ## Protocol Envelope
 
-All tools return protocol `0.2` with fixed
-`success/data/artifacts/warnings/error/action` fields. Read tool data from
-`data`, errors from `error`, and side-effect certainty from `action`.
-Expected failures are normal MCP results. For MCP `isError`,
-`ACTION_OUTCOME_UNKNOWN`, or `action.outcome="unknown"`, re-observe before any
-retry.
+All tools return this Protocol 0.2 envelope; apply the result/recovery rules
+in SKILL.md:
+
+```json
+{
+  "protocol_version": "0.2",
+  "success": true,
+  "data": {},
+  "artifacts": [],
+  "warnings": [],
+  "error": null,
+  "action": null
+}
+```
 
 Images are MCP image content and are matched through
 `artifacts[].content_index`. CLI callers can save the primary image with
@@ -107,9 +115,7 @@ and the normal state summary at 300 characters while omitting verbose
 capture/provider/vision diagnostics. Standard mode preserves the normal
 diagnostics and caller-selected size limits.
 `tree_markdown` is omitted by default. Pass `include_tree_markdown=true` only
-when the full debug tree is required. Public floating-point values are rounded
-to two decimal places while internal observation geometry remains full
-precision.
+when the full debug tree is required.
 Each node may include `action_hints`, a compact agent-facing translation of
 low-level `actions`. Prefer these hints when choosing between click, type,
 set_value, select, toggle, expand, and scroll paths.
@@ -120,17 +126,14 @@ Read `data.state_text` before scanning the full node list. `data.agent_state`
 contains truncation and sampling metadata without a duplicate text copy. The
 summary is capped by `agent_text_limit=500` by default; pass
 `show_full_text=true` or raise `agent_text_limit` for diagnostic runs.
-Public data keeps canonical node counts, exposes capture diagnostics under
-`capture.capture_metadata`, and omits exact duplicate counts and empty
-diagnostic fields.
+Use `include_all_nodes=true` when a query should not restrict the returned
+node array. Use `force_som=true` for visual fallback testing or poor UIA/MSAA.
 
-Interpret the complete window screenshot together with UIA/MSAA names, OCR
-text, and YOLO boxes. Choose an existing node before estimating coordinates.
-YOLO icons may have an empty `name`; their detection confidence does not supply
-semantic meaning. The runtime does not caption icons or make per-icon API calls.
-
-Use `query` for actual node text; an unnamed icon cannot be found by a guessed
-text label. Prefer a broader node list when matching icons visually.
+For empty, stale, minimized, or inconsistent observations, inspect
+`data.target_profile`, `data.capture.capture_metadata.capture_reliability`,
+`data.semantic_degraded_reason`, and `data.provider_errors`.
+For action delivery diagnostics, inspect `data.action_path.target_profile`,
+`delivery_risk`, and `delivery_note`; these do not indicate an input-mode change.
 
 Click an indexed element from the same observation (preferred):
 
@@ -201,38 +204,7 @@ Open and inspect a native context menu:
 Then call `computer_get_window_state` again and inspect transient image
 artifacts/MCP image content or menu nodes before selecting an item.
 
-## Observe-Plan-Act Pattern
-
-For normal app workflows:
-
-1. Resolve a canonical `window`.
-2. Capture state with `computer_get_window_state`.
-3. Choose one small state-changing action.
-4. Use `capture_after`, `verify_query`, or a fresh state capture.
-5. Continue only from the newest `window`, `observation_id`, and
-   `screenshot_id`.
-
-Use this loop for navigation, dialogs, search, form entry, menus, tab changes,
-focus changes, and any workflow where the next action depends on the previous
-result.
-
-Use `cua-win batch` only when the actions are already stable and do not need
-intermediate state, such as drawing, repeated drags, deterministic key
-sequences, or short low-risk UI setup.
-
 ## Targeted Probe Pattern
-
-When a target is ambiguous, inspect a small area instead of re-running broad
-window reasoning:
-
-1. Start from a current `screenshot_id`.
-2. Call `computer_zoom` around the candidate region.
-3. Inspect the returned zoom image and match it to existing node boxes and OCR text.
-4. Click or type only after the target identity is clear.
-
-If the candidate is text-based, first try `computer_get_window_state` with a
-specific `query`. If the query narrows too much, repeat with a higher
-`max_nodes` or no query. Use full `max_nodes=0` only for diagnostics.
 
 For tiny or icon-only controls, first match the target to an existing
 `element_index`. Zoom only when the target remains unclear:
@@ -261,30 +233,6 @@ If coordinates must come from the zoom image, use its returned `zoom_id`:
   "y": 30
 }
 ```
-
-A fresh observation invalidates the old observation, screenshot and zoom IDs.
-
-## High-Risk Workflow
-
-For send, submit, delete, purchase, account, permission, privacy, and security
-flows, use this structure:
-
-1. Locate: identify the exact app/window and target context.
-2. Prepare: open controls, fill drafts, or stage changes without committing.
-3. Verify: confirm active window, recipient/context, pending text/action, and
-   submit control from the latest observation or targeted OCR.
-4. Commit: perform one final action only after user confirmation when required.
-5. Re-verify: confirm the post-action success state or report that the UI did
-   not provide reliable confirmation.
-
-Never paste a search token, recipient, or message body unless the latest
-observation confirms focus is in the intended input. If text is already present
-in the correct target field, do not type it again; submit, finish, or clear and
-replace only when the visible value is wrong.
-
-If a UIA action returns success but the visible state does not change, treat it
-as inconclusive. Re-observe, then use one current center-coordinate fallback
-only when the action is low risk and the target is still clear.
 
 ## CLI Examples
 
@@ -364,6 +312,9 @@ Batch with per-tool defaults:
 }
 ```
 
+Batch suppresses cursor overlay animation while preserving real input timing,
+such as drag duration.
+
 Rules:
 
 - `defaults` are keyed by tool name.
@@ -409,6 +360,20 @@ Replay:
 ```json
 {"recording_dir": "D:\\temp\\cua-recording", "stop_on_error": true}
 ```
+
+In 0.4.0, automatic replay rejects recorded elements with `source="vision"`
+and `control_type="icon"`, including older references with generated captions.
+The rejected step returns `ACTION_REJECTED` before sending its input: neither
+the recorded index nor its old position establishes the icon's current identity.
+Semantic UIA/MSAA and OCR text relocation are unchanged.
+
+Keep `stop_on_error=true`. On this rejection, inspect the replay result and
+current UI; earlier steps may already have completed. Take a fresh
+`computer_get_window_state`, identify the target in the full screenshot, zoom
+only if needed, then use its current `element_index` and `observation_id`.
+Do not restart the entire trajectory blindly, strip recorded identity metadata,
+or reuse old coordinates to bypass the rejection. Fresh LLM-guided actions on
+YOLO icon nodes remain supported.
 
 Human demonstration learning:
 
