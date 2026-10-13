@@ -34,7 +34,6 @@ def test_build_agent_state_returns_compact_summary_by_default():
             {
                 "element_index": 8,
                 "type": "icon",
-                "normalized_label": "more options",
                 "source": "vision",
                 "center_x": 100,
                 "center_y": 200,
@@ -52,7 +51,8 @@ def test_build_agent_state_returns_compact_summary_by_default():
     assert 'Title: "微信"' in agent_state["text"]
     assert '[7] Button "发送"' in agent_state["text"]
     assert "focused" in agent_state["text"]
-    assert '[8] icon "more options"' in agent_state["text"]
+    assert "[8] icon" in agent_state["text"]
+    assert "center=(100,200)" in agent_state["text"]
 
 
 def test_build_agent_state_can_truncate_or_return_full_text():

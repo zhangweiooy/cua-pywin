@@ -67,6 +67,83 @@ class _Window:
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("recorded_name", [None, "send"])
+async def test_replay_rejects_unidentifiable_icon_without_sending_input(
+    tmp_path, monkeypatch, recorded_name,
+):
+    import computer_server.mcp_server as mcp_module
+    import computer_server.services.window_state_service as window_state_service
+
+    automation = _Automation()
+    window = _Window()
+    monkeypatch.setattr(
+        mcp_module, "_handlers",
+        SimpleNamespace(automation=automation, window=window),
+    )
+    elements = [
+        CachedElement(
+            element_index=index, source="vision", control_type="icon",
+            name=None, actions=["click"], center_x=x, center_y=100,
+            bbox=(x - 10, 90, x + 10, 110),
+        )
+        for index, x in [(10000, 100), (10001, 200)]
+    ]
+    monkeypatch.setattr(get_element_cache(), "get_elements", lambda *_: elements)
+
+    snapshot_calls = []
+
+    async def snapshot(*args, **kwargs):
+        snapshot_calls.append(True)
+        return {
+            "success": True, "nodes": [], "node_count": 0,
+            "unfiltered_node_count": 0, "tree_markdown": "",
+        }
+
+    monkeypatch.setattr(window_state_service, "get_window_state_snapshot", snapshot)
+    (tmp_path / "recording.json").write_text(
+        json.dumps({"protocol_version": "0.2"}), encoding="utf-8",
+    )
+    actions = [
+        {
+            "tool": "computer_click",
+            "args": {
+                "window": {"id": 456, "pid": 123}, "element_index": 10042,
+                "x": 100, "y": 100,
+            },
+            "element_ref": {
+                "source": "vision", "control_type": "icon",
+                "name": recorded_name, "actions": ["click"],
+                "center_x": 100, "center_y": 100,
+            },
+        },
+        {"tool": "computer_mouse", "args": {"action": "down", "button": "left"}},
+    ]
+    for index, action in enumerate(actions, 1):
+        turn = tmp_path / f"turn-{index:05d}"
+        turn.mkdir()
+        (turn / "action.json").write_text(
+            json.dumps({"protocol_version": "0.2", **action}), encoding="utf-8",
+        )
+
+    result = await create_mcp_server().call_tool(
+        "computer_replay_trajectory", {"recording_dir": str(tmp_path), "delay_ms": 0},
+    )
+    envelope = result.structured_content
+    assert envelope["success"] is False
+    assert envelope["error"]["code"] == "ACTION_REJECTED"
+    assert "select the target again" in envelope["error"]["message"]
+    assert envelope["action"]["outcome"] == "rejected"
+    details = envelope["error"]["details"]
+    assert details["turns_replayed"] == 0
+    assert details["turns_failed"] == 1
+    assert details["turns_total"] == 2
+    assert automation.clicks == []
+    assert automation.mouse_events == []
+    assert window.actions == []
+    assert snapshot_calls == []
+
+
+@pytest.mark.asyncio
 async def test_recording_replay_uses_current_consolidated_tool_names(
     tmp_path,
     monkeypatch,

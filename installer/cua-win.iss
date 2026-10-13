@@ -47,10 +47,14 @@ Name: "addtopath"; Description: "Add cua-win to the current user's PATH"; GroupD
 Source: "{#SourceDir}\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
 
 [InstallDelete]
-Type: files; Name: "{app}\computer_server\models\omniparser_v2\icon_caption_onnx_community\onnx\vision_encoder.onnx"
+Type: filesandordirs; Name: "{app}\computer_server\models\omniparser_v2"
 Type: files; Name: "{app}\som\weights\icon_detect\model.pt"
 Type: filesandordirs; Name: "{app}\easyocr"
 Type: filesandordirs; Name: "{app}\easyocr-*.dist-info"
+Type: filesandordirs; Name: "{app}\tokenizers"
+Type: filesandordirs; Name: "{app}\tokenizers-*.dist-info"
+Type: filesandordirs; Name: "{app}\transformers"
+Type: filesandordirs; Name: "{app}\transformers-*.dist-info"
 Type: filesandordirs; Name: "{app}\torch"
 Type: filesandordirs; Name: "{app}\torch-*.dist-info"
 Type: filesandordirs; Name: "{app}\torchvision"
@@ -61,9 +65,6 @@ Type: filesandordirs; Name: "{app}\ultralytics_thop"
 Type: filesandordirs; Name: "{app}\ultralytics_thop-*.dist-info"
 
 [UninstallDelete]
-Type: dirifempty; Name: "{app}\computer_server\models\omniparser_v2\icon_caption_onnx_community\onnx"
-Type: dirifempty; Name: "{app}\computer_server\models\omniparser_v2\icon_caption_onnx_community"
-Type: dirifempty; Name: "{app}\computer_server\models\omniparser_v2"
 Type: dirifempty; Name: "{app}\computer_server\models"
 Type: dirifempty; Name: "{app}\computer_server"
 Type: dirifempty; Name: "{app}\som\weights\icon_detect"

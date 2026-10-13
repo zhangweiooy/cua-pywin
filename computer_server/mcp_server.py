@@ -4467,7 +4467,11 @@ def create_mcp_server() -> FastMCP:
         """
         Get a rich snapshot of a window's UI state: screenshot + element tree + indexed nodes.
 
-        Combines accessibility tree walking with optional SOM vision detection.
+        Combines UIA/MSAA semantics with optional OCR text and YOLO icon locations.
+        Interpret the full-window screenshot to identify unlabeled icons. Prefer
+        an existing element_index with observation_id over estimating coordinates.
+        Use computer_zoom with screenshot_id only when a small target is unclear;
+        the runtime does not caption icons or make per-icon LLM API calls.
         Each actionable element gets an element_index that can be used with
         computer_click (use count=2 for double-click), computer_scroll, etc.
         Public data keeps state_text as the single summary text, canonical node
@@ -5208,6 +5212,12 @@ def create_mcp_server() -> FastMCP:
                 "computer_scroll",
                 "computer_set_value",
             }:
+                from computer_server.services.replay_resolver import validate_replay_element_ref
+
+                try:
+                    validate_replay_element_ref(element_ref)
+                except ValueError as exc:
+                    return {"success": False, "code": "ACTION_REJECTED", "error": str(exc)}
                 refresh_window = resolved.get("window")
                 if not isinstance(refresh_window, dict):
                     refresh_window = {

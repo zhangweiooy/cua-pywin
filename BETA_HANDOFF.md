@@ -1,10 +1,16 @@
-# cua-win 0.2.6 Beta Handoff
+# cua-win 0.2.6 Beta Handoff (historical)
 
-This is the short handoff for beta testing and small follow-up iterations.
-Start from the current implementation and real Windows evidence; do not reopen
-settled architecture debates without new data.
+Status: archived snapshot of the 0.2.6 beta. Its versions, artifact paths,
+Florence pipeline and validation counts describe that earlier build and are
+not current acceptance evidence. For the 0.3.4 working tree with Unreleased
+Florence-removal changes, read [README](README.md),
+[Release Guide](RELEASE.md), and
+[visual runtime verification](docs/yolo-onnx-poc.md).
 
-## Current State
+This document preserves the beta handoff and its original workflows for
+historical reference.
+
+## State at the 0.2.6 handoff
 
 - Repository: `D:\Documents\Code\cua-pywin`
 - Branch: `master`
@@ -25,7 +31,7 @@ the generated `dist\SHA256SUMS.txt`,
 `dist-nuitka\cua-win.dist\SHA256SUMS.txt`, and
 `dist-installer\SHA256SUMS.txt` as authoritative for the files beside them.
 
-Current local validation:
+Local validation recorded for that handoff:
 
 - Full pytest, Ruff, compileall, skill validation, and release validation pass.
 - Standalone `list-tools` reports 25 tools and full `doctor` passes 31/31
@@ -100,7 +106,7 @@ Daemon `/call` uses the fixed
 `--json` output print the result envelope. Use `--output PATH` for the primary
 image and `--output-dir DIR` for all image artifacts.
 
-## Fresh Session
+## Historical Fresh Session Template
 
 ```text
 Project: D:\Documents\Code\cua-pywin

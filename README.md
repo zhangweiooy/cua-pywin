@@ -17,7 +17,7 @@ Windows AI Agent 桌面操控 MCP 服务 — 25 个计算机控制工具。
 - **25 个 MCP 工具** — 截图、鼠标、键盘、窗口管理；重复 wrapper 已合并为高层入口
 - **录制 / 回放** — 录制 MCP 工具调用序列到磁盘，完整回放（含坐标重算和过期窗口解析）
 - **学习模式** — 录制真人操作（pynput 全局钩子 + UIA 元素标注 + PaddleOCR ONNX 视觉增强）
-- **SOM 视觉检测** — OmniParser V2 YOLO + Florence-2 图标描述 + PaddleOCR ONNX 中文识别，UIA 不可用时自动回退
+- **SOM 视觉检测** — OmniParser V2 YOLO 图标定位 + PaddleOCR ONNX 中文识别，主 LLM 结合完整截图理解界面，UIA 不可用时自动回退
 - **UIA 树遍历** — 支持 Win32 / UWP / Electron / Qt 应用，非 UIA 应用自动触发 SOM
 - **Agent 光标覆盖层** — Dubins 路径飞行动画 + 弹簧过冲 + 辉光渲染
 
@@ -59,7 +59,6 @@ cua-pywin/
 │  │  ├─ replay_resolver.py        ← 回放时坐标重算 + 过期 HWND 重写
 │  │  ├─ capture_service.py        ← virtual desktop 截图（录制 + 学习共享）
 │  │  ├─ ocr_service.py            ← lazy OCRProcessor 单例
-│  │  ├─ icon_caption_service.py   ← OmniParser V2 Florence-2 图标描述（batch 推理）
 │  │  ├─ target_profile_service.py ← 窗口类型分类 + 投递风险
 │  │  ├─ permission_service.py     ← open/command/CDP 权限策略
 │  │  ├─ validation_service.py     ← 参数与路径校验
@@ -96,7 +95,7 @@ cua-pywin/
 下载。普通 Windows 用户优先使用安装器：
 
 ```powershell
-.\cua-win-0.3.4-win64-setup.exe
+.\cua-win-0.4.0-win64-setup.exe
 cua-win doctor
 ```
 
@@ -104,11 +103,11 @@ cua-win doctor
 `%LocalAppData%\Programs\cua-win`，不需要管理员权限；安装时可选把
 `cua-win.exe` 加入当前用户 PATH。模型随安装器一起交付，用户不需要单独下载。
 
-wheel 也内置 OmniParser V2 YOLO、Florence-2 和 RapidOCR 模型，适合 Python
+wheel 也内置 OmniParser V2 YOLO 和 RapidOCR 模型，适合 Python
 环境或开发验证：
 
 ```powershell
-pip install .\cua_pywin-0.3.4-py3-none-any.whl
+pip install .\cua_pywin-0.4.0-py3-none-any.whl
 cua-win doctor
 ```
 
@@ -174,7 +173,7 @@ cua-win serve --host 0.0.0.0 --port 8000 \
 
 普通 HTTP 服务暴露 `/status` 与 `/mcp`；`cua-win` daemon 复用同一个 app，并额外启用 token 保护的 `/tools`、`/call`、`/shutdown` JSON RPC 路由。CORS 仅放行 `localhost / 127.0.0.1 / [::1]` origin。
 
-`cua-win` 是面向人和脚本的 CLI。默认启动同一个本机 HTTP app，并通过 token 保护的 JSON RPC 路由调用 MCP 工具，因此 `computer_get_window_state` 这类高频重工具只在 daemon 启动时预热一次。`--no-daemon` 会强制单次进程内调用；`list-tools`、`describe` 和明确安全的只读状态调用使用轻量导入，不会启动 SOM/Florence-2/RapidOCR 预热。桌面控制和视觉调用仍推荐复用 daemon。
+`cua-win` 是面向人和脚本的 CLI。默认启动同一个本机 HTTP app，并通过 token 保护的 JSON RPC 路由调用 MCP 工具，因此 `computer_get_window_state` 这类高频重工具只在 daemon 启动时预热一次。`--no-daemon` 会强制单次进程内调用；`list-tools`、`describe` 和明确安全的只读状态调用使用轻量导入，不会启动 SOM/RapidOCR 预热。桌面控制和视觉调用仍推荐复用 daemon。
 `cua-win <tool> '<json>'` 会自动等价转换为 `cua-win call <tool> '<json>'`。
 包含中文或复杂嵌套参数时，推荐通过 UTF-8 stdin
 （`'<json>' | cua-win call <tool> -`）或 UTF-8 文件
@@ -430,6 +429,16 @@ type/key，以及明确 canonical window 的 type/key/manage 不要求 observati
 
 **树质量 + SOM 回退** — `tree_quality: rich(>50) / ok(16-50)` 跳过 SOM，`poor(1-15) / empty(0)` 启用 SOM 视觉检测。`uia_quality` 与 `vision_quality` 单独报告，不互相覆盖。
 
+**完整截图 + 节点定位** — 主 LLM 结合完整窗口截图、UIA/MSAA 语义、OCR 文本和
+YOLO 图标边界框理解界面。优先用已有 `element_index` 和最新 `observation_id`
+操作小控件；YOLO 节点的 `name` 为空，检测置信度不代表图标含义的置信度。
+目标仍不明确时，用 `computer_zoom` 和父 `screenshot_id` 局部放大；只有需要在
+放大图中定位时才使用 `zoom_id` 坐标。查询文本不会匹配未命名图标，必要时取消
+`query` 或增加 `max_nodes` 查看候选。运行时只使用本地 YOLO/OCR，不加载 Florence，
+也不逐图标调用 LLM API。SOM 在语义树不足或显式 `force_som=true` 时运行。
+
+现行运行方案、模型来源和验证范围见[视觉运行方案与 YOLO ONNX 验证](docs/yolo-onnx-poc.md)。
+
 **PaddleOCR ONNX 后端** — OCR 使用 RapidOCR + ONNXRuntime，也就是 PaddleOCR PP-OCRv4 mobile ONNX 模型。det/cls/rec 模型和中文字符字典固定内置在 `computer_server/models/rapidocr_ppocrv4/`，运行时显式传入本地路径，不支持模型下载或自动更新。模型升级只随开发者发布的新版本交付。`cua-win doctor` 校验文件 SHA-256，并拒绝未拉取的 Git LFS 指针。`CUA_RAPIDOCR_MODEL_DIR` 仅用于开发者本地验证。`CUA_OCR_TIMEOUT_SECONDS` 覆盖单次 OCR timeout；`CUA_RAPIDOCR_DEVICE=cpu` 是 v1 支持的运行方式。OCR 文本结果会透传 `confidence` / `ocr_confidence` 到 vision nodes。默认去噪只做空文本过滤和确定性误读修正；删除孤立符号、微小 ASCII 和已知图标形状误读需显式设置 `CUA_OCR_DENOISE=strict`，`CUA_OCR_DENOISE=0` 可关闭修正。
 
 **录制 vs 学习** — 录制是 agent 视角（MCP 工具调用回放），学习是人类视角（pynput + UIA 标注 + OCR 增强）。两者通过 `capture_service / ocr_service / uia_service / window_identity_service` 共享底层能力。
@@ -444,7 +453,7 @@ type/key，以及明确 canonical window 的 type/key/manage 不要求 observati
 
 ### 已知限制
 
-- **SOM 检测仍在工具路径同步运行**：warm-up 会预加载模型，但每帧检测仍会增加 `computer_get_window_state` 的尾延迟
+- **SOM 检测仍有每帧成本**：同步模型推理由工作线程执行，warm-up 只预加载模型；首帧和后续检测仍增加 `computer_get_window_state` 的延迟
 - **录制截图仍有动作内成本**：turn 写盘已进入有界 writer 线程，但每个被采样动作的截图捕获通常仍增加约 50-200 ms
 - **SOM OCR 遮挡噪音**：WGC window capture 可避免大多数重叠窗口污染；screen crop 回退会在 `capture.capture_metadata.occlusion_risk=true` 中显式标记
 - **学习 IME 对终端无效**：PowerShell/CMD 无 UIA ValuePattern，回退拼音 + OCR
@@ -482,7 +491,7 @@ uv run python scripts/run_agent_smoke.py --dry-run --scenario fixture-basic
 - **25 MCP tools** — screenshots, mouse, keyboard, window management; duplicate wrappers merged into higher-level entries
 - **Recording / Replay** — record MCP tool invocations to disk with full replay (coordinate recalculation + stale-window resolution)
 - **Learning mode** — record human actions (pynput global hooks + UIA element enrichment + PaddleOCR ONNX vision)
-- **SOM vision detection** — OmniParser V2 YOLO + Florence-2 icon captions + PaddleOCR ONNX (Chinese + English), automatic fallback when UIA is unavailable
+- **SOM vision detection** — OmniParser V2 YOLO icon locations + PaddleOCR ONNX (Chinese + English), interpreted by the main LLM with the full screenshot, automatic fallback when UIA is unavailable
 - **UIA tree walking** — supports Win32 / UWP / Electron / Qt apps; auto-triggers SOM for non-UIA apps
 - **Agent cursor overlay** — Dubins-path flight animation + spring overshoot + glow rendering
 
@@ -525,7 +534,6 @@ cua-pywin/
 │  │  ├─ replay_resolver.py        ← coord rewrite + stale HWND rewrite
 │  │  ├─ capture_service.py        ← virtual-desktop mss capture
 │  │  ├─ ocr_service.py            ← lazy OCRProcessor singleton
-│  │  ├─ icon_caption_service.py   ← OmniParser V2 Florence-2 icon captions (batched)
 │  │  ├─ target_profile_service.py ← window-family classification + delivery risk
 │  │  ├─ permission_service.py     ← open/command/CDP permission policy
 │  │  ├─ validation_service.py     ← argument and path validation
@@ -563,7 +571,7 @@ Download releases from
 Windows users should use the installer:
 
 ```powershell
-.\cua-win-0.3.4-win64-setup.exe
+.\cua-win-0.4.0-win64-setup.exe
 cua-win doctor
 ```
 
@@ -573,12 +581,12 @@ privileges. It can optionally add `cua-win.exe` to the current user's PATH.
 The bundled models are installed with the app; users do not download model
 files separately.
 
-The release wheel also contains the OmniParser V2 YOLO, Florence-2, and
+The release wheel also contains the OmniParser V2 YOLO and
 RapidOCR models, and is intended for Python environments or developer
 validation:
 
 ```powershell
-pip install .\cua_pywin-0.3.4-py3-none-any.whl
+pip install .\cua_pywin-0.4.0-py3-none-any.whl
 cua-win doctor
 ```
 
@@ -656,7 +664,7 @@ default and calls MCP tools through token-protected JSON RPC routes, so heavy
 high-frequency tools such as `computer_get_window_state` pay warm-up once per
 daemon process. `--no-daemon` forces a one-shot in-process call. `list-tools`,
 `describe`, and explicitly safe read-only status calls use a lightweight import
-path that skips SOM/Florence-2/RapidOCR warm-up. Desktop-control and vision calls
+path that skips SOM/RapidOCR warm-up. Desktop-control and vision calls
 should still reuse the daemon.
 `cua-win <tool> '<json>'` is rewritten to `cua-win call <tool> '<json>'`.
 For Chinese text or deeply nested arguments, prefer UTF-8 stdin
@@ -943,60 +951,31 @@ role, MIME type, dimensions, byte count, `content_index`, `window`,
 
 **Tree quality + SOM fallback** — `rich(>50) / ok(16-50)` skip SOM; `poor(1-15) / empty(0)` enable SOM vision. `uia_quality` and `vision_quality` are reported separately and do not overwrite each other.
 
+**Screenshot understanding and grounded actions** — The main LLM interprets
+the full-window screenshot together with UIA/MSAA semantics, OCR text, and YOLO
+icon locations. Prefer an existing node's `element_index` with the latest
+`observation_id` when acting; its bounding box and center are grounded in the
+observation, so small controls do not require guessed coordinates. YOLO icons
+remain unnamed location candidates. For an ambiguous small target, request
+`computer_zoom` with the parent `screenshot_id` and inspect that region; use
+the returned `zoom_id` for zoom-coordinate actions. The runtime performs no
+icon-caption inference or per-icon LLM API calls.
+
+Unlabeled icons do not match semantic text queries. Broaden `query` or raise
+`max_nodes` to inspect additional candidates. Detection confidence describes
+localization evidence, not confidence in an icon's meaning. SOM runs only when
+the semantic tree is poor/empty or `force_som=true` is explicitly requested.
+
+See [the current visual runtime and YOLO ONNX verification](docs/yolo-onnx-poc.md)
+for model provenance, current evidence, and validation limits.
+
 **Bundled OmniParser V2 pipeline** — The YOLO detector is bundled at
-`som/weights/icon_detect/model.onnx` and runs directly through ONNX Runtime with
+`som/weights/icon_detect/model.onnx` and runs through ONNX Runtime with
 NumPy/OpenCV preprocessing and NMS. PyTorch, Torchvision, and Ultralytics are
-export-time dependencies only and are not shipped. The YOLO CPU arena is
-disabled while memory-pattern reuse remains enabled. Icon semantics use only the bundled ONNX
-Community conversion of the fine-tuned OmniParser Florence-2 model at
-`computer_server/models/omniparser_v2/icon_caption_onnx_community/`: the
-token embeddings remain FP32 because they are Gather-only, while the vision
-encoder, BART encoder, and cached decoder graphs are generated through the ONNX
-Runtime preprocessing, Transformer optimization (including Python fusions), and
-dynamic per-channel `QInt8` pipeline. It runs
-with `CPUExecutionProvider`. The original PyTorch bundle is not shipped or
-loadable. Icon crops are
-resized to 64x64 and captioned in batches, matching the official V2 pipeline.
-RapidOCR remains responsible for visible text.
-RapidOCR uses four intra-op threads and one inter-op thread. Florence-2 uses
-one intra-op and one inter-op thread with the CPU arena disabled and memory
-patterns retained.
-
-Florence-2 output is exposed as `raw_caption` plus a conservative
-`normalized_label`. It has no calibrated confidence score, so nodes explicitly
-report `icon_label_confidence=null` and
-`icon_label_confidence_provenance="florence2_onnx_community_greedy_generation"`
-for INT8. Empty or
-generic captions remain unknown rather than receiving a forced label. Controls:
-`CUA_ICON_SEMANTIC_BACKEND=florence2_int8_community` (the production default),
-`CUA_ENABLE_ICON_SEMANTICS`, `CUA_FLORENCE2_COMMUNITY_ONNX_DIR`,
-`CUA_FLORENCE2_BATCH_SIZE`, and
-`CUA_FLORENCE2_MAX_NEW_TOKENS`. The production service accepts only
-`florence2_int8_community`. Debug timing includes `florence2_latency` and
-`icon_semantic_latency`; legacy `tinyclip_latency` remains `0.0` for metadata
-compatibility. `vision_metadata.icon_semantic_status` reports whether captioning
-was ready, disabled/failed during model initialization, or failed during
-inference; YOLO and OCR nodes remain available when captioning fails.
-Batch size and generated-token limits are capped at 256 and 128 respectively to
-bound accidental memory growth.
-
-The selected INT8 icon-semantic bundle is approximately 481 MiB before wheel
-compression; YOLO and RapidOCR are bundled separately. Wheel size must be
-measured from the built artifact.
-This exceeds PyPI's normal per-file upload limit; distribute release wheels
-through GitHub Releases, an installer, or another artifact store. Source
-checkouts must run `git lfs pull`; `cua-win doctor` rejects an unresolved LFS
-pointer instead of treating it as a valid model.
-
-Detector/OCR readiness is independent of semantic loading. While captions
-load in the background, SOM returns unlabelled icons; caption failures retain
-the base observation. Production greedy decoding honors the local generation
-configuration and stops each batch row at EOS. Experimental beam search lives
-only in the benchmark scripts.
-
-See [iteration review and verification](docs/icon-semantic-int8-review.md) for
-the exact provenance, reproduction commands, and quality limitations. The small
-fixture is exploratory and is not a general desktop-UI accuracy certification.
+export-time dependencies only. YOLO and RapidOCR use four intra-op threads and
+one inter-op thread with the CPU arena disabled. Only YOLO and RapidOCR models
+are shipped; source checkouts need their complete local bundles, and
+`cua-win doctor` rejects missing weights and unresolved Git LFS pointers.
 
 **PaddleOCR ONNX backend** — OCR uses RapidOCR + ONNXRuntime with
 PaddleOCR PP-OCRv4 mobile models. `CUA_OCR_TIMEOUT_SECONDS`
@@ -1024,7 +1003,7 @@ known icon-shape misreads requires `CUA_OCR_DENOISE=strict`. Set
 
 ### Known Limitations
 
-- **SOM detection remains synchronous in the tool path**: warm-up preloads models, but per-frame detection still contributes to `computer_get_window_state` tail latency
+- **SOM adds per-frame latency**: synchronous inference runs in a worker thread; warm-up preloads models but does not remove cold-inference or per-frame cost
 - **Recording capture still has an in-action cost**: turn writes use a bounded writer thread, but each sampled action's screenshot capture typically adds about 50-200 ms
 - **SOM OCR occlusion noise**: WGC window capture avoids most overlapping-window pollution; screen-crop fallback marks `capture.capture_metadata.occlusion_risk=true`
 - **Learning IME not supported in terminals**: PowerShell/CMD lack UIA ValuePattern. Falls back to pinyin + OCR

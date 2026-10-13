@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import pytest
+
 from computer_server.handlers.element_cache import CachedElement, get_element_cache
 from computer_server.services import replay_resolver
 
@@ -160,7 +162,41 @@ def test_resolve_replay_keyboard_action_rebinds_target_window(monkeypatch):
     }
 
 
-def test_resolve_replay_click_relocates_cached_element(monkeypatch):
+@pytest.mark.parametrize("tool_name", sorted(replay_resolver.REPLAY_ELEMENT_TOOLS))
+@pytest.mark.parametrize("recorded_name", [None, "send"])
+def test_replay_rejects_vision_icon_when_old_position_is_reused(
+    monkeypatch, tool_name, recorded_name,
+):
+    # The intended send icon moved to x=200; a different icon occupies x=100.
+    elements = [
+        CachedElement(
+            element_index=index, source="vision", control_type="icon",
+            name=None, actions=["click"], center_x=x, center_y=100,
+            bbox=(x - 10, 90, x + 10, 110),
+        )
+        for index, x in [(10000, 100), (10001, 200)]
+    ]
+    monkeypatch.setattr(get_element_cache(), "get_elements", lambda *_: elements)
+    with pytest.raises(ValueError, match="Cannot safely replay a vision-only icon"):
+        replay_resolver.resolve_replay_args(
+            tool_name,
+            {
+                "window": {"id": 22, "pid": 11},
+                "element_index": 10042,
+                "x": 100, "y": 100,
+            },
+            element_ref={
+                "source": "vision", "control_type": "icon",
+                "name": recorded_name, "actions": ["click"],
+                "center_x": 100, "center_y": 100,
+            },
+        )
+
+
+@pytest.mark.parametrize(
+    ("source", "control_type"), [("uia", "Button"), ("vision", "text")],
+)
+def test_resolve_replay_click_relocates_cached_element(monkeypatch, source, control_type):
     cache = get_element_cache()
     cache.clear()
     monkeypatch.setattr(cache, "_is_window_valid", lambda _window_id: True)
@@ -172,11 +208,11 @@ def test_resolve_replay_click_relocates_cached_element(monkeypatch):
             [
                 CachedElement(
                     element_index=7,
-                    source="uia",
+                    source=source,
                     center_x=10,
                     center_y=20,
                     bbox=(1, 2, 19, 38),
-                    control_type="Button",
+                    control_type=control_type,
                     name="保存",
                     actions=["invoke"],
                 )
@@ -193,8 +229,8 @@ def test_resolve_replay_click_relocates_cached_element(monkeypatch):
             },
             element_ref={
                 "recorded_element_index": 3,
-                "source": "uia",
-                "control_type": "Button",
+                "source": source,
+                "control_type": control_type,
                 "name": "保存",
                 "actions": ["invoke"],
                 "center_x": 12,

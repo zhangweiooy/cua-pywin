@@ -159,11 +159,11 @@ try {
     New-Item -ItemType Directory -Path $privateAppData | Out-Null
     $legacyVision = Join-Path $installDir (
         "computer_server\models\omniparser_v2\" +
-        "icon_caption_onnx_community\onnx\vision_encoder.onnx"
+        "icon_caption_onnx_community\int8\vision_encoder.int8.onnx"
     )
     New-Item -ItemType Directory -Path (Split-Path -Parent $legacyVision) -Force |
         Out-Null
-    Set-Content -LiteralPath $legacyVision -Value "legacy fp32 vision graph"
+    Set-Content -LiteralPath $legacyVision -Value "legacy Florence vision graph"
     $legacyYolo = Join-Path $installDir "som\weights\icon_detect\model.pt"
     New-Item -ItemType Directory -Path (Split-Path -Parent $legacyYolo) -Force |
         Out-Null
@@ -197,8 +197,8 @@ try {
     if (-not (Test-Path -LiteralPath $uninstaller -PathType Leaf)) {
         throw "Installer did not create an uninstaller: $uninstaller"
     }
-    if (Test-Path -LiteralPath $legacyVision -PathType Leaf) {
-        throw "Installer did not remove the legacy FP32 vision graph"
+    if (Test-Path -LiteralPath (Join-Path $installDir "computer_server\models\omniparser_v2")) {
+        throw "Installer did not remove the legacy Florence model bundle"
     }
     if (Test-Path -LiteralPath $legacyYolo -PathType Leaf) {
         throw "Installer did not remove the legacy PyTorch YOLO weight"
@@ -209,14 +209,6 @@ try {
     ) {
         throw "Installer did not remove the legacy EasyOCR runtime"
     }
-    $int8Vision = Join-Path $installDir (
-        "computer_server\models\omniparser_v2\" +
-        "icon_caption_onnx_community\int8\vision_encoder.int8.onnx"
-    )
-    if (-not (Test-Path -LiteralPath $int8Vision -PathType Leaf)) {
-        throw "Installer did not install the INT8 vision graph"
-    }
-
     $sourceFiles = @(
         Get-ChildItem -LiteralPath $resolvedSource -Recurse -File
     )

@@ -2,8 +2,6 @@
 *.sh        text eol=lf
 *.py        text eol=lf
 *.md        text eol=lf
-computer_server/models/omniparser_v2/icon_caption_onnx_community/** -text whitespace=-trailing-space
-computer_server/models/omniparser_v2/icon_caption_onnx_community/**/*.onnx filter=lfs diff=lfs merge=lfs -text
 computer_server/models/rapidocr_ppocrv4/** -text
 computer_server/models/rapidocr_ppocrv4/*.onnx filter=lfs diff=lfs merge=lfs -text
 som/weights/icon_detect/*.onnx filter=lfs diff=lfs merge=lfs -text

@@ -94,4 +94,5 @@ Thumbs.db
 weights/
 !som/weights/
 !som/weights/icon_detect/
-!som/weights/icon_detect/model.pt
+!som/weights/icon_detect/model.onnx
+!som/weights/icon_detect/model_manifest.json

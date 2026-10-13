@@ -1,15 +1,15 @@
 # Release Guide
 
-`cua-pywin` ships its OmniParser V2 YOLO, Florence-2, and RapidOCR models in
-the Windows installer and release wheel. The resulting artifacts are large and
-are distributed through GitHub Releases rather than PyPI.
+`cua-pywin` ships its OmniParser V2 YOLO and RapidOCR models in
+the Windows installer and release wheel. Release distribution uses GitHub
+Releases. The current runtime does not ship Florence or make per-icon LLM calls.
 
 ## Release Boundary
 
 - A manual `Build and release` workflow run builds and validates a candidate.
   It uploads a one-day checksum candidate, but does not upload release binaries
   or create a GitHub Release.
-- Pushing a tag such as `v0.3.4` runs the same validation, builds the Windows
+- Pushing a new `vX.Y.Z` tag runs the same validation, builds the Windows
   installer, and creates the GitHub Release.
 - The repository is currently private. Decide whether it should become public
   before announcing a user-facing release.
@@ -19,8 +19,9 @@ are distributed through GitHub Releases rather than PyPI.
 
 ## Prepare
 
-1. Update the version in `pyproject.toml`, `computer_server/__init__.py`,
-   `som/__init__.py`, and `computer_server/main.py`.
+1. Choose a new, unused release version and update `pyproject.toml`,
+   `computer_server/__init__.py`, `som/__init__.py`, and `computer_server/main.py`.
+   The existing `v0.3.4` tag is historical; do not move it for this change.
 2. Move completed entries from `CHANGELOG.md` under the release version and
    date.
 3. Run `uv lock` after dependency changes and commit `uv.lock`.
@@ -28,7 +29,8 @@ are distributed through GitHub Releases rather than PyPI.
 5. Build the candidate:
 
    ```powershell
-   ./scripts/build_release.ps1 -Version 0.3.4
+   $releaseVersion = uv run --no-sync python -c "import tomllib; print(tomllib.load(open('pyproject.toml', 'rb'))['project']['version'])"
+   ./scripts/build_release.ps1 -Version $releaseVersion
    ```
 
 6. Install `dist/*.whl` in a clean Windows Python 3.12 environment.
@@ -42,16 +44,44 @@ are distributed through GitHub Releases rather than PyPI.
    cua-win stop
    ```
 
-8. Confirm `cua-win doctor` reports all three bundled model groups as valid.
+8. Confirm `cua-win doctor` reports both bundled model groups as valid:
+   `model:omniparser_yolo` and `model:rapidocr_ppocrv4`. Force one SOM window
+   observation and check that a full-window image, OCR text, and actionable
+   unnamed YOLO nodes are returned; also verify a local zoom from its
+   `screenshot_id`.
+
+## Current local candidate (2026-10-13)
+
+The current candidate version is `0.4.0`. Its changes are listed under that
+version in `CHANGELOG.md`; the existing `v0.3.4` tag remains historical.
+Local build artifacts are not a published release. Run all build and packaged
+smoke gates below before creating a new release tag.
+
+Local 0.4.0 validation completed on 2026-10-13:
+
+- 479 tests passed; Ruff, compile checks, lockfile and source/wheel validation passed.
+  Ruff excluded only the unrelated, untracked `outputs/` document artifacts.
+- Wheel: `dist/0.4.0/cua_pywin-0.4.0-py3-none-any.whl`. A clean Python 3.12
+  environment passed all 24 doctor checks and exposed 25 tools.
+- Standalone: `dist-nuitka-0.4.0/cua-win.dist/`. Teaching lifecycle and real WGC
+  fixture observations with YOLO/OCR passed.
+- Installer: `dist-installer/0.4.0/cua-win-0.4.0-win64-setup.exe`. Private clean
+  installation, legacy-model cleanup, doctor, tool calls, screenshots, window
+  observation, repeated Teaching, YOLO/OCR, and uninstall cleanup passed.
+- Each artifact directory contains `SHA256SUMS.txt`. No release tag was pushed
+  and no GitHub Release was created by this local validation.
 
 ## Publish
 
 1. Commit and push the release metadata.
-2. Create an annotated tag:
+2. After the version update and full build gates, create a new annotated tag:
 
    ```powershell
-   git tag -a v0.3.4 -m "cua-pywin 0.3.4"
-   git push origin v0.3.4
+   $releaseVersion = uv run --no-sync python -c "import tomllib; print(tomllib.load(open('pyproject.toml', 'rb'))['project']['version'])"
+   $releaseTag = "v$releaseVersion"
+   if (git tag --list $releaseTag) { throw "Choose a new release version; this tag already exists." }
+   git tag -a $releaseTag -m "cua-pywin $releaseVersion"
+   git push origin $releaseTag
    ```
 
 3. Wait for the `Build and release` workflow to finish.
@@ -62,11 +92,13 @@ are distributed through GitHub Releases rather than PyPI.
 
 ## Post-Publish Smoke
 
-For the normal Windows installer path:
+For the normal Windows installer path, set `$releaseVersion` to the newly
+published version before running the examples:
 
 ```powershell
-Get-FileHash .\cua-win-0.3.4-win64-setup.exe -Algorithm SHA256
-.\cua-win-0.3.4-win64-setup.exe
+$setupPath = ".\cua-win-$releaseVersion-win64-setup.exe"
+Get-FileHash -LiteralPath $setupPath -Algorithm SHA256
+& $setupPath
 cua-win doctor
 cua-win list-tools
 cua-win start
@@ -78,7 +110,7 @@ cua-win stop
 For wheel validation in a clean Python 3.12 environment:
 
 ```powershell
-pip install .\cua_pywin-0.3.4-py3-none-any.whl
+pip install ".\cua_pywin-$releaseVersion-py3-none-any.whl"
 cua-win doctor
 cua-win list-tools
 ```
@@ -90,7 +122,20 @@ update each `model_manifest.json` source revision and SHA-256 entries, run the
 full release build, and verify that the wheel works without network model
 downloads. Users should never need to fetch model files separately.
 
-## Wheel Packaging Limit
+The production bundles are:
+
+| Model group | Runtime path |
+| --- | --- |
+| OmniParser V2 YOLO | `som/weights/icon_detect/model.onnx` |
+| RapidOCR PP-OCRv4 | `computer_server/models/rapidocr_ppocrv4/` |
+
+YOLO export uses the pinned `export` dependency group. Verify the source weight
+identity, exported graph contract and PyTorch/ONNX detector parity before
+replacing the bundled ONNX file. Update its manifest to the new graph's actual
+hash; an export's timestamp metadata can change file identity without changing
+inference results. See [model provenance and verification](docs/yolo-onnx-poc.md).
+
+## Wheel Contents
 
 The wheel includes models but not Python itself or third-party dependency
 wheels. Installing it can still download Python dependencies from the package
@@ -102,7 +147,7 @@ For local executable testing, build a standalone directory:
 
 ```powershell
 ./scripts/build_nuitka.ps1
-./scripts/build_nuitka.ps1 -Version 0.3.4
+./scripts/build_nuitka.ps1 -Version 0.4.0
 ```
 
 When `-Version` is omitted, the script reads the version from `pyproject.toml`.
@@ -147,9 +192,10 @@ comtypes cache. Dependency-only `doctor` checks are not sufficient.
 Do not remove Matplotlib, `unittest`, `pydoc`/`pydoc_data`,
 `cProfile`/`profile`/`pstats`, SciPy, or SymPy from the standalone without a
 fresh import report. PyTorch, Torchvision, and Ultralytics are export-only and
-must be absent from production artifacts. The release gate also forces a real SOM/OCR/Florence-2 observation from
+must be absent from production artifacts, as must Transformers, Tokenizers and
+all retired icon-caption bundles. The release gate also forces a real YOLO/OCR observation from
 the packaged executable; a degraded overall observation does not hide an OCR
-timeout or icon-caption initialization failure.
+timeout or detector/OCR initialization failure.
 
 ## Windows Installer Build
 
@@ -158,20 +204,20 @@ Install Inno Setup 6 so `ISCC.exe` is available on PATH or in the default
 installer from the standalone output:
 
 ```powershell
-./scripts/build_nuitka.ps1 -Version 0.3.4
-./scripts/build_installer.ps1 -Version 0.3.4
+./scripts/build_nuitka.ps1 -Version 0.4.0
+./scripts/build_installer.ps1 -Version 0.4.0
 ```
 
 For a one-command local build:
 
 ```powershell
-./scripts/build_installer.ps1 -Version 0.3.4 -BuildNuitka -SkipSync -SkipChecks
+./scripts/build_installer.ps1 -Version 0.4.0 -BuildNuitka -SkipSync -SkipChecks
 ```
 
 The output is:
 
 ```text
-dist-installer/cua-win-0.3.4-win64-setup.exe
+dist-installer/cua-win-0.4.0-win64-setup.exe
 dist-installer/SHA256SUMS.txt
 ```
 

@@ -478,17 +478,17 @@ def test_project_window_state_response_compact_omits_verbose_diagnostics():
     assert "total_elements" not in projected
 
 
-def test_node_matches_query_checks_icon_label_metadata():
+def test_unlabeled_icon_does_not_invent_a_text_query_match():
     node = {
         "source": "vision",
         "control_type": "icon",
-        "name": "send button",
-        "metadata": {"icon_label": "send button"},
+        "name": None,
+        "metadata": {"vision_confidence": 0.9},
         "actions": ["click"],
     }
 
-    assert node_matches_query(node, "send")
-    assert node_matches_query(node, "tinyclip") is False
+    assert node_matches_query(node, "send") is False
+    assert node_matches_query(node, "发送") is False
 
 
 def test_node_matches_query_checks_action_hints():

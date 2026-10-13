@@ -4,7 +4,7 @@ build-backend = "pdm.backend"
 
 [project]
 name = "cua-pywin"
-version = "0.3.4"
+version = "0.4.0"
 
 description = "Windows UI automation MCP server for AI agents — screenshots, clicks, typing, UIA tree walking, vision (SOM), recording/replay, and learning"
 authors = [
@@ -40,7 +40,6 @@ dependencies = [
     "onnxruntime>=1.18",
     "opencv-python-headless>=4.11",
     "supervision>=0.25",
-    "tokenizers>=0.20,<0.21",
     # Windows.Graphics.Capture target-window capture backend
     "winrt-windows-foundation>=3.2.1",
     "winrt-windows-graphics>=3.2.1",
@@ -73,16 +72,13 @@ distribution = true
 includes = ["computer_server", "som"]
 excludes = [
     "som/.pdm-build", "som/tests",
-    "computer_server/models/omniparser_v2/icon_caption_int8",
+    "computer_server/models/omniparser_v2",
     "computer_server/models/quasivision_icon_classifier",
 ]
 
 [tool.pdm.build.package-data]
 computer_server = [
     "py.typed",
-    "models/omniparser_v2/icon_caption_onnx_community/*",
-    "models/omniparser_v2/icon_caption_onnx_community/int8/*",
-    "models/omniparser_v2/icon_caption_onnx_community/onnx/*",
     "models/rapidocr_ppocrv4/*",
 ]
 som = ["weights/icon_detect/model.onnx", "weights/icon_detect/model_manifest.json"]
@@ -91,7 +87,6 @@ som = ["weights/icon_detect/model.onnx", "weights/icon_detect/model_manifest.jso
 test = [
     "pytest>=7.0.0",
     "pytest-asyncio>=0.23.0",
-    "transformers>=4.46.1,<4.47",
 ]
 format = [
     "black>=23.0.0",
@@ -119,10 +114,8 @@ api = "cua-win serve"
 
 [tool.ruff]
 extend-exclude = [
-    "computer_server/models/omniparser_v2/icon_caption_onnx_community",
     "artifacts/icon-semantic-poc/onnx-community",
     "dist-nuitka-*",
-    "tests/fixtures/florence2/processing_florence2.py",
 ]
 
 [tool.pytest.ini_options]

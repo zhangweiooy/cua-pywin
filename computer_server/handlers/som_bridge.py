@@ -16,31 +16,15 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
-import re
 import threading
 import time
 import warnings
 from dataclasses import dataclass, field
-from io import BytesIO
 from typing import Any, Dict, List, Optional
 
 from computer_server.handlers.element_cache import CachedElement
-from computer_server.services.icon_caption_service import IconCaption
 
 logger = logging.getLogger(__name__)
-
-_ADVISORY_ONLY_CAPTION_WORDS = {
-    "box",
-    "button",
-    "circle",
-    "icon",
-    "outline",
-    "rectangle",
-    "shape",
-    "square",
-    "symbol",
-}
-
 
 def _trace_id() -> str:
     return f"{os.getpid()}-{time.monotonic_ns()}"
@@ -227,50 +211,6 @@ def _get_parser() -> Any:
     return _parser_instance
 
 
-def _start_icon_semantic_warmup(warmup_id: str) -> None:
-    """Load the selected semantic model after detector/OCR become ready."""
-
-    def _init_semantics() -> None:
-        try:
-            from computer_server.services.icon_caption_service import (
-                warm_up as _warm_icon_semantics,
-            )
-
-            ready = _timed_stage(
-                event="som_warmup_stage",
-                trace_field="warmup_id",
-                trace_id=warmup_id,
-                stage="florence2",
-                operation=_warm_icon_semantics,
-            )
-            if not ready:
-                logger.warning(
-                    "event=som_warmup_optional_backend warmup_id=%s "
-                    "stage=florence2 status=unavailable", warmup_id,
-                )
-        except Exception as icon_exc:
-            error_type, root_error_type, error_code = _exception_details(icon_exc)
-            logger.warning(
-                "event=som_warmup_optional_backend warmup_id=%s pid=%d "
-                "stage=florence2 status=failed error_type=%s "
-                "root_error_type=%s error_code=%s",
-                warmup_id,
-                os.getpid(),
-                error_type,
-                root_error_type,
-                error_code,
-            )
-
-    try:
-        threading.Thread(
-            target=_init_semantics,
-            name="icon-semantic-warmup",
-            daemon=True,
-        ).start()
-    except Exception:
-        logger.warning("Could not schedule optional icon semantics", exc_info=True)
-
-
 def _run_warm_up(warmup_id: str) -> None:
     global _parser_recovery_attempted
     warmup_started = time.perf_counter()
@@ -344,9 +284,7 @@ def _run_warm_up(warmup_id: str) -> None:
             trace_id=warmup_id,
             started=warmup_started,
             status="ready",
-            details=" captions=scheduled",
         )
-        _start_icon_semantic_warmup(warmup_id)
     except Exception as exc:
         _set_parser_state("failed", str(exc))
         _log_complete(
@@ -456,7 +394,6 @@ def _element_to_cached(
     index: int,
     screen_width: int,
     screen_height: int,
-    icon_caption: Optional[IconCaption] = None,
 ) -> CachedElement:
     """Convert a SOM UIElement to a CachedElement with pixel-space coordinates.
 
@@ -481,8 +418,6 @@ def _element_to_cached(
         "semantic_collision_id",
         "semantic_collision_role",
         "semantic_uncertainty",
-        "semantic_resolution",
-        "semantic_alternatives",
     ):
         if key in arbitration_metadata:
             metadata[key] = arbitration_metadata[key]
@@ -497,23 +432,8 @@ def _element_to_cached(
         if "vision_confidence" in metadata:
             metadata["ocr_confidence"] = metadata["vision_confidence"]
     else:
-        name = icon_caption.label if icon_caption is not None else None
+        name = None
         actions = ["click"]
-        if icon_caption is not None:
-            label_source = f"omniparser_v2_{icon_caption.backend}"
-            metadata.update(
-                {
-                    "raw_caption": icon_caption.raw_caption,
-                    "normalized_label": icon_caption.normalized_label,
-                    "icon_label": icon_caption.normalized_label,
-                    "icon_label_source": label_source,
-                    "icon_label_confidence": icon_caption.confidence,
-                    "icon_label_confidence_provenance": (
-                        icon_caption.confidence_provenance
-                    ),
-                }
-            )
-
     return CachedElement(
         element_index=index,
         source="vision",
@@ -528,213 +448,31 @@ def _element_to_cached(
     )
 
 
-def _crop_icon_elements(
-    screenshot_bytes: bytes,
-    raw_elements: List[Any],
-    screen_width: int,
-    screen_height: int,
-) -> tuple[List[int], List[Any]]:
-    """Return raw element positions and PIL crops for icon elements."""
-    from PIL import Image
-
-    image = Image.open(BytesIO(screenshot_bytes)).convert("RGB")
-    positions: List[int] = []
-    crops: List[Any] = []
-
-    for pos, elem in enumerate(raw_elements):
-        if getattr(elem, "type", None) != "icon":
-            continue
-        try:
-            bbox = elem.bbox.coordinates
-            left = max(0, int(bbox[0] * screen_width))
-            top = max(0, int(bbox[1] * screen_height))
-            right = min(screen_width, int(bbox[2] * screen_width))
-            bottom = min(screen_height, int(bbox[3] * screen_height))
-            if right <= left or bottom <= top:
-                continue
-            positions.append(pos)
-            crops.append(
-                image.crop((left, top, right, bottom)).resize(
-                    (64, 64),
-                    Image.Resampling.LANCZOS,
-                )
-            )
-        except Exception as exc:
-            logger.debug("Skipping icon crop for Florence-2 captioning: %s", exc)
-    return positions, crops
-
-
-def _label_icon_elements(
-    screenshot_bytes: bytes,
-    raw_elements: List[Any],
-    screen_width: int,
-    screen_height: int,
-    *,
-    retry_failed_warmup: bool = False,
-) -> tuple[Dict[int, IconCaption], str]:
-    """Batch-caption all icon crops and return captions by raw element position."""
-    try:
-        from computer_server.services.icon_caption_service import (
-            get_icon_caption_service,
-        )
-
-        positions, crops = _crop_icon_elements(
-            screenshot_bytes,
-            raw_elements,
-            screen_width,
-            screen_height,
-        )
-        if not crops:
-            return {}, "not_run"
-        service = get_icon_caption_service()
-        if retry_failed_warmup:
-            service.start_background_warm_up(retry_failed=True)
-        captions = service.caption_icons(crops)
-        status = str(service.status.get("state") or "unknown")
-        return (
-            {
-                pos: caption
-                for pos, caption in zip(positions, captions)
-                if caption is not None
-            },
-            status,
-        )
-    except Exception as exc:
-        logger.debug("Florence-2 icon captioning skipped: %s", exc, exc_info=True)
-        return {}, "inference_failed"
-
-
-def _caption_supports_icon_preference(caption: Optional[IconCaption]) -> bool:
-    """Require a specific caption before preferring an icon over OCR."""
-    if caption is None or caption.label is None:
-        return False
-    words = re.findall(r"[a-z0-9]+", caption.label.casefold())
-    return any(word not in _ADVISORY_ONLY_CAPTION_WORDS for word in words)
-
-
 def _convert_parse_result(
     result: Any,
-    screenshot_bytes: bytes,
     screen_width: int,
     screen_height: int,
     vision_index_start: int,
-    *,
-    retry_failed_warmup: bool = False,
 ) -> VisionResult:
-    raw_elements = list(getattr(result, "elements", []) or [])
-    stage_start = time.perf_counter()
-    icon_captions, icon_semantic_status = _label_icon_elements(
-        screenshot_bytes,
-        raw_elements,
-        screen_width,
-        screen_height,
-        retry_failed_warmup=retry_failed_warmup,
-    )
-    icon_semantic_latency = time.perf_counter() - stage_start
-
-    resolved_collision_ids = {
-        str((getattr(elem, "metadata", {}) or {}).get("semantic_collision_id"))
-        for raw_pos, elem in enumerate(raw_elements)
-        if getattr(elem, "type", None) == "icon"
-        and (getattr(elem, "metadata", {}) or {}).get("semantic_collision_id")
-        and _caption_supports_icon_preference(icon_captions.get(raw_pos))
-    }
-    collision_text_alternatives: Dict[str, List[Dict[str, Any]]] = {}
-    for elem in raw_elements:
-        elem_metadata = dict(getattr(elem, "metadata", {}) or {})
-        collision_id = elem_metadata.get("semantic_collision_id")
-        if not collision_id or getattr(elem, "type", None) != "text":
-            continue
-        alternatives = collision_text_alternatives.setdefault(str(collision_id), [])
-        if len(alternatives) >= 3:
-            continue
-        alternative: Dict[str, Any] = {
-            "control_type": "text",
-            "name": str(getattr(elem, "content", "") or "")[:16],
-        }
-        confidence = getattr(elem, "confidence", None)
-        if confidence is not None:
-            try:
-                alternative["confidence"] = float(confidence)
-            except (TypeError, ValueError):
-                pass
-        alternatives.append(alternative)
-
+    """Keep detected locations; the caller's LLM interprets the full screenshot."""
     stage_start = time.perf_counter()
     cached: List[CachedElement] = []
-    next_index = vision_index_start
-
-    for raw_pos, elem in enumerate(raw_elements):
+    for elem in getattr(result, "elements", []) or []:
         try:
-            arbitration_metadata = dict(getattr(elem, "metadata", {}) or {})
-            collision_id = arbitration_metadata.get("semantic_collision_id")
-            if (
-                collision_id
-                and str(collision_id) in resolved_collision_ids
-                and getattr(elem, "type", None) == "text"
-            ):
-                continue
-            if collision_id and str(collision_id) in resolved_collision_ids:
-                arbitration_metadata["semantic_resolution"] = (
-                    "icon_preferred_with_yolo_and_florence_evidence"
-                )
-                arbitration_metadata["semantic_uncertainty"] = (
-                    "ocr_icon_collision_advisory_resolution"
-                )
-                arbitration_metadata["semantic_alternatives"] = (
-                    collision_text_alternatives.get(str(collision_id), [])
-                )
-                elem.metadata = arbitration_metadata
             cached.append(
                 _element_to_cached(
-                    elem,
-                    next_index,
-                    screen_width,
-                    screen_height,
-                    icon_caption=icon_captions.get(raw_pos),
+                    elem, vision_index_start + len(cached), screen_width, screen_height,
                 )
             )
-            next_index += 1
-        except Exception as inner_exc:
-            logger.warning("Skipping malformed SOM element: %s", inner_exc)
-            continue
+        except Exception as exc:
+            logger.warning("Skipping malformed SOM element: %s", exc)
 
     metadata = _build_metadata(result)
-    metadata["num_icons"] = sum(
-        1 for element in cached if element.control_type == "icon"
+    metadata["num_icons"] = sum(el.control_type == "icon" for el in cached)
+    metadata["num_text"] = sum(el.control_type == "text" for el in cached)
+    metadata["stage_timings"]["bridge_convert_latency"] = (
+        time.perf_counter() - stage_start
     )
-    metadata["num_text"] = sum(
-        1 for element in cached if element.control_type == "text"
-    )
-    stage_timings = dict(metadata.get("stage_timings", {}) or {})
-    stage_timings["tinyclip_latency"] = 0.0
-    stage_timings["florence2_latency"] = icon_semantic_latency
-    stage_timings["icon_semantic_latency"] = icon_semantic_latency
-    stage_timings["bridge_convert_latency"] = time.perf_counter() - stage_start
-    metadata["stage_timings"] = stage_timings
-    metadata["icon_label_count"] = sum(
-        1 for caption in icon_captions.values() if caption.label is not None
-    )
-    metadata["icon_caption_count"] = len(icon_captions)
-    semantic_backend = "florence2_int8_community"
-    if icon_captions:
-        semantic_backend = next(iter(icon_captions.values())).backend
-    else:
-        try:
-            from computer_server.services.icon_caption_service import (
-                get_icon_caption_service,
-            )
-
-            semantic_backend = get_icon_caption_service().backend
-        except Exception:
-            pass
-    metadata["icon_labeler"] = (
-        f"omniparser_v2_{semantic_backend}"
-        if icon_captions
-        else None
-    )
-    metadata["icon_semantic_backend"] = semantic_backend
-    metadata["icon_semantic_status"] = icon_semantic_status
     return VisionResult(
         elements=cached,
         annotated_image_base64=getattr(result, "annotated_image_base64", None),
@@ -836,7 +574,6 @@ async def detect(
     try:
         return _convert_parse_result(
             result,
-            screenshot_bytes,
             screen_width,
             screen_height,
             vision_index_start,
@@ -980,11 +717,9 @@ def detect_sync(
             stage="convert",
             operation=lambda: _convert_parse_result(
                 result,
-                screenshot_bytes,
                 screen_width,
                 screen_height,
                 vision_index_start,
-                retry_failed_warmup=retry_failed_warmup,
             ),
         )
         _log_complete(

@@ -32,14 +32,10 @@ def _node_label(node: Mapping[str, Any]) -> str:
         node.get("text"),
         node.get("value"),
         node.get("title"),
-        node.get("normalized_label"),
-        node.get("raw_caption"),
         metadata.get("name"),
         metadata.get("content"),
         metadata.get("text"),
         metadata.get("value"),
-        metadata.get("normalized_label"),
-        metadata.get("raw_caption"),
         metadata.get("description"),
     )
 

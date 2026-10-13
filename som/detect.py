@@ -113,7 +113,7 @@ def _arbitrate_ocr_icon_collisions(
     icons: List[UIElement],
     texts: List[UIElement],
 ) -> tuple[List[UIElement], set[int], Dict[str, int]]:
-    """Suppress clear duplicate icons and protect ambiguous pairs for Florence."""
+    """Suppress clear duplicate icons; keep ambiguous locations for the caller's LLM."""
     diagnostics = {
         "raw_icon_count": len(icons),
         "raw_text_count": len(texts),

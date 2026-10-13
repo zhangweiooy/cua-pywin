@@ -1,9 +1,17 @@
-# Icon semantic INT8 iteration review
+# Icon semantic INT8 iteration review (historical)
 
-The sole production backend is `florence2_int8_community`. The original
-PyTorch Florence-2 bundle, quasivision PoC, and old manual one-file INT8 PoC
-were removed after selection. Exploratory reports and source-graph provenance
-remain ignored development artifacts and are never loaded by the runtime.
+Status: retired on 2026-10-13. Florence services, prewarm/inference, tokenizer
+dependencies and bundled caption resources have been removed from the current
+working tree. The main LLM now interprets full screenshots with UIA/MSAA, OCR
+and YOLO locations; see [the current visual runtime](yolo-onnx-poc.md).
+
+The evaluation below records the former `florence2_int8_community` backend.
+Its quality figures, resource measurements and reproduction commands describe
+that historical implementation, not current production behavior. The related
+source and research scripts are retained locally under the ignored
+`artifacts/retired-florence2-20261013/`; the old `scripts/` and model paths
+below are historical and no longer executable as current release instructions.
+
 
 ## Review findings and corrections
 
@@ -74,7 +82,7 @@ search rather than verified Hugging Face beam equivalence. These figures must
 not be presented as production desktop accuracy or calibrated confidence.
 The original requirement for a broad desktop corpus remains an evaluation task.
 
-## Reproduction
+## Historical reproduction (retired paths)
 
 Local checks: the 0.3.1 bundle update must pass the full test, Ruff,
 compileall, doctor, source-model-hash, wheel, standalone, and installer gates

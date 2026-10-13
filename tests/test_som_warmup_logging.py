@@ -5,7 +5,6 @@ import re
 from types import SimpleNamespace
 
 from computer_server.handlers import som_bridge
-from computer_server.services import icon_caption_service
 
 
 class _ImmediateThread:
@@ -52,7 +51,6 @@ def test_warmup_logs_correlated_stage_timings_without_model_path(
 ):
     parser = _fake_parser(tmp_path)
     _prepare_immediate_warmup(monkeypatch, parser)
-    monkeypatch.setattr(icon_caption_service, "warm_up", lambda: True)
     caplog.set_level(logging.INFO, logger=som_bridge.__name__)
 
     som_bridge.warm_up()
@@ -65,7 +63,7 @@ def test_warmup_logs_correlated_stage_timings_without_model_path(
     }
     assert len(warmup_ids) == 1
     assert any("event=som_warmup_start" in message for message in messages)
-    for stage in ("parser", "yolo", "rapidocr", "florence2"):
+    for stage in ("parser", "yolo", "rapidocr"):
         assert any(
             "event=som_warmup_stage" in message
             and f"stage={stage}" in message

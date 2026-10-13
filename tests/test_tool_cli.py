@@ -1679,9 +1679,9 @@ def test_collect_doctor_checks_can_skip_slow_sections() -> None:
         "platform",
         "state_dir",
         "model:omniparser_yolo",
-        "model:omniparser_florence2_int8_community",
         "model:rapidocr_ppocrv4",
     }.issubset(names)
+    assert not any("florence" in name for name in names)
     assert "daemon" not in names
     assert not any(name.startswith("desktop:") for name in names)
     assert not any(name.startswith("dependency:") for name in names)
@@ -1852,69 +1852,3 @@ def test_rapidocr_doctor_rejects_git_lfs_pointer(monkeypatch, tmp_path) -> None:
 
     assert check.status == "fail"
     assert "git lfs pull" in check.message
-
-
-def test_florence2_community_doctor_verifies_nested_bundle(
-    monkeypatch, tmp_path
-) -> None:
-    import hashlib
-    import json
-
-    import computer_server.tool_cli as tool_cli
-
-    model_dir = tmp_path / "icon_caption_onnx_community"
-    hashes = {}
-    for name in tool_cli.FLORENCE2_COMMUNITY_REQUIRED_FILES:
-        if name == "model_manifest.json":
-            continue
-        path = model_dir / name
-        path.parent.mkdir(parents=True, exist_ok=True)
-        content = f"test-{name}".encode()
-        path.write_bytes(content)
-        hashes[name] = hashlib.sha256(content).hexdigest()
-    (model_dir / "model_manifest.json").write_text(
-        json.dumps(
-            {
-                "source": {
-                    "repository": "onnx-community/OmniParser-v2.0_icon_caption",
-                    "revision": "test-revision",
-                },
-                "pipeline": {
-                    "quantization": "onnxruntime.quantization.quantize_dynamic",
-                    "weight_type": "QInt8",
-                    "execution_provider": "CPUExecutionProvider",
-                    "per_channel": True,
-                    "MatMulConstBOnly": True,
-                    "vision": {
-                        "preprocess": "onnxruntime.quantization.shape_inference.quant_pre_process",
-                        "quantization": "onnxruntime.quantization.quantize_dynamic",
-                        "weight_type": "QInt8",
-                        "op_types": ["MatMul", "Gemm"],
-                        "per_channel": True,
-                        "MatMulConstBOnly": True,
-                        "execution_provider": "CPUExecutionProvider",
-                    },
-                },
-                "sha256": hashes,
-            }
-        ),
-        encoding="utf-8",
-    )
-    monkeypatch.setattr(tool_cli, "FLORENCE2_COMMUNITY_MODEL_DIR", model_dir)
-
-    check = tool_cli._check_florence2_community_bundle()
-
-    assert check.status == "ok"
-    assert check.details["verified_files"] == len(hashes)
-
-    legacy_vision = model_dir / "onnx" / "vision_encoder.onnx"
-    legacy_vision.parent.mkdir(parents=True, exist_ok=True)
-    legacy_vision.write_bytes(b"deprecated fp32 graph")
-    assert tool_cli._check_florence2_community_bundle().status == "fail"
-    legacy_vision.unlink()
-
-    manifest_path = model_dir / "model_manifest.json"
-    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
-    del manifest["sha256"]["int8/vision_encoder.int8.onnx"]
-    manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
-    assert tool_cli._check_florence2_community_bundle().status == "fail"

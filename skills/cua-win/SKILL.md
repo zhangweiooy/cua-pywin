@@ -21,8 +21,9 @@ Use the cheapest reliable information source first:
    states, actions, and element indexes.
 2. OCR-grounded coordinates: visible text and its returned coordinates from
    `computer_get_window_state`, `computer_zoom`, or a tight crop workflow.
-3. Visual coordinates: screenshot reasoning, SOM icon labels, or hand-derived
-   coordinates when semantics and OCR are insufficient.
+3. YOLO icon locations: identify the control in the full-window screenshot,
+   then select its existing element_index. Unlabeled icons are location candidates.
+4. Local zoom and screenshot coordinates only when existing nodes are insufficient.
 
 Do not start from broad screenshot guessing when a structured observation can
 answer the question. Do not keep retrying a semantic action after the visible
@@ -122,7 +123,7 @@ recording/replay metadata.
 - Windows.Graphics.Capture target-window screenshots.
 - UIA tree nodes.
 - MSAA fallback nodes.
-- OmniParser V2 YOLO + Florence-2 icon captions.
+- OmniParser V2 YOLO icon bounding boxes and element indexes.
 - RapidOCR/PaddleOCR ONNX text nodes.
 
 When only target-window pixels are needed, use
@@ -170,14 +171,20 @@ looking for text. Use `include_all_nodes=true` only when you need the full
 `nodes` array despite a query. Use `force_som=true` when testing visual fallback
 or when UIA/MSAA is known to be poor.
 
+Interpret the full-window screenshot together with UIA/MSAA names, OCR text,
+and YOLO boxes. The main LLM supplies icon meaning; the runtime does not caption
+icons or make per-icon API calls. Prefer an existing node's element_index with
+observation_id over estimating a small control's coordinates. Do not expect an
+unlabeled icon to match a text query.
+
 Use `computer_zoom` when a target is visually small. Pass the parent
-`screenshot_id`; use the returned `zoom_id` for follow-up zoom-coordinate
-actions. A zoom becomes stale when a newer observation is captured for its
-window.
+`screenshot_id`; after inspection, prefer the matching existing node. Use the
+returned `zoom_id` only when acting on coordinates from the zoom image. A zoom
+becomes stale when a newer observation is captured for its window.
 
 When one candidate is ambiguous, prefer a targeted probe pattern over full
 window reasoning: zoom or query around the candidate, inspect the node text,
-OCR text, icon caption, and coordinates, then act only if the target is clear.
+OCR text, and coordinates in screenshot context, then act only if the target is clear.
 
 ## Actions
 

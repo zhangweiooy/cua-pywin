@@ -130,7 +130,7 @@ async def _lifespan(fastapi_app: FastAPI):
 app = FastAPI(
     title="Computer API",
     description="API for the Computer project",
-    version="0.3.4",
+    version="0.4.0",
     lifespan=_lifespan,
     redirect_slashes=False,
 )

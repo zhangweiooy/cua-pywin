@@ -8,6 +8,7 @@ import json
 import statistics
 import subprocess
 import sys
+import threading
 import time
 from pathlib import Path
 from typing import Any
@@ -15,7 +16,37 @@ from typing import Any
 import numpy as np
 from PIL import Image
 
-from scripts.benchmark_icon_semantics import _MemorySampler, _private_bytes
+def _private_bytes(process: Any) -> int:
+    info = process.memory_full_info()
+    return int(
+        getattr(info, "private", getattr(info, "uss", process.memory_info().rss))
+    )
+
+
+class _MemorySampler:
+    def __init__(self, process: Any) -> None:
+        self.process = process
+        self.stop_event = threading.Event()
+        self.peak_rss = 0
+        self.peak_private = 0
+        self.thread = threading.Thread(target=self._run, daemon=True)
+
+    def _run(self) -> None:
+        while not self.stop_event.is_set():
+            try:
+                self.peak_rss = max(self.peak_rss, int(self.process.memory_info().rss))
+                self.peak_private = max(self.peak_private, _private_bytes(self.process))
+            except Exception:
+                pass
+            self.stop_event.wait(0.02)
+
+    def __enter__(self) -> "_MemorySampler":
+        self.thread.start()
+        return self
+
+    def __exit__(self, *_: Any) -> None:
+        self.stop_event.set()
+        self.thread.join(timeout=1.0)
 
 
 def _worker(args: argparse.Namespace) -> int:

@@ -93,7 +93,7 @@ class ParserMetadata(BaseModel):
     icons_suppressed_by_ocr: int = Field(default=0, description="Icons suppressed by clear OCR text")
     ambiguous_collisions_preserved: int = Field(
         default=0,
-        description="Ambiguous OCR/icon pairs preserved for semantic captioning",
+        description="Ambiguous OCR/icon pairs preserved for caller screenshot interpretation",
     )
 
     @property

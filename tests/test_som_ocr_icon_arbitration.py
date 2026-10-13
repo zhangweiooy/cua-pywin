@@ -8,7 +8,6 @@ from types import SimpleNamespace
 from PIL import Image
 
 from computer_server.handlers import som_bridge
-from computer_server.services.icon_caption_service import IconCaption
 from som.detect import OmniParser
 
 
@@ -63,93 +62,6 @@ def test_process_image_preserves_icon_for_ambiguous_short_ocr_collision():
     }
 
 
-def test_bridge_uses_florence_as_additional_evidence_for_ambiguous_icon(monkeypatch):
-    parser = _parser([_file_icon()], [_ocr()])
-    _, screenshot_bytes = _image_and_bytes()
-    result = parser.parse(screenshot_bytes, use_ocr=True)
-    icon_position = next(
-        i for i, element in enumerate(result.elements) if element.type == "icon"
-    )
-    monkeypatch.setattr(
-        som_bridge,
-        "_label_icon_elements",
-        lambda *_args, **_kwargs: (
-            {
-                icon_position: IconCaption(
-                    raw_caption="a file document icon",
-                    normalized_label="file/document",
-                )
-            },
-            "ready",
-        ),
-    )
-
-    converted = som_bridge._convert_parse_result(
-        result, screenshot_bytes, 100, 100, vision_index_start=10000
-    )
-
-    assert len(converted.elements) == 1
-    node = converted.elements[0]
-    assert node.control_type == "icon"
-    assert node.actions == ["click"]
-    assert node.name == "file/document"
-    assert (
-        node.metadata["icon_label_source"]
-        == "omniparser_v2_florence2_int8_community"
-    )
-    assert (
-        node.metadata["semantic_resolution"]
-        == "icon_preferred_with_yolo_and_florence_evidence"
-    )
-    assert (
-        node.metadata["semantic_uncertainty"]
-        == "ocr_icon_collision_advisory_resolution"
-    )
-    assert node.metadata["semantic_alternatives"] == [
-        {"control_type": "text", "name": "口", "confidence": 0.79}
-    ]
-    assert converted.metadata["num_icons"] == 1
-    assert converted.metadata["num_text"] == 0
-    assert converted.metadata["raw_icon_count"] == 1
-    assert converted.metadata["raw_text_count"] == 1
-    assert converted.metadata["ocr_icon_collision_count"] == 1
-    assert converted.metadata["ambiguous_collisions_preserved"] == 1
-
-
-def test_generic_florence_caption_keeps_true_single_character_ocr(monkeypatch):
-    parser = _parser([_file_icon()], [_ocr("中", 0.9)])
-    _, screenshot_bytes = _image_and_bytes()
-    result = parser.parse(screenshot_bytes, use_ocr=True)
-    icon_position = next(
-        i for i, element in enumerate(result.elements) if element.type == "icon"
-    )
-    monkeypatch.setattr(
-        som_bridge,
-        "_label_icon_elements",
-        lambda *_args, **_kwargs: (
-            {
-                icon_position: IconCaption(
-                    raw_caption="a square button",
-                    normalized_label="square",
-                )
-            },
-            "ready",
-        ),
-    )
-
-    converted = som_bridge._convert_parse_result(
-        result, screenshot_bytes, 100, 100, vision_index_start=10000
-    )
-
-    assert {node.control_type for node in converted.elements} == {"icon", "text"}
-    text_node = next(
-        node for node in converted.elements if node.control_type == "text"
-    )
-    assert text_node.name == "中"
-    assert converted.metadata["num_icons"] == 1
-    assert converted.metadata["num_text"] == 1
-
-
 def test_clear_search_text_suppresses_overlapping_duplicate_icon():
     parser = _parser([_file_icon(0.9)], [_ocr("搜索", 0.8)])
     image, _ = _image_and_bytes()
@@ -160,28 +72,6 @@ def test_clear_search_text_suppresses_overlapping_duplicate_icon():
     assert elements[0].type == "text"
     assert elements[0].content == "搜索"
     assert parser._last_collision_diagnostics["icons_suppressed_by_ocr"] == 1
-
-
-def test_short_ocr_without_yolo_icon_does_not_run_florence(monkeypatch):
-    parser = _parser([], [_ocr()])
-    _, screenshot_bytes = _image_and_bytes()
-    result = parser.parse(screenshot_bytes, use_ocr=True)
-
-    def fail_if_called(_crops):
-        raise AssertionError("Florence captioning must not run without icon crops")
-
-    monkeypatch.setattr(
-        "computer_server.services.icon_caption_service.caption_icons",
-        fail_if_called,
-    )
-    converted = som_bridge._convert_parse_result(
-        result, screenshot_bytes, 100, 100, vision_index_start=10000
-    )
-
-    assert len(converted.elements) == 1
-    assert converted.elements[0].control_type == "text"
-    assert converted.elements[0].name == "口"
-    assert converted.metadata["icon_semantic_status"] == "not_run"
 
 
 def test_protected_icon_survives_cross_type_nms_when_ocr_score_is_higher():
@@ -195,22 +85,28 @@ def test_protected_icon_survives_cross_type_nms_when_ocr_score_is_higher():
     assert any(element.type == "text" for element in elements)
 
 
-def test_caption_failure_preserves_bounded_collision_uncertainty(monkeypatch):
-    parser = _parser([_file_icon()], [_ocr()])
+def test_bridge_keeps_icon_and_ocr_locations_for_llm_interpretation():
+    parser = _parser([_file_icon()], [_ocr("中", 0.9)])
     _, screenshot_bytes = _image_and_bytes()
     result = parser.parse(screenshot_bytes, use_ocr=True)
-    monkeypatch.setattr(
-        som_bridge,
-        "_label_icon_elements",
-        lambda *_args, **_kwargs: ({}, "inference_failed"),
-    )
 
     converted = som_bridge._convert_parse_result(
-        result, screenshot_bytes, 100, 100, vision_index_start=10000
+        result, 100, 100, vision_index_start=10000
     )
 
     assert {node.control_type for node in converted.elements} == {"icon", "text"}
+    icon = next(node for node in converted.elements if node.control_type == "icon")
+    text = next(node for node in converted.elements if node.control_type == "text")
+    assert icon.name is None
+    assert icon.actions == ["click"]
+    assert icon.bbox == (20, 20, 50, 50)
+    assert text.name == "中"
+    assert text.metadata["ocr_confidence"] == 0.9
+    assert text.bbox == (25, 25, 45, 45)
+    assert icon.element_index != text.element_index
     assert all(
         node.metadata["semantic_uncertainty"] == "ocr_icon_collision"
         for node in converted.elements
     )
+    assert converted.metadata["num_icons"] == 1
+    assert converted.metadata["num_text"] == 1

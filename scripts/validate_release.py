@@ -15,7 +15,7 @@ from typing import BinaryIO, Iterable
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 LFS_POINTER_PREFIX = b"version https://git-lfs.github.com/spec/v1"
 FORBIDDEN_RUNTIME_DISTRIBUTIONS = frozenset(
-    {"easyocr", "torch", "torchvision", "ultralytics", "ultralytics-thop"}
+    {"easyocr", "torch", "torchvision", "ultralytics", "ultralytics-thop", "tokenizers", "transformers"}
 )
 
 
@@ -51,36 +51,6 @@ MODEL_BUNDLES = (
             "ppocr_keys_v1.txt",
             "model_manifest.json",
         ),
-    ),
-    ModelBundle(
-        name="OmniParser V2 Florence-2 ONNX Community INT8",
-        source_dir=Path(
-            "computer_server/models/omniparser_v2/icon_caption_onnx_community"
-        ),
-        wheel_dir=PurePosixPath(
-            "computer_server/models/omniparser_v2/icon_caption_onnx_community"
-        ),
-        required_files=(
-            "LICENSE",
-            "added_tokens.json",
-            "config.json",
-            "configuration_florence2.py",
-            "generation_config.json",
-            "merges.txt",
-            "model_manifest.json",
-            "pipeline_manifest.json",
-            "preprocessor_config.json",
-            "special_tokens_map.json",
-            "tokenizer.json",
-            "tokenizer_config.json",
-            "vocab.json",
-            "int8/encoder_model.int8.onnx",
-            "int8/decoder_model.int8.onnx",
-            "int8/decoder_with_past_model.int8.onnx",
-            "int8/vision_encoder.int8.onnx",
-            "onnx/embed_tokens.onnx",
-        ),
-        forbidden_files=("onnx/vision_encoder.onnx", "processing_florence2.py"),
     ),
 )
 
@@ -298,7 +268,7 @@ def validate_wheel(
         _validate_wheel_runtime_dependencies(metadata_text)
         names = set(archive.namelist())
         forbidden = (
-            "computer_server/models/omniparser_v2/icon_caption_int8/",
+            "computer_server/models/omniparser_v2/",
             "computer_server/models/quasivision_icon_classifier/",
         )
         if any(name.startswith(forbidden) for name in names):

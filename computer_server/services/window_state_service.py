@@ -861,7 +861,6 @@ def node_matches_query(node: Dict[str, Any], query: Optional[str]) -> bool:
         node.get("name"),
         node.get("title"),
         node.get("value"),
-        node.get("icon_label"),
     ]
     metadata = node.get("metadata")
     if isinstance(metadata, dict):
@@ -965,16 +964,13 @@ def _has_textual_signal(node: Dict[str, Any]) -> bool:
         "name",
         "title",
         "value",
-        "icon_label",
-        "raw_caption",
-        "normalized_label",
     ):
         value = node.get(key)
         if isinstance(value, str) and value.strip():
             return True
     metadata = node.get("metadata")
     if isinstance(metadata, dict):
-        for key in ("icon_label", "raw_caption", "normalized_label", "ocr_confidence"):
+        for key in ("ocr_confidence",):
             value = metadata.get(key)
             if value is not None and str(value).strip():
                 return True
@@ -1691,21 +1687,6 @@ def merge_som_vision(
                     node["confidence"] = metadata["vision_confidence"]
                 if "ocr_confidence" in metadata:
                     node["ocr_confidence"] = metadata["ocr_confidence"]
-                if "icon_label" in metadata:
-                    node["icon_label"] = metadata["icon_label"]
-                if "raw_caption" in metadata:
-                    node["raw_caption"] = metadata["raw_caption"]
-                if "normalized_label" in metadata:
-                    node["normalized_label"] = metadata["normalized_label"]
-                if "icon_label_source" in metadata:
-                    node["icon_label_source"] = metadata["icon_label_source"]
-                if "icon_label_confidence" in metadata:
-                    node["icon_label_confidence"] = metadata[
-                        "icon_label_confidence"
-                    ]
-                    node["icon_label_confidence_provenance"] = metadata.get(
-                        "icon_label_confidence_provenance"
-                    )
             nodes.append(node)
         return {
             "nodes": nodes,

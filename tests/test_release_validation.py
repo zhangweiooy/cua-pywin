@@ -147,7 +147,7 @@ def test_nuitka_bundles_clean_environment_comtypes_uia_bindings() -> None:
     assert "oryx-window-0.19.1.png" in som_smoke
     assert "fixture-hwnd.txt" in som_smoke
     assert "targetable HWND" in som_smoke
-    assert 'icon_semantic_status -ne "ready"' in som_smoke
+    assert "icon_semantic_status" not in som_smoke
     assert "[int]$vision.num_text -lt 1" in som_smoke
     assert '"--include-package=comtypes.gen"' in script
     assert '"--include-module=comtypes.stream"' in script
@@ -200,13 +200,12 @@ def test_installer_build_requires_clean_environment_lifecycle() -> None:
     assert 'Type: dirifempty; Name: "{app}"' in installer_script
     assert 'Type: dirifempty; Name: "{app}\\som\\weights\\icon_detect"' in installer_script
     assert "RemoveDir(ExpandConstant('{app}'))" in installer_script
-    assert "icon_caption_onnx_community\\onnx\\vision_encoder.onnx" in installer_script
-    assert "legacy fp32 vision graph" in validator
-    assert "Installer did not remove the legacy FP32 vision graph" in validator
+    assert 'Type: filesandordirs; Name: "{app}\\computer_server\\models\\omniparser_v2"' in installer_script
+    assert "legacy Florence vision graph" in validator
+    assert "Installer did not remove the legacy Florence model bundle" in validator
     assert 'Type: files; Name: "{app}\\som\\weights\\icon_detect\\model.pt"' in installer_script
     assert "legacy PyTorch YOLO weight" in validator
     assert "Installer did not remove the legacy PyTorch YOLO weight" in validator
-    assert "Installer did not install the INT8 vision graph" in validator
     assert 'Type: filesandordirs; Name: "{app}\\easyocr"' in installer_script
     assert 'Type: filesandordirs; Name: "{app}\\easyocr-*.dist-info"' in installer_script
     assert "Installer did not remove the legacy EasyOCR runtime" in validator
@@ -327,3 +326,51 @@ def test_validate_wheel_rejects_removed_easyocr_dependency(monkeypatch, tmp_path
 
     with pytest.raises(ReleaseValidationError, match="removed runtime dependencies"):
         validate_wheel(wheel, "0.3.1", tmp_path)
+
+
+def test_runtime_models_only_include_yolo_and_ocr():
+    assert {bundle.name for bundle in release_validation.MODEL_BUNDLES} == {
+        "OmniParser V2 YOLO", "RapidOCR PP-OCRv4",
+    }
+    root = Path(__file__).resolve().parents[1]
+    with (root / "pyproject.toml").open("rb") as handle:
+        project = tomllib.load(handle)
+    assert not any(
+        dependency.startswith(("tokenizers", "transformers"))
+        for dependency in project["project"]["dependencies"]
+    )
+    with (root / "uv.lock").open("rb") as handle:
+        lock = tomllib.load(handle)
+    assert not {"tokenizers", "transformers"} & {
+        package["name"] for package in lock["package"]
+    }
+
+
+@pytest.mark.parametrize(
+    "member",
+    [
+        "computer_server/models/omniparser_v2/icon_caption_onnx_community/int8/vision_encoder.int8.onnx",
+        "computer_server/models/omniparser_v2/icon_caption/model.safetensors",
+    ],
+)
+def test_wheel_rejects_removed_caption_models(monkeypatch, tmp_path, member):
+    monkeypatch.setattr(release_validation, "MODEL_BUNDLES", ())
+    wheel = tmp_path / "test.whl"
+    with zipfile.ZipFile(wheel, "w") as archive:
+        archive.writestr("test.dist-info/METADATA", "Version: 0.3.4")
+        archive.writestr(member, b"obsolete caption model")
+    with pytest.raises(ReleaseValidationError, match="development-only"):
+        release_validation.validate_wheel(wheel, "0.3.4", tmp_path)
+
+
+@pytest.mark.parametrize("dependency", ["tokenizers", "transformers"])
+def test_wheel_rejects_removed_caption_dependency(monkeypatch, tmp_path, dependency):
+    monkeypatch.setattr(release_validation, "MODEL_BUNDLES", ())
+    wheel = tmp_path / "test.whl"
+    with zipfile.ZipFile(wheel, "w") as archive:
+        archive.writestr(
+            "test.dist-info/METADATA",
+            f"Version: 0.3.4\nRequires-Dist: {dependency}>=1\n",
+        )
+    with pytest.raises(ReleaseValidationError, match="removed runtime dependencies"):
+        release_validation.validate_wheel(wheel, "0.3.4", tmp_path)

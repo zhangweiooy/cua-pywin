@@ -59,7 +59,6 @@ computer_server/
     capture_service.py      — Virtual desktop capture shared by recording and
                               learning
     ocr_service.py          — Lazy OCRProcessor singleton
-    icon_caption_service.py — Batched Florence-2 icon captioning
     target_profile_service.py — Window family classification and delivery risk
     permission_service.py   — Runtime permission policy for open,
                               commands, CDP JavaScript
@@ -152,14 +151,14 @@ uv run python scripts/run_agent_smoke.py --dry-run --scenario fixture-basic
 uv run --no-sync python "C:\Users\vinfl\.codex\skills\.system\skill-creator\scripts\quick_validate.py" skills/cua-win
 
 # Build and validate a release candidate
-./scripts/build_release.ps1 -Version 0.2.8
+./scripts/build_release.ps1 -Version 0.4.0
 
 # Build a local Nuitka standalone executable directory
 ./scripts/build_nuitka.ps1
-./scripts/build_nuitka.ps1 -Version 0.2.8
+./scripts/build_nuitka.ps1 -Version 0.4.0
 
 # Build a Windows setup.exe from the standalone output
-./scripts/build_installer.ps1 -Version 0.2.8
+./scripts/build_installer.ps1 -Version 0.4.0
 
 # Fast local Nuitka iteration after dependencies are already synced
 ./scripts/build_nuitka.ps1 -SkipSync -SkipChecks
@@ -432,8 +431,8 @@ is internal replay metadata.
 ```
 OCR: RapidOCR + ONNXRuntime default, PaddleOCR PP-OCRv4 mobile Chinese+English
 Icon detection: bundled OmniParser V2 YOLO
-Icon semantics: bundled OmniParser V2 fine-tuned Florence-2
-Perf: CPU 2-5s/frame, GPU <1s/frame
+UI understanding: main LLM reads the full screenshot with UIA/MSAA/OCR/YOLO nodes
+Runtime: ONNX Runtime CPU; benchmark cold and warm latency separately
 Risk: OmniParser is trained on modern Web/mobile UI; old Win32 recall may vary
 ```
 
@@ -454,54 +453,13 @@ tracked with Git LFS; `cua-win doctor` verifies their SHA-256 hashes.
 RapidOCR fixes ONNX Runtime to four intra-op threads and one inter-op thread;
 its CPU arena remains disabled.
 
-The fine-tuned Florence-2 icon-caption model runs from the bundled community
-ONNX conversion under
-`computer_server/models/omniparser_v2/icon_caption_onnx_community/`. The vision
-encoder, BART encoder, decoder, and cached decoder are INT8; token embedding
-remains FP32. The lightweight runner does not import the upstream custom
-processor module, which is retained only as a test fixture for parity checks.
-Runtime model download is disabled entirely, and `cua-win doctor` rejects
-missing, invalid, or unresolved Git LFS model files.
-Florence-2 sessions use one intra-op and one inter-op thread, disable the CPU
-memory arena, and retain memory-pattern reuse.
-
-Florence-2 runs over 64x64 YOLO icon crops in batches of up to 64 by default.
-Do not call it once per crop. RapidOCR remains responsible for visible text.
-TinyCLIP has been removed from the runtime and package after the WeChat
-comparison showed materially worse label quality.
-
-### WeChat Icon-Semantic Comparison
-
-The 2026-06-07 comparison used a real WeChat WGC capture collected through
-`cua-win`, with 21 YOLO icon crops and 39 OCR text nodes.
-
-Current pipeline timings:
-
-- Total visual pipeline: about 4.01 seconds.
-- YOLO: about 0.75 seconds.
-- RapidOCR: about 3.16 seconds.
-- TinyCLIP: about 0.44 seconds.
-
-Florence-2 icon-caption timings:
-
-- Cold pass: about 0.84 seconds.
-- Warm pass: about 0.59-0.60 seconds.
-- Process memory: about 1.49 GB during the experiment.
-
-Quality result:
-
-- Florence-2 produced correct or usable descriptions for scissors, more
-  options, file/document, square, minimize, close, contacts, messages, and QR
-  code icons.
-- TinyCLIP accepted only 7 of 21 crops, and most accepted results were incorrect
-  `profile button` or `emoji button` labels.
-- Florence-2 still misidentified phone, pin, mute, and WeChat-specific icons.
-  Generated captions therefore require normalization and an explicit
-  low-confidence/unknown path; they must not be treated as ground truth.
-
-Decision: use Florence-2 as the only normal icon-semantic backend. Do not run
-TinyCLIP and Florence-2 together. Florence captions remain advisory because
-phone, pin, mute, and application-specific icons can still be misidentified.
+The main LLM interprets the full-window screenshot using UIA/MSAA semantics,
+OCR text, and YOLO icon locations. Keep YOLO nodes unnamed and actionable with
+their element indexes, bounding boxes, centers, and detection confidence.
+Prefer an existing `element_index` plus `observation_id` over estimating small
+control coordinates. Use `computer_zoom` with `screenshot_id` only when a small
+region needs closer inspection. Do not add icon-caption models or per-icon LLM
+API calls. Preserve ambiguous OCR/icon pairs for the caller to interpret.
 
 Relevant controls:
 
@@ -512,26 +470,12 @@ Relevant controls:
 - `CUA_OCR_DENOISE=0` disables OCR text cleanup; `CUA_OCR_DENOISE=strict`
   enables deletion-style filtering for isolated symbol/single-character
   artifacts. Default denoising must stay conservative.
-- `CUA_ENABLE_FLORENCE2=0` disables icon semantic captioning.
-- `CUA_FLORENCE2_MODEL` and `CUA_FLORENCE2_PROCESSOR` are developer-only local
-  directory overrides. Remote repository identifiers are rejected.
-- `CUA_FLORENCE2_DEVICE=cpu|cuda` selects the device.
-- `CUA_FLORENCE2_BATCH_SIZE` defaults to 64 and is capped at 256.
-- `CUA_FLORENCE2_MAX_NEW_TOKENS` defaults to 20 and is capped at 128.
 
 `vision_metadata.stage_timings` reports SOM stage timing for debugging:
 `image_decode_latency`, `yolo_latency`, `ocr_latency`, `merge_latency`,
-`florence2_latency`, `icon_semantic_latency`, `bridge_convert_latency`,
-`annotation_encode_latency`, `omniparser_latency`, and `total_latency`.
-`tinyclip_latency=0.0` is retained only as a compatibility field.
-
-Icon nodes preserve `raw_caption`, a conservative `normalized_label`,
-`icon_label_source="omniparser_v2_florence2"`, and
-`icon_label_confidence_provenance="unscored_greedy_generation"`. Florence
-generation does not provide a calibrated confidence, so do not invent one.
-`vision_metadata.icon_semantic_status` exposes caption availability. Florence
-initialization or inference failure must degrade to unlabeled YOLO icons without
-failing the overall SOM observation.
+`bridge_convert_latency`, `annotation_encode_latency`, `omniparser_latency`,
+and `total_latency`. Icon detection confidence is not semantic confidence. Current model provenance
+and measured evidence are maintained in `docs/yolo-onnx-poc.md`.
 
 Vision text nodes propagate OCR confidence as `confidence`,
 `ocr_confidence`, and `metadata.ocr_confidence`. Default denoising must not
@@ -539,12 +483,11 @@ delete visible single-character detections because `+`, `O`, `0`, and Chinese
 characters can be valid UI labels. Keep deletion-style rules behind explicit
 `CUA_OCR_DENOISE=strict`.
 
-### Detection Fallback: OmniParser -> Grounding DINO
+### Deferred Detector Research
 
-Use Grounding DINO only if OmniParser recall is insufficient. It is more
-adaptive but slower on CPU.
-
-Decision: test on Windows first; upgrade only when recall data justifies it.
+Grounding DINO is not a runtime fallback. Consider a separate Windows evaluation
+only if measured YOLO recall is insufficient; no extra detector or inference
+path should be added without that evidence.
 
 ## Learning Pipeline
 
@@ -607,8 +550,9 @@ functions. When the SDK is upgraded past the fix:
 
 ## Known Limitations
 
-- `detect_sync()` runs synchronously in the tool path. SOM warm-up preloads
-  models, but detection still contributes to `get_window_state` tail latency.
+- `detect_sync()` performs synchronous inference in the window-state worker
+  thread. SOM warm-up preloads models; first inference and per-frame work still
+  contribute to `get_window_state` latency.
 - Recording uses a bounded writer thread, but screenshot capture after actions
   still costs 50-200ms per captured turn.
 - OCR can read occluded overlapping content if another window covers the target;
@@ -687,11 +631,11 @@ uv run cua-win stop
   recording status, stop, idle status, daemon exit, temporary-directory
   cleanup, and zero generated comtypes cache files; `doctor` alone is not a
   sufficient Teaching check.
-- Keep Matplotlib, `unittest`, `torch.testing`, `pydoc`/`pydoc_data`,
-  `cProfile`/`profile`/`pstats`, SciPy, and SymPy in standalone builds. Current
-  Ultralytics, Torch, and Torchvision load them during the normal SOM path.
-  OpenCV FFmpeg and Polars are not used by the current image-only inference
-  path and remain excluded.
+- Production artifacts contain only the YOLO ONNX and RapidOCR model bundles.
+  PyTorch, Torchvision, Ultralytics, Transformers, Tokenizers, and Florence
+  resources must be absent. Export/benchmark dependencies stay in the development
+  `export` group. Keep the existing standalone support modules until a fresh
+  import report justifies removing them; OpenCV FFmpeg and Polars remain excluded.
 - `scripts/build_release.ps1` performs the locked install, source/model
   validation, Ruff, tests, compile checks, wheel build, wheel-internal model
   validation, and SHA-256 generation.
@@ -725,7 +669,7 @@ uv run cua-win stop
 
 ### Current State
 
-- Protocol `0.2` and package version `0.2.8` are the active development line.
+- Protocol `0.2` and package version `0.4.0` are the active development line.
   It intentionally has no 0.1 public compatibility mode. The repository is
   still private.
 - Do not move an existing release tag for documentation-only cleanup. Move a
@@ -754,9 +698,8 @@ uv run cua-win stop
 - Run `scripts/agent_smoke_fixture.py` plus `scripts/run_agent_smoke.py` against
   at least Codex after meaningful tool prompt or skill changes, and save
   transcripts when comparing agent behavior across revisions.
-- Build a reviewed Windows icon-caption corpus for WeChat, DingTalk, Chrome,
-  and classic controls. Track Florence incorrect-label and unknown rates,
-  especially phone, pin, mute, and application-specific icons.
+- Check YOLO node localization and main-LLM screenshot interpretation on real
+  Windows apps, especially dense toolbars and small controls.
 - Periodically run localized Windows app discovery and launch smoke tests on
   real WeChat, DingTalk, and similar Chinese desktop apps.
 - Explore broader MSAA-backed actions only when the action contract is
@@ -789,8 +732,6 @@ uv run cua-win stop
   high-frequency.
 - Rework overlay architecture only after more Windows runs expose concrete GDI
   lifecycle, shutdown, or modularity problems.
-- Revisit MobileCLIP-S0 only if Florence-2 memory or package size prevents it
-  from becoming the default icon-semantic backend.
 - Keep YOLO + OCR parallelism disabled by default; the prior EasyOCR CPU speedup
   was about 8%, and RapidOCR needs fresh benchmarks before adding complexity.
 - Do not productize a broad background `dispatch` mode yet. Some apps accept

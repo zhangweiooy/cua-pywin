@@ -720,7 +720,6 @@ try {
             "--include-package=starlette",
             "--include-package=rapidocr",
             "--include-package=onnxruntime",
-            "--include-package=tokenizers",
             "--include-package=winrt",
             "--include-module=pythoncom",
             "--include-module=pywintypes",
@@ -791,7 +790,7 @@ try {
         }
     }
     Invoke-TimedStep "copy bundled models" {
-        foreach ($bundle in @("rapidocr_ppocrv4", "omniparser_v2\icon_caption_onnx_community")) {
+        foreach ($bundle in @("rapidocr_ppocrv4")) {
             Copy-CleanDirectory `
                 -Source (Join-Path $ProjectRoot "computer_server\models\$bundle") `
                 -Destination (Join-Path $DistDir "computer_server\models\$bundle")

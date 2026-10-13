@@ -1,8 +1,17 @@
-# ONNX Runtime memory-option review
+# ONNX Runtime memory-option review (historical)
+
+Status: this records the 2026-09-15, 0.3.3 evaluation with Florence.
+Florence has since been removed from the 0.3.4 working tree's Unreleased
+changes. Its rows and full-pipeline/package measurements below are historical,
+not current runtime evidence.
+
+Current YOLO/RapidOCR settings retain four intra-op threads, one inter-op
+thread, and a disabled CPU arena. YOLO memory-pattern reuse stays enabled.
+See [the current runtime and measured evidence](yolo-onnx-poc.md).
 
 Date: 2026-09-15. Target release: 0.3.3.
 
-## Selected production settings
+## Settings selected in that historical evaluation
 
 ```text
 YOLO:      intra=4, inter=1, CPU arena=false, memory pattern=true

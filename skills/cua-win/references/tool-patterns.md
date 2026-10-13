@@ -124,7 +124,25 @@ Public data keeps canonical node counts, exposes capture diagnostics under
 `capture.capture_metadata`, and omits exact duplicate counts and empty
 diagnostic fields.
 
-Click a screenshot coordinate:
+Interpret the complete window screenshot together with UIA/MSAA names, OCR
+text, and YOLO boxes. Choose an existing node before estimating coordinates.
+YOLO icons may have an empty `name`; their detection confidence does not supply
+semantic meaning. The runtime does not caption icons or make per-icon API calls.
+
+Use `query` for actual node text; an unnamed icon cannot be found by a guessed
+text label. Prefer a broader node list when matching icons visually.
+
+Click an indexed element from the same observation (preferred):
+
+```json
+{
+  "window": {"id": 123456, "pid": 8888},
+  "observation_id": "obs-...",
+  "element_index": 10000
+}
+```
+
+When no existing node provides the required location, click a screenshot coordinate:
 
 ```json
 {
@@ -133,16 +151,6 @@ Click a screenshot coordinate:
   "coordinate_space": "window_resized",
   "x": 420,
   "y": 310
-}
-```
-
-Click an indexed element from the same observation:
-
-```json
-{
-  "window": {"id": 123456, "pid": 8888},
-  "observation_id": "obs-...",
-  "element_index": 7
 }
 ```
 
@@ -219,15 +227,42 @@ window reasoning:
 
 1. Start from a current `screenshot_id`.
 2. Call `computer_zoom` around the candidate region.
-3. Inspect returned zoom image, nearby nodes, OCR text, and icon labels.
+3. Inspect the returned zoom image and match it to existing node boxes and OCR text.
 4. Click or type only after the target identity is clear.
 
 If the candidate is text-based, first try `computer_get_window_state` with a
 specific `query`. If the query narrows too much, repeat with a higher
 `max_nodes` or no query. Use full `max_nodes=0` only for diagnostics.
 
-For tiny or icon-only controls, prefer zoom plus `screenshot_id`/`zoom_id`
-coordinate binding over reusing raw screen coordinates.
+For tiny or icon-only controls, first match the target to an existing
+`element_index`. Zoom only when the target remains unclear:
+
+```json
+{
+  "window": {"id": 123456, "pid": 8888},
+  "screenshot_id": "shot-...",
+  "x1": 400,
+  "y1": 280,
+  "x2": 460,
+  "y2": 340
+}
+```
+
+Use this with `computer_zoom`; rectangle coordinates come from the resized
+parent screenshot. After inspection, prefer the existing node if it matches.
+If coordinates must come from the zoom image, use its returned `zoom_id`:
+
+```json
+{
+  "window": {"id": 123456, "pid": 8888},
+  "coordinate_space": "zoom",
+  "zoom_id": "zoom-...",
+  "x": 30,
+  "y": 30
+}
+```
+
+A fresh observation invalidates the old observation, screenshot and zoom IDs.
 
 ## High-Risk Workflow
 

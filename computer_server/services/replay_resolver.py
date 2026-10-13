@@ -157,12 +157,26 @@ def resolve_replay_args(
     return resolved
 
 
+def validate_replay_element_ref(element_ref: Dict[str, Any]) -> None:
+    """Reject icon references whose identity cannot be verified automatically."""
+    if (
+        _norm(element_ref.get("source")) == "vision"
+        and _norm(element_ref.get("control_type")) == "icon"
+    ):
+        # Neither a reused index nor the old position identifies an icon.
+        raise ValueError(
+            "Cannot safely replay a vision-only icon; reobserve the screenshot "
+            "and select the target again."
+        )
+
+
 def resolve_replay_element_args(
     tool_name: str,
     args: Dict[str, Any],
     element_ref: Dict[str, Any],
 ) -> Dict[str, Any]:
     """Resolve recorded element metadata to a current cached element."""
+    validate_replay_element_ref(element_ref)
     resolved = dict(args)
 
     window = resolved.get("window")

@@ -31,7 +31,9 @@ $forbiddenRuntimeNames = @(
     "torch",
     "torchvision",
     "ultralytics",
-    "ultralytics_thop"
+    "ultralytics_thop",
+    "tokenizers",
+    "transformers"
 )
 $removedRuntimePaths = @(
     Get-ChildItem -LiteralPath $standaloneRoot -Force -ErrorAction Stop |
@@ -60,16 +62,8 @@ if ($removedRuntimePaths.Count -ne 0 -or $removedRuntimeDlls.Count -ne 0) {
         ) -join ", ")
     )
 }
-$bundleRoot = Join-Path $standaloneRoot (
-    "computer_server\models\omniparser_v2\icon_caption_onnx_community"
-)
-$int8VisionPath = Join-Path $bundleRoot "int8\vision_encoder.int8.onnx"
-$fp32VisionPath = Join-Path $bundleRoot "onnx\vision_encoder.onnx"
-if (-not (Test-Path -LiteralPath $int8VisionPath -PathType Leaf)) {
-    throw "Standalone bundle is missing the INT8 vision graph: $int8VisionPath"
-}
-if (Test-Path -LiteralPath $fp32VisionPath -PathType Leaf) {
-    throw "Standalone bundle contains the deprecated FP32 vision graph: $fp32VisionPath"
+if (Test-Path -LiteralPath (Join-Path $standaloneRoot "computer_server\models\omniparser_v2")) {
+    throw "Standalone bundle contains removed icon-caption model resources"
 }
 $tempRoot = [System.IO.Path]::GetFullPath($env:TEMP)
 $stateRoot = Join-Path $tempRoot (
@@ -87,7 +81,6 @@ if (-not $stateRoot.StartsWith(
 
 $environmentNames = @(
     "APPDATA",
-    "CUA_ENABLE_FLORENCE2",
     "CUA_OCR_TIMEOUT_SECONDS",
     "CUA_SKIP_SOM_WARMUP",
     "CUA_WIN_STATE_DIR",
@@ -142,7 +135,6 @@ try {
     New-Item -ItemType Directory -Path $hfModules | Out-Null
 
     $env:APPDATA = $privateAppData
-    $env:CUA_ENABLE_FLORENCE2 = "1"
     # Single-core release runners can take more than the 20-second production
     # budget on the first frozen RapidOCR inference. Keep this smoke bounded by
     # the outer 300-second command timeout without changing the runtime default.
@@ -259,15 +251,6 @@ finally {
         [string]$TimeoutSeconds
     )
     $vision = $windowState.data.vision_metadata
-    $semanticDeadline = [DateTime]::UtcNow.AddSeconds($TimeoutSeconds)
-    while ($windowState.success -and $vision.icon_semantic_status -in @("idle", "loading") -and [DateTime]::UtcNow -lt $semanticDeadline) {
-        Start-Sleep -Milliseconds 250
-        $windowState = Invoke-CuaJson -Arguments @(
-            "call", "computer_get_window_state", ("@" + $windowStateArgsPath),
-            "--json", "--timeout", [string]$TimeoutSeconds
-        )
-        $vision = $windowState.data.vision_metadata
-    }
     $captureMetadata = $windowState.data.capture.capture_metadata
     if (
         -not $windowState.success -or
@@ -275,17 +258,13 @@ finally {
         $captureMetadata.capture_backend -ne "wgc" -or
         [int]$windowState.data.vision_node_count -lt 1 -or
         [int]$vision.num_icons -lt 1 -or
-        [int]$vision.num_text -lt 1 -or
-        $vision.icon_semantic_status -ne "ready" -or
-        [int]$vision.icon_caption_count -lt 1
+        [int]$vision.num_text -lt 1
     ) {
         throw (
             "Standalone SOM smoke failed: " +
             "backend=$($captureMetadata.capture_backend), " +
             "vision_nodes=$($windowState.data.vision_node_count), " +
-            "icons=$($vision.num_icons), text=$($vision.num_text), " +
-            "icon_status=$($vision.icon_semantic_status), " +
-            "captions=$($vision.icon_caption_count)"
+            "icons=$($vision.num_icons), text=$($vision.num_text)"
         )
     }
 
@@ -387,4 +366,4 @@ if ($null -ne $cleanupFailure) {
     throw $cleanupFailure
 }
 
-Write-Output "[OK] standalone SOM/OCR/Florence-2 runtime passed"
+Write-Output "[OK] standalone YOLO/OCR runtime passed"

@@ -4,6 +4,24 @@ All notable changes to this project will be documented in this file.
 
 ## Unreleased
 
+## 0.4.0 - 2026-10-13
+
+### Fixed
+
+- Reject automatic replay of vision-only icons instead of matching another
+  icon at the recorded position. Return `ACTION_REJECTED` before input and
+  require fresh screenshot-based target selection; semantic node replay is
+  unchanged.
+
+### Changed
+
+- Remove Florence icon-caption inference, warm-up, model bundles, and tokenizer
+  dependencies from the runtime and release artifacts.
+- Let the main LLM interpret the complete screenshot with UIA/MSAA, OCR, and
+  YOLO locations. Prefer indexed nodes for actions and zoom only when needed.
+- Preserve ambiguous OCR/icon location pairs instead of resolving them through
+  generated icon descriptions; no per-icon LLM API requests are introduced.
+
 ## 0.3.4 - 2026-09-15
 
 ### Fixed

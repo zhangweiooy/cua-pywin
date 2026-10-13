@@ -11,9 +11,6 @@ TEXT_KEYS = (
     "value",
     "content",
     "text",
-    "normalized_label",
-    "raw_caption",
-    "icon_label",
 )
 
 
